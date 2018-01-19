@@ -30,8 +30,6 @@ extern void * memchr(const void *, int, __kernel_size_t);
 extern void * memset(void *, int, __kernel_size_t);
 extern void *__memset(void *s, int c, __kernel_size_t n);
 
-extern void __memzero(void *ptr, __kernel_size_t n);
-
 /*
  * For files that are not instrumented (e.g. mm/slub.c) we
  * must use non-instrumented versions of the mem*
@@ -51,17 +49,5 @@ extern void __memzero(void *ptr, __kernel_size_t n);
 #endif
 
 #endif
-
-#define memset(p,v,n)							\
-	({								\
-	 	void *__p = (p); size_t __n = n;			\
-		if ((__n) != 0) {					\
-			if (__builtin_constant_p((v)) && (v) == 0)	\
-				__memzero((__p),(__n));			\
-			else						\
-				memset((__p),(v),(__n));		\
-		}							\
-		(__p);							\
-	})
 
 #endif
