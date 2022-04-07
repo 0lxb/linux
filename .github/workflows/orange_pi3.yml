@@ -16,6 +16,7 @@ jobs:
       env:
           DEBIAN_FRONTEND: noninteractive
       run: |
+          sudo sed -i "s/\# deb-src/deb-src/g" /etc/apt/sources.list
           df -h
           echo "Removing docker images"
           docker rmi `docker images -q`
