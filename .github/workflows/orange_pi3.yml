@@ -47,7 +47,7 @@ jobs:
           ref: master
 
     - name: make defconfig
-      run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 defconfig
+      run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 sun50iw6p1_orangepi3_defconfig
 
     - name: make all
       run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 all
