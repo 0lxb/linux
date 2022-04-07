@@ -16,21 +16,38 @@ jobs:
       env:
           DEBIAN_FRONTEND: noninteractive
       run: |
+          df -h
+          echo "Removing docker images"
           docker rmi `docker images -q`
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
+          df -h
+          echo "Removing large directories"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          echo "Listing 100 largest packages"
+          dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -n | tail -n 100
+          df -h
+          echo "Removing large packages"
+          sudo apt-get remove -y '^ghc-8.*'
+          sudo apt-get remove -y '^dotnet-.*'
+          sudo apt-get remove -y '^llvm-.*'
+          sudo apt-get remove -y 'php.*'
+          sudo apt-get remove -y azure-cli google-cloud-sdk hhvm google-chrome-stable firefox powershell mono-devel
+          sudo -E apt-get -y purge ghc* zulu* llvm* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* moby* snapd* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -h
           sudo -E apt-get update
           sudo -E apt-get build-dep -y linux
           sudo -E apt-get install -y crossbuild-essential-arm64
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
+          df -h
     - name: checkout
       uses: actions/checkout@v3
       with:
           ref: master
 
     - name: make defconfig
-      run: make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 defconfig
+      run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 defconfig
 
     - name: make all
-      run: make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
+      run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 all
