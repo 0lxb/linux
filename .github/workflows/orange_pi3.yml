@@ -56,12 +56,14 @@ jobs:
       run: |
           mkdir -p ./artifact/
           #cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
-          cp -rf ./vmlinux ./artifact/
-          cp -rf ./System.map ./artifact/
-          cp -rf ./arch/arm64/boot/Image ./artifact/
-          cp -rf ./arch/arm64/boot/dts/allwinner ./artifact/
-          cp -rf ./tmp/lib ./artifact/
-          cp -rf ./tmp/include ./artifact/
+          cp -rvf ./vmlinux ./artifact/
+          cp -rvf ./System.map ./artifact/
+          cp -rvf ./arch/arm64/boot/Image ./artifact/
+          cp -rvf ./arch/arm64/boot/dts/allwinner ./artifact/
+          cp -rvf ./tmp/lib ./artifact/
+          cp -rvf ./tmp/include ./artifact/
+          #rm -rf $(find ./tmp/lib  -name "build") ./artifact/
+          rm -rvf ./tmp/lib/modules/5.18.0-rc1+/build
 
     - name: deliver firmware
       uses: actions/upload-artifact@v2
