@@ -47,4 +47,24 @@ jobs:
       run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 sun50iw6p1_orangepi3_defconfig
 
     - name: make all
-      run: make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 all
+      run: |
+          make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 all
+          make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
+          make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
+
+    - name: prepare artifact
+      run: |
+          mkdir -p ./artifact/
+          #cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
+          cp -rf ./vmlinux ./artifact/
+          cp -rf ./System.map ./artifact/
+          cp -rf ./arch/arm64/boot/Image ./artifact/
+          cp -rf ./arch/arm64/boot/dts/allwinner ./artifact/
+          cp -rf ./tmp/lib ./artifact/
+          cp -rf ./tmp/include ./artifact/
+
+    - name: deliver firmware
+      uses: actions/upload-artifact@v2
+      with:
+          name: openwrt_firmware
+          path: ./artifact/
