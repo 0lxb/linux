@@ -55,18 +55,19 @@ jobs:
     - name: prepare artifact
       run: |
           mkdir -p ./artifact/
+          mkdir -p ./artifact/dtb
           #cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
           cp -rvf ./vmlinux ./artifact/
           cp -rvf ./System.map ./artifact/
           cp -rvf ./arch/arm64/boot/Image ./artifact/
-          cp -rvf ./arch/arm64/boot/dts/allwinner ./artifact/
+          cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/dtb
           cp -rvf ./tmp/lib ./artifact/
           cp -rvf ./tmp/include ./artifact/
-          #rm -rf $(find ./tmp/lib  -name "build") ./artifact/
-          rm -rvf ./tmp/lib/modules/5.18.0-rc1+/build
+          rm -rvf $(find ./artifact/lib/modules  -name "source")
+          rm -rvf $(find ./artifact/lib/modules  -name "build")
 
     - name: deliver firmware
       uses: actions/upload-artifact@v2
       with:
-          name: openwrt_firmware
+          name: orangepi3_firmware
           path: ./artifact/
