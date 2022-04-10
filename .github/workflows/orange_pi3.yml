@@ -67,11 +67,17 @@ jobs:
       run: |
           mkdir -p ./artifact/
           mkdir -p ./artifact/dtb
+          mkdir -p ./artifact/dtb/allwinner
+          mkdir -p ./artifact/dtb/allwinner/overlay
           #cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
+          cp -rvf ./.config ./artifact/config
           cp -rvf ./vmlinux ./artifact/
           cp -rvf ./System.map ./artifact/
           cp -rvf ./arch/arm64/boot/Image ./artifact/
-          cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/dtb
+          cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/dtb/allwinner
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.dtbo ./artifact/dtb/allwinner/overlay
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.scr ./artifact/dtb/allwinner/overlay
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/README* ./artifact/dtb/allwinner/overlay
           cp -rvf ./tmp/lib ./artifact/
           cp -rvf ./tmp/include ./artifact/
           rm -rvf $(find ./artifact/lib/modules  -name "source")
