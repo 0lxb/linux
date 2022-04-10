@@ -82,9 +82,16 @@ jobs:
           cp -rvf ./tmp/include ./artifact/
           rm -rvf $(find ./artifact/lib/modules  -name "source")
           rm -rvf $(find ./artifact/lib/modules  -name "build")
+          tar -czf orangepi3_firmware.tgz ./artifact/*
+          mv orangepi3_firmware.tgz ./artifact/
 
     - name: deliver firmware
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
           name: orangepi3_firmware
           path: ./artifact/
+  
+    - name: release with notes
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ./artifact/orangepi3_firmware.tgz
