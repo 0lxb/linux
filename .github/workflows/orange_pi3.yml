@@ -66,32 +66,32 @@ jobs:
     - name: prepare artifact
       run: |
           mkdir -p ./artifact/
+          mkdir -p ./artifact/boot
           mkdir -p ./release
-          mkdir -p ./artifact/dtb
-          mkdir -p ./artifact/dtb/allwinner
-          mkdir -p ./artifact/dtb/allwinner/overlay
+          mkdir -p ./artifact/boot/dtb
+          mkdir -p ./artifact/boot/dtb/allwinner
+          mkdir -p ./artifact/boot/dtb/allwinner/overlay
           #cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
-          cp -rvf ./.config ./artifact/config
-          cp -rvf ./vmlinux ./artifact/
-          cp -rvf ./System.map ./artifact/
-          cp -rvf ./arch/arm64/boot/Image ./artifact/
-          #cp -rvf ./arch/arm64/boot/dts/allwinner/* ./artifact/dtb/allwinner
-          cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/dtb/allwinner
-          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.dtbo ./artifact/dtb/allwinner/overlay
-          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.scr ./artifact/dtb/allwinner/overlay
-          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/README* ./artifact/dtb/allwinner/overlay
+          cp -rvf ./.config ./artifact/boot/config
+          cp -rvf ./vmlinux ./artifact/boot/
+          cp -rvf ./System.map ./artifact/boot/
+          cp -rvf ./arch/arm64/boot/Image ./artifact/boot/
+          cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/boot/dtb/allwinner
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.dtbo ./artifact/boot/dtb/allwinner/overlay
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.scr ./artifact/boot/dtb/allwinner/overlay
+          cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/README* ./artifact/boot/dtb/allwinner/overlay
           cp -rvf ./tmp/lib ./artifact/
           cp -rvf ./tmp/include ./artifact/
           rm -rvf $(find ./artifact/lib/modules  -name "source")
           rm -rvf $(find ./artifact/lib/modules  -name "build")
-          tar -czf orangepi3_firmware.tgz ./artifact/*
+          tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include
           mv orangepi3_firmware.tgz ./release/
 
-    - name: deliver firmware
-      uses: actions/upload-artifact@v3
-      with:
-          name: orangepi3_firmware
-          path: ./artifact/
+          #    - name: deliver firmware
+          #      uses: actions/upload-artifact@v3
+          #      with:
+          #          name: orangepi3_firmware
+          #          path: ./artifact/
 
     - name: Generate release tag
       id: tag
