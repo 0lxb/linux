@@ -87,6 +87,9 @@ base-dtb-y := $(foreach m, $(multi-dtb-y), $(firstword $(call suffix-search, $m,
 
 always-y			+= $(dtb-y)
 
+# Overlay targets
+extra-y				+= $(dtbo-y) $(scr-y) $(dtbotxt-y)
+
 # Add subdir path
 
 extra-y		:= $(addprefix $(obj)/,$(extra-y))
@@ -292,6 +295,9 @@ quiet_cmd_gzip = GZIP    $@
 DTC ?= $(objtree)/scripts/dtc/dtc
 DTC_FLAGS += -Wno-interrupt_provider
 
+# Overlay support
+DTC_FLAGS += -@ -Wno-unit_address_format -Wno-simple_bus_reg
+
 # Disable noisy checks by default
 ifeq ($(findstring 1,$(KBUILD_EXTRA_WARN)),)
 DTC_FLAGS += -Wno-unit_address_vs_reg \
@@ -308,7 +314,8 @@ DTC_FLAGS += -Wnode_name_chars_strict \
 	-Winterrupt_provider
 endif
 
-DTC_FLAGS += $(DTC_FLAGS_$(basetarget))
+DTC_FLAGS += $(DTC_FLAGS_$(basetarget)) \
+	-@
 
 # Set -@ if the target is a base DTB that overlay is applied onto
 DTC_FLAGS += $(if $(filter $(patsubst $(obj)/%,%,$@), $(base-dtb-y)), -@)
