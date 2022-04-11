@@ -75,7 +75,7 @@ jobs:
           cp -rvf ./vmlinux ./artifact/
           cp -rvf ./System.map ./artifact/
           cp -rvf ./arch/arm64/boot/Image ./artifact/
-          cp -rvf ./arch/arm64/boot/dts/allwinneri/* ./artifact/dtb/allwinner
+          cp -rvf ./arch/arm64/boot/dts/allwinner/* ./artifact/dtb/allwinner
           #cp -rvf ./arch/arm64/boot/dts/allwinner/*.dtb ./artifact/dtb/allwinner
           #cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.dtbo ./artifact/dtb/allwinner/overlay
           #cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.scr ./artifact/dtb/allwinner/overlay
