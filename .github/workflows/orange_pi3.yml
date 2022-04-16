@@ -60,6 +60,7 @@ jobs:
           ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
           export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 deb-pkg
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
 
@@ -81,6 +82,7 @@ jobs:
           cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/*.scr ./artifact/boot/dtb/allwinner/overlay
           cp -rvf ./arch/arm64/boot/dts/allwinner/overlay/README* ./artifact/boot/dtb/allwinner/overlay
           cp -rvf ./tmp/lib ./artifact/
+          cp -rvf ./../*.deb ./artifact/
           cp -rvf ./tmp/include ./artifact/
           rm -rvf $(find ./artifact/lib/modules  -name "source")
           rm -rvf $(find ./artifact/lib/modules  -name "build")
