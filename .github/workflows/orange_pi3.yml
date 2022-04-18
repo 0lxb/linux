@@ -63,8 +63,8 @@ jobs:
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bindeb-pkg
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/perf
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf DESTDIR=./tmp install
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf DESTDIR=./tmp install
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
 
