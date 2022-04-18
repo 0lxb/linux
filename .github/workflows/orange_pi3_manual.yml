@@ -1,4 +1,4 @@
-name: OrangePi3 Kernel ARM64 latest
+name: OrangePi3 Kernel ARM64 Manual
 
 on:
         #push:
