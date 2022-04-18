@@ -94,10 +94,11 @@ jobs:
           cp -rvf ./../*.deb ./artifact/deb/
           cp -rvf ./tools/perf/perf ./artifact/tools/
           # cp -rvf ./tmp/include ./artifact/
-          rm -rvf $(find ./artifact/lib/modules  -name "source")
-          rm -rvf $(find ./artifact/lib/modules  -name "build")
+          # rm -rvf $(find ./artifact/lib/modules  -name "source")
+          # rm -rvf $(find ./artifact/lib/modules  -name "build")
           # cp -rvf ./tmp/usr ./artifact/tools/
-          tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/deb ./artifact/tools
+          # tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/deb ./artifact/tools
+          tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/deb ./artifact/tools
           mv orangepi3_firmware.tgz ./release/
 
           #    - name: deliver firmware
