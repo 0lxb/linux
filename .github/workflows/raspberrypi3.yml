@@ -1,0 +1,116 @@
+name: RaspberryPi3 Kernel ARM64 latest
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    name: build linux master
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: cleanup ubuntu server
+      env:
+          DEBIAN_FRONTEND: noninteractive
+      run: |
+          sudo sed -i "s/\# deb-src/deb-src/g" /etc/apt/sources.list
+          df -h
+          echo "Removing docker images"
+          docker rmi `docker images -q`
+          df -h
+          echo "Removing large directories"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          echo "Listing 100 largest packages"
+          dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -n | tail -n 100
+          df -h
+          echo "Removing large packages"
+          sudo apt-get remove -y azure-cli google-cloud-sdk hhvm google-chrome-stable firefox powershell mono-devel
+          sudo -E apt-get -y purge ghc* zulu* llvm* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* moby* snapd* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -h
+          sudo -E apt-get update
+          sudo -E apt-get build-dep -y linux
+          sudo -E apt-get install -y crossbuild-essential-arm64 wget
+          sudo -E apt-get install binutils-dev
+          sudo -E apt-get install libreadline-dev
+          sudo -E apt-get install libelf-dev
+          sudo wget https://developer.arm.com/-/media/Files/downloads/gnu/11.2-2022.02/binrel/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu.tar.xz
+          sudo tar -xf gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu.tar.xz -C /opt/
+          ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
+          export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
+          echo "Print env"
+          env
+          df -h
+    - name: checkout
+      uses: actions/checkout@v3
+      with:
+          ref: master
+
+    - name: make defconfig
+      run: |
+          ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
+          export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bcm2711_defconfig
+
+    - name: make all
+      run: |
+          mkdir ./tmp
+          ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
+          export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bindeb-pkg
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 Image modules dtbs
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/perf
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf DESTDIR=./tmp install
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
+
+    - name: prepare artifact
+      run: |
+          mkdir -p ./release
+          mkdir -p ./artifact/
+          mkdir -p ./artifact/deb
+          mkdir -p ./artifact/tools
+          mkdir -p ./artifact/boot
+          mkdir -p ./artifact/boot/overlay
+          # cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
+          cp -rvf ./.config ./artifact/boot/config
+          cp -rvf ./vmlinux ./artifact/boot/
+          cp -rvf ./System.map ./artifact/boot/
+          cp -rvf ./arch/arm64/boot/Image ./artifact/boot/
+          cp -rvf ./arch/arm64/boot/dts/dts/broadcom/*.dtb ./artifact/boot/
+          cp -rvf ./arch/arm64/boot/dts/overlay/*.dtb* ./artifact/boot/overlay
+          cp -rvf ./arch/arm64/boot/dts/overlay/README* ./artifact/boot/overlay
+          cp -rvf ./tmp/lib ./artifact/
+          cp -rvf ./tools/perf/perf ./artifact/tools/
+          cp -rvf ./tmp/include ./artifact/
+          rm -rvf $(find ./artifact/lib/modules  -name "source")
+          rm -rvf $(find ./artifact/lib/modules  -name "build")
+          # cp -rvf ./tmp/usr ./artifact/tools/
+          tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/tools
+          #tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/deb ./artifact/tools
+          mv raspberrypi3_firmware.tgz ./release/
+
+          #    - name: deliver firmware
+          #      uses: actions/upload-artifact@v3
+          #      with:
+          #          name: raspberrypi3_firmware
+          #          path: ./artifact/
+
+    - name: Generate release tag
+      id: tag
+      run: |
+        echo "::set-output name=release_tag::raspberrypi3_$(date +"%Y.%m.%d_%H-%M")"
+
+    - name: release with notes
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        files: ./release/raspberrypi3_firmware.tgz
