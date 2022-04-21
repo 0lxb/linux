@@ -91,7 +91,7 @@ jobs:
           rm -rvf $(find ./artifact/lib/modules  -name "source")
           rm -rvf $(find ./artifact/lib/modules  -name "build")
           # cp -rvf ./tmp/usr ./artifact/tools/
-          tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/tools
+          tar -czf raspberrypi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/tools
           #tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/deb ./artifact/tools
           mv raspberrypi3_firmware.tgz ./release/
 
