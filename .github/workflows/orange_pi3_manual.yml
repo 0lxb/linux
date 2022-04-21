@@ -120,7 +120,7 @@ jobs:
     - name: Generate release tag
       id: tag
       run: |
-        echo "::set-output name=release_tag::CI_$(date +"%Y.%m.%d_%H-%M")"
+        echo "::set-output name=release_tag::orangepi3_debug_$(date +"%Y.%m.%d_%H-%M")"
 
     - name: release with notes
       uses: softprops/action-gh-release@v1
