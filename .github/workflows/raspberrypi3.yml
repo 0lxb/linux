@@ -64,13 +64,13 @@ jobs:
           ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
           export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
-          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bindeb-pkg
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 Image modules dtbs
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bindeb-pkg
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 Image modules dtbs
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/perf
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf DESTDIR=./tmp install
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
 
     - name: prepare artifact
       run: |
@@ -80,19 +80,20 @@ jobs:
           mkdir -p ./artifact/tools
           mkdir -p ./artifact/boot
           # cp -rf $(find ./bin/targets/ -name "*.bin" -type f) ./artifact/
-          cp -rvf ./.config ./artifact/boot/config
-          cp -rvf ./vmlinux ./artifact/boot/
-          cp -rvf ./System.map ./artifact/boot/
-          cp -rvf ./arch/arm64/boot/Image ./artifact/boot/
+          # cp -rvf ./.config ./artifact/boot/config
+          # cp -rvf ./vmlinux ./artifact/boot/
+          # cp -rvf ./System.map ./artifact/boot/
+          # cp -rvf ./arch/arm64/boot/Image ./artifact/boot/
           cp -rvf ./arch/arm64/boot/dts/broadcom/*.dtb ./artifact/boot/
-          cp -rvf ./tmp/lib ./artifact/
+          # cp -rvf ./tmp/lib ./artifact/
+          cp -rvf ./../*.deb ./artifact/deb/
           cp -rvf ./tools/perf/perf ./artifact/tools/
-          cp -rvf ./tmp/include ./artifact/
-          rm -rvf $(find ./artifact/lib/modules  -name "source")
-          rm -rvf $(find ./artifact/lib/modules  -name "build")
+          # cp -rvf ./tmp/include ./artifact/
+          # rm -rvf $(find ./artifact/lib/modules  -name "source")
+          # rm -rvf $(find ./artifact/lib/modules  -name "build")
           # cp -rvf ./tmp/usr ./artifact/tools/
-          tar -czf raspberrypi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/tools
-          #tar -czf orangepi3_firmware.tgz ./artifact/boot ./artifact/deb ./artifact/tools
+          # tar -czf raspberrypi3_firmware.tgz ./artifact/boot ./artifact/lib ./artifact/include ./artifact/tools
+          tar -czf raspberrypi3_firmware.tgz ./artifact/boot ./artifact/deb ./artifact/tools
           mv raspberrypi3_firmware.tgz ./release/
 
           #    - name: deliver firmware
