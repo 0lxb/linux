@@ -66,6 +66,13 @@ jobs:
           scripts/config --enable DEBUG_INFO_BTF_MODULES
           scripts/config --enable MODULE_ALLOW_BTF_MISMATCH
           scripts/config --enable GDB_SCRIPTS
+          scripts/config --enable CONFIG_KASAN
+          scripts/config --enable CONFIG_KASAN_GENERIC
+          scripts/config --enable CONFIG_KASAN_OUTLINE
+          scripts/config --enable CONFIG_KASAN_STACK
+          scripts/config --enable CONFIG_KASAN_VMALLOC
+          scripts/config --module CONFIG_KASAN_KUNIT_TEST
+          scripts/config --module CONFIG_KASAN_MODULE_TEST
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 olddefconfig
 
     - name: make all
