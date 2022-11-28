@@ -84,7 +84,7 @@ jobs:
           # cp -rvf ./vmlinux ./artifact/boot/
           # cp -rvf ./System.map ./artifact/boot/
           # cp -rvf ./arch/arm64/boot/Image ./artifact/boot/
-          cp -rvf ./arch/arm64/boot/dts/broadcom/*.dtb ./artifact/boot/
+          #cp -rvf ./arch/arm64/boot/dts/broadcom/*.dtb ./artifact/boot/
           # cp -rvf ./tmp/lib ./artifact/
           cp -rvf ./../*.deb ./artifact/deb/
           cp -rvf ./tools/perf/perf ./artifact/tools/
