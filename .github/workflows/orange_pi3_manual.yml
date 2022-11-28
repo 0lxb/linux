@@ -83,11 +83,10 @@ jobs:
           ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
           export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 all
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bindeb-pkg
+          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 deb-pkg
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/perf
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install
-          make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64  -C samples/bpf
-          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install
+          # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64  -C samples/bpf
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 tools/bpf DESTDIR=./tmp install
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
