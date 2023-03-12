@@ -7911,6 +7911,7 @@ F:	include/trace/events/fs_dax.h
 
 FILESYSTEMS (VFS and infrastructure)
 M:	Alexander Viro <viro@zeniv.linux.org.uk>
+M:	Christian Brauner <brauner@kernel.org>
 L:	linux-fsdevel@vger.kernel.org
 S:	Maintained
 F:	fs/*
@@ -16390,6 +16391,7 @@ R:	Alexander Shishkin <alexander.shishkin@linux.intel.com>
 R:	Jiri Olsa <jolsa@kernel.org>
 R:	Namhyung Kim <namhyung@kernel.org>
 R:	Ian Rogers <irogers@google.com>
+R:	Adrian Hunter <adrian.hunter@intel.com>
 L:	linux-perf-users@vger.kernel.org
 L:	linux-kernel@vger.kernel.org
 S:	Supported
