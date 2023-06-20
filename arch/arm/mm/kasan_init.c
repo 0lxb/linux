@@ -11,9 +11,7 @@
 #include <linux/kasan.h>
 #include <linux/kernel.h>
 #include <linux/memblock.h>
-#include <linux/sched/task.h>
 #include <linux/start_kernel.h>
-#include <linux/pgtable.h>
 #include <asm/cputype.h>
 #include <asm/highmem.h>
 #include <asm/mach/map.h>
@@ -31,8 +29,7 @@ pmd_t tmp_pmd_table[PTRS_PER_PMD] __page_aligned_bss;
 
 static __init void *kasan_alloc_block(size_t size)
 {
-	return memblock_alloc_try_nid(size, size, __pa(MAX_DMA_ADDRESS),
-				      MEMBLOCK_ALLOC_KASAN, NUMA_NO_NODE);
+	return memblock_alloc_try_nid(size, size, NUMA_NO_NODE);
 }
 
 static void __init kasan_pte_populate(pmd_t *pmdp, unsigned long addr,
@@ -64,11 +61,11 @@ static void __init kasan_pte_populate(pmd_t *pmdp, unsigned long addr,
 			/*
 			 * The early shadow memory is mapping all KASan
 			 * operations to one and the same page in memory,
-			 * "kasan_early_shadow_page" so that the instrumentation
+			 * "kasan_zero_page" so that the instrumentation
 			 * will work on a scratch area until we can set up the
 			 * proper KASan shadow memory.
 			 */
-			entry = pfn_pte(virt_to_pfn(kasan_early_shadow_page),
+			entry = pfn_pte(virt_to_pfn(kasan_zero_page),
 					__pgprot(_L_PTE_DEFAULT | L_PTE_DIRTY | L_PTE_XN));
 		} else {
 			/*
@@ -98,7 +95,7 @@ static void __init kasan_pmd_populate(pud_t *pudp, unsigned long addr,
 			 * used by the PTEs for this address if it isn't already
 			 * allocated.
 			 */
-			void *p = early ? kasan_early_shadow_pte :
+			void *p = early ? kasan_zero_pte :
 				kasan_alloc_block(PAGE_SIZE);
 
 			if (!p) {
@@ -236,10 +233,10 @@ void __init kasan_init(void)
 
 	clear_pgds(KASAN_SHADOW_START, KASAN_SHADOW_END);
 
-	kasan_populate_early_shadow(kasan_mem_to_shadow((void *)VMALLOC_START),
+	kasan_populate_zero_shadow(kasan_mem_to_shadow((void *)VMALLOC_START),
 				    kasan_mem_to_shadow((void *)-1UL) + 1);
 
-	for_each_mem_range(i, &pa_start, &pa_end) {
+	for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE, MEMBLOCK_NONE, &pa_start, &pa_end, NULL) {
 		void *start = __va(pa_start);
 		void *end = __va(pa_end);
 
@@ -272,20 +269,20 @@ void __init kasan_init(void)
 	create_mapping((void *)MODULES_VADDR, (void *)(PKMAP_BASE + PMD_SIZE));
 
 	/*
-	 * KAsan may reuse the contents of kasan_early_shadow_pte directly, so
+	 * KAsan may reuse the contents of kasan_zero_pte directly, so
 	 * we should make sure that it maps the zero page read-only.
 	 */
 	for (i = 0; i < PTRS_PER_PTE; i++)
 		set_pte_at(&init_mm, KASAN_SHADOW_START + i*PAGE_SIZE,
-			   &kasan_early_shadow_pte[i],
-			   pfn_pte(virt_to_pfn(kasan_early_shadow_page),
+			   &kasan_zero_pte[i],
+			   pfn_pte(virt_to_pfn(kasan_zero_page),
 				__pgprot(pgprot_val(PAGE_KERNEL)
 					 | L_PTE_RDONLY)));
 
 	cpu_switch_mm(swapper_pg_dir, &init_mm);
 	local_flush_tlb_all();
 
-	memset(kasan_early_shadow_page, 0, PAGE_SIZE);
+	memset(kasan_zero_page, 0, PAGE_SIZE);
 	pr_info("Kernel address sanitizer initialized\n");
 	init_task.kasan_depth = 0;
 }

@@ -12,6 +12,7 @@ struct task_struct;
 #ifdef CONFIG_KASAN
 
 #define KASAN_SHADOW_SCALE_SHIFT 3
+#define KASAN_SHADOW_INIT 0
 
 #include <asm/kasan.h>
 #include <asm/pgtable.h>

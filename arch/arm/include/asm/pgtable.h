@@ -19,7 +19,7 @@
 #include <asm/pgtable-nommu.h>
 
 #else
-
+#define __ARCH_USE_5LEVEL_HACK 1
 #include <asm-generic/pgtable-nopud.h>
 #include <asm/memory.h>
 #include <asm/pgtable-hwdef.h>
