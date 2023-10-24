@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-20.04
 
     steps:
-    - name: Free Disk Space (Ubuntu)
+      - name: Free Disk Space (Ubuntu)
         uses: 0lxb/free-disk-space@main
         with:
           # this might remove tools that are actually needed,
@@ -29,10 +29,10 @@ jobs:
           docker-images: true
           swap-storage: true
 
-    - name: update ubuntu server
-      env:
+      - name: update ubuntu server
+        env:
           DEBIAN_FRONTEND: noninteractive
-      run: |
+        run: |
           sudo sed -i "s/\# deb-src/deb-src/g" /etc/apt/sources.list
           df -h
           sudo -E apt-get update
