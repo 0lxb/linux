@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-20.04
 
     steps:
-    - name: Free Disk Space (Ubuntu)
+      - name: Free Disk Space (Ubuntu)
         uses: 0lxb/free-disk-space@main
         with:
           # this might remove tools that are actually needed,
@@ -28,10 +28,10 @@ jobs:
           docker-images: true
           swap-storage: true
 
-    - name: update ubuntu server
-      env:
+      - name: update ubuntu server
+        env:
           DEBIAN_FRONTEND: noninteractive
-      run: |
+        run: |
           sudo sed -i "s/\# deb-src/deb-src/g" /etc/apt/sources.list
           df -h
           sudo -E apt-get update
@@ -47,19 +47,20 @@ jobs:
           echo "Print env"
           env
           df -h
-    - name: checkout
-      uses: actions/checkout@v3
-      with:
+  
+      - name: checkout
+        uses: actions/checkout@v3
+        with:
           ref: master
 
-    - name: make defconfig
-      run: |
+      - name: make defconfig
+        run: |
           ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
           export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
           make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 bcm2711_defconfig
 
-    - name: make all
-      run: |
+      - name: make all
+        run: |
           mkdir ./tmp
           ls -lahtr /opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin
           export PATH=/opt/gcc-arm-11.2-2022.02-x86_64-aarch64-none-linux-gnu/bin:$PATH
@@ -72,8 +73,8 @@ jobs:
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 modules_install INSTALL_MOD_PATH=./tmp
           # make CROSS_COMPILE=aarch64-none-linux-gnu- ARCH=arm64 headers_install INSTALL_HDR_PATH=./tmp
 
-    - name: prepare artifact
-      run: |
+      - name: prepare artifact
+        run: |
           mkdir -p ./release
           mkdir -p ./artifact/
           mkdir -p ./artifact/deb
@@ -102,13 +103,13 @@ jobs:
           #          name: raspberrypi3_firmware
           #          path: ./artifact/
 
-    - name: Generate release tag
-      id: tag
-      run: |
-        echo "::set-output name=release_tag::raspberrypi3_$(date +"%Y.%m.%d_%H-%M")"
+      - name: Generate release tag
+        id: tag
+        run: |
+         echo "::set-output name=release_tag::raspberrypi3_$(date +"%Y.%m.%d_%H-%M")"
 
-    - name: release with notes
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        files: ./release/raspberrypi3_firmware.tgz
+      - name: release with notes
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          files: ./release/raspberrypi3_firmware.tgz
