@@ -13,27 +13,27 @@ jobs:
     runs-on: ubuntu-20.04
 
     steps:
-    - name: cleanup ubuntu server
+    - name: Free Disk Space (Ubuntu)
+        uses: 0lxb/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6 GB
+          tool-cache: true
+
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+    - name: update ubuntu server
       env:
           DEBIAN_FRONTEND: noninteractive
       run: |
           sudo sed -i "s/\# deb-src/deb-src/g" /etc/apt/sources.list
-          df -h
-          echo "Removing docker images"
-          docker rmi `docker images -q`
-          df -h
-          echo "Removing large directories"
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          echo "Listing 100 largest packages"
-          dpkg-query -Wf '${Installed-Size}\t${Package}\n' | sort -n | tail -n 100
-          df -h
-          echo "Removing large packages"
-          sudo apt-get remove -y azure-cli google-cloud-sdk hhvm google-chrome-stable firefox powershell mono-devel
-          sudo -E apt-get -y purge ghc* zulu* llvm* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* moby* snapd* || true
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
           df -h
           sudo -E apt-get update
           sudo -E apt-get build-dep -y linux
