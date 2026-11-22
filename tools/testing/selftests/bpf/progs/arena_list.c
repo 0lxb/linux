@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2024 Meta Platforms, Inc. and affiliates. */
+#define BPF_NO_KFUNC_PROTOTYPES
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -29,27 +30,31 @@ struct arena_list_head __arena *list_head;
 int list_sum;
 int cnt;
 bool skip = false;
+const volatile bool nonsleepable = false;
 
-#ifdef __BPF_FEATURE_ARENA_CAST
+#ifdef __BPF_FEATURE_ADDR_SPACE_CAST
 long __arena arena_sum;
 int __arena test_val = 1;
 struct arena_list_head __arena global_head;
 #else
-long arena_sum SEC(".arena.1");
-int test_val SEC(".arena.1");
+long arena_sum SEC(".addr_space.1");
+int test_val SEC(".addr_space.1");
 #endif
 
 int zero;
 
+void bpf_rcu_read_lock(void) __ksym;
+void bpf_rcu_read_unlock(void) __ksym;
+
 SEC("syscall")
 int arena_list_add(void *ctx)
 {
-#ifdef __BPF_FEATURE_ARENA_CAST
+#ifdef __BPF_FEATURE_ADDR_SPACE_CAST
 	__u64 i;
 
 	list_head = &global_head;
 
-	for (i = zero; i < cnt; cond_break, i++) {
+	for (i = zero; i < cnt && can_loop; i++) {
 		struct elem __arena *n = bpf_alloc(sizeof(*n));
 
 		test_val++;
@@ -66,9 +71,13 @@ int arena_list_add(void *ctx)
 SEC("syscall")
 int arena_list_del(void *ctx)
 {
-#ifdef __BPF_FEATURE_ARENA_CAST
+#ifdef __BPF_FEATURE_ADDR_SPACE_CAST
 	struct elem __arena *n;
 	int sum = 0;
+
+	/* Take rcu_read_lock to test non-sleepable context */
+	if (nonsleepable)
+		bpf_rcu_read_lock();
 
 	arena_sum = 0;
 	list_for_each_entry(n, list_head, node) {
@@ -78,6 +87,9 @@ int arena_list_del(void *ctx)
 		bpf_free(n);
 	}
 	list_sum = sum;
+
+	if (nonsleepable)
+		bpf_rcu_read_unlock();
 #else
 	skip = true;
 #endif

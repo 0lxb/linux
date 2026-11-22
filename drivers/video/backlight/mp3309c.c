@@ -15,7 +15,6 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/regmap.h>
@@ -97,15 +96,10 @@ static int mp3309c_enable_device(struct mp3309c_chip *chip)
 
 	/*
 	 * I2C register #1 - Set working mode:
-	 *  - set one of the two dimming mode:
-	 *    - PWM dimming using an external PWM dimming signal
-	 *    - analog dimming using I2C commands
 	 *  - enable/disable synchronous mode
 	 *  - set overvoltage protection (OVP)
 	 */
 	reg_val = 0x00;
-	if (chip->pdata->dimming_mode == DIMMING_PWM)
-		reg_val |= REG_I2C_1_DIMS;
 	if (chip->pdata->sync_mode)
 		reg_val |= REG_I2C_1_SYNC;
 	reg_val |= chip->pdata->over_voltage_protection;
@@ -205,8 +199,9 @@ static int mp3309c_parse_fwnode(struct mp3309c_chip *chip,
 				struct mp3309c_platform_data *pdata)
 {
 	int ret, i;
-	unsigned int num_levels, tmp_value;
+	unsigned int tmp_value;
 	struct device *dev = chip->dev;
+	int num_levels;
 
 	if (!dev_fwnode(dev))
 		return dev_err_probe(dev, -ENODEV, "failed to get firmware node\n");
@@ -226,7 +221,6 @@ static int mp3309c_parse_fwnode(struct mp3309c_chip *chip,
 		if (IS_ERR(chip->pwmd))
 			return dev_err_probe(dev, PTR_ERR(chip->pwmd), "error getting pwm data\n");
 		pdata->dimming_mode = DIMMING_PWM;
-		pwm_apply_args(chip->pwmd);
 	}
 
 	/*
@@ -262,7 +256,7 @@ static int mp3309c_parse_fwnode(struct mp3309c_chip *chip,
 	}
 
 	/* Fill brightness levels array */
-	pdata->levels = devm_kcalloc(dev, num_levels, sizeof(*pdata->levels), GFP_KERNEL);
+	pdata->levels = devm_kzalloc_objs(dev, *pdata->levels, num_levels);
 	if (!pdata->levels)
 		return -ENOMEM;
 	if (device_property_present(dev, "brightness-levels")) {
@@ -332,7 +326,7 @@ static int mp3309c_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return dev_err_probe(dev, -EOPNOTSUPP, "failed to check i2c functionality\n");
 
-	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -346,7 +340,7 @@ static int mp3309c_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, chip);
 
 	if (!pdata) {
-		pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+		pdata = devm_kzalloc_obj(dev, *pdata);
 		if (!pdata)
 			return -ENOMEM;
 
@@ -357,13 +351,13 @@ static int mp3309c_probe(struct i2c_client *client)
 	chip->pdata = pdata;
 
 	/* Backlight properties */
-	memset(&props, 0, sizeof(struct backlight_properties));
-	props.brightness = pdata->default_brightness;
-	props.max_brightness = pdata->max_brightness;
-	props.scale = BACKLIGHT_SCALE_LINEAR;
-	props.type = BACKLIGHT_RAW;
-	props.power = FB_BLANK_UNBLANK;
-	props.fb_blank = FB_BLANK_UNBLANK;
+	props = (typeof(props)){
+		.brightness = pdata->default_brightness,
+		.max_brightness = pdata->max_brightness,
+		.scale = BACKLIGHT_SCALE_LINEAR,
+		.type = BACKLIGHT_RAW,
+		.power = BACKLIGHT_POWER_ON,
+	};
 	chip->bl = devm_backlight_device_register(dev, "mp3309c", dev, chip,
 						  &mp3309c_bl_ops, &props);
 	if (IS_ERR(chip->bl))
@@ -393,7 +387,7 @@ static void mp3309c_remove(struct i2c_client *client)
 	struct mp3309c_chip *chip = i2c_get_clientdata(client);
 	struct backlight_device *bl = chip->bl;
 
-	bl->props.power = FB_BLANK_POWERDOWN;
+	bl->props.power = BACKLIGHT_POWER_OFF;
 	bl->props.brightness = 0;
 	backlight_update_status(chip->bl);
 }
@@ -405,7 +399,7 @@ static const struct of_device_id mp3309c_match_table[] = {
 MODULE_DEVICE_TABLE(of, mp3309c_match_table);
 
 static const struct i2c_device_id mp3309c_id[] = {
-	{ "mp3309c", 0 },
+	{ .name = "mp3309c" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mp3309c_id);

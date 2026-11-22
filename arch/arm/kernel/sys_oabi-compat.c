@@ -235,23 +235,23 @@ asmlinkage long sys_oabi_fcntl64(unsigned int fd, unsigned int cmd,
 				 unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
-	struct fd f = fdget_raw(fd);
+	CLASS(fd_raw, f)(fd);
 	struct flock64 flock;
-	long err = -EBADF;
+	long err;
 
-	if (!f.file)
-		goto out;
+	if (fd_empty(f))
+		return -EBADF;
 
 	switch (cmd) {
 	case F_GETLK64:
 	case F_OFD_GETLK:
-		err = security_file_fcntl(f.file, cmd, arg);
+		err = security_file_fcntl(fd_file(f), cmd, arg);
 		if (err)
 			break;
 		err = get_oabi_flock(&flock, argp);
 		if (err)
 			break;
-		err = fcntl_getlk64(f.file, cmd, &flock);
+		err = fcntl_getlk64(fd_file(f), cmd, &flock);
 		if (!err)
 		       err = put_oabi_flock(&flock, argp);
 		break;
@@ -259,20 +259,18 @@ asmlinkage long sys_oabi_fcntl64(unsigned int fd, unsigned int cmd,
 	case F_SETLKW64:
 	case F_OFD_SETLK:
 	case F_OFD_SETLKW:
-		err = security_file_fcntl(f.file, cmd, arg);
+		err = security_file_fcntl(fd_file(f), cmd, arg);
 		if (err)
 			break;
 		err = get_oabi_flock(&flock, argp);
 		if (err)
 			break;
-		err = fcntl_setlk64(fd, f.file, cmd, &flock);
+		err = fcntl_setlk64(fd, fd_file(f), cmd, &flock);
 		break;
 	default:
 		err = sys_fcntl64(fd, cmd, arg);
 		break;
 	}
-	fdput(f);
-out:
 	return err;
 }
 
@@ -312,18 +310,21 @@ epoll_put_uevent(__poll_t revents, __u64 data,
 	if (in_oabi_syscall()) {
 		struct oabi_epoll_event __user *oevent = (void __user *)uevent;
 
-		if (__put_user(revents, &oevent->events) ||
-		    __put_user(data, &oevent->data))
-			return NULL;
-
+		scoped_user_write_access(oevent, efault) {
+			unsafe_put_user(revents, &oevent->events, efault);
+			unsafe_put_user(data, &oevent->data, efault);
+		}
 		return (void __user *)(oevent+1);
 	}
 
-	if (__put_user(revents, &uevent->events) ||
-	    __put_user(data, &uevent->data))
-		return NULL;
-
+	scoped_user_write_access(uevent, efault) {
+		unsafe_put_user(revents, &uevent->events, efault);
+		unsafe_put_user(data, &uevent->data, efault);
+	}
 	return uevent+1;
+
+efault:
+	return NULL;
 }
 
 struct oabi_sembuf {
@@ -351,7 +352,7 @@ asmlinkage long sys_oabi_semtimedop(int semid,
 		return -E2BIG;
 	if (nsops < 1 || nsops > SEMOPM)
 		return -EINVAL;
-	sops = kvmalloc_array(nsops, sizeof(*sops), GFP_KERNEL);
+	sops = kvmalloc_objs(*sops, nsops);
 	if (!sops)
 		return -ENOMEM;
 	err = 0;

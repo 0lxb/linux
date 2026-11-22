@@ -4,13 +4,15 @@
  * A simple wrapper around refcount. An allocated sched_core_cookie's
  * address is used to compute the cookie of the task.
  */
+#include "sched.h"
+
 struct sched_core_cookie {
 	refcount_t refcnt;
 };
 
 static unsigned long sched_core_alloc_cookie(void)
 {
-	struct sched_core_cookie *ck = kmalloc(sizeof(*ck), GFP_KERNEL);
+	struct sched_core_cookie *ck = kmalloc_obj(*ck);
 	if (!ck)
 		return 0;
 
@@ -65,7 +67,7 @@ static unsigned long sched_core_update_cookie(struct task_struct *p,
 	 * a cookie until after we've removed it, we must have core scheduling
 	 * enabled here.
 	 */
-	SCHED_WARN_ON((p->core_cookie || cookie) && !sched_core_enabled(rq));
+	WARN_ON_ONCE((p->core_cookie || cookie) && !sched_core_enabled(rq));
 
 	if (sched_core_enqueued(p))
 		sched_core_dequeue(rq, p, DEQUEUE_SAVE);
@@ -134,7 +136,7 @@ int sched_core_share_pid(unsigned int cmd, pid_t pid, enum pid_type type,
 	struct pid *grp;
 	int err = 0;
 
-	if (!static_branch_likely(&sched_smt_present))
+	if (!sched_smt_active())
 		return -ENODEV;
 
 	BUILD_BUG_ON(PR_SCHED_CORE_SCOPE_THREAD != PIDTYPE_PID);
@@ -239,7 +241,6 @@ out:
 /* REQUIRES: rq->core's clock recently updated. */
 void __sched_core_account_forceidle(struct rq *rq)
 {
-	const struct cpumask *smt_mask = cpu_smt_mask(cpu_of(rq));
 	u64 delta, now = rq_clock(rq->core);
 	struct rq *rq_i;
 	struct task_struct *p;
@@ -271,7 +272,7 @@ void __sched_core_account_forceidle(struct rq *rq)
 		delta = div_u64(delta, rq->core->core_forceidle_occupation);
 	}
 
-	for_each_cpu(i, smt_mask) {
+	for_each_core_cpu(i, rq) {
 		rq_i = cpu_rq(i);
 		p = rq_i->core_pick ?: rq_i->curr;
 
@@ -279,7 +280,7 @@ void __sched_core_account_forceidle(struct rq *rq)
 			continue;
 
 		/*
-		 * Note: this will account forceidle to the current cpu, even
+		 * Note: this will account forceidle to the current CPU, even
 		 * if it comes from our SMT sibling.
 		 */
 		__account_forceidle_time(p, delta);

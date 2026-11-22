@@ -230,8 +230,7 @@ struct qedf_cmd_mgr *qedf_cmd_mgr_alloc(struct qedf_ctx *qedf)
 		}
 
 		/* Allocate task parameters to pass to f/w init funcions */
-		io_req->task_params = kzalloc(sizeof(*io_req->task_params),
-					      GFP_KERNEL);
+		io_req->task_params = kzalloc_obj(*io_req->task_params);
 		if (!io_req->task_params) {
 			QEDF_ERR(&(qedf->dbg_ctx),
 				 "Failed to allocate task_params for xid=0x%x\n",
@@ -243,8 +242,7 @@ struct qedf_cmd_mgr *qedf_cmd_mgr_alloc(struct qedf_ctx *qedf)
 		 * Allocate scatter/gather list info to pass to f/w init
 		 * functions.
 		 */
-		io_req->sgl_task_params = kzalloc(
-		    sizeof(struct scsi_sgl_task_params), GFP_KERNEL);
+		io_req->sgl_task_params = kzalloc_obj(struct scsi_sgl_task_params);
 		if (!io_req->sgl_task_params) {
 			QEDF_ERR(&(qedf->dbg_ctx),
 				 "Failed to allocate sgl_task_params for xid=0x%x\n",
@@ -254,8 +252,7 @@ struct qedf_cmd_mgr *qedf_cmd_mgr_alloc(struct qedf_ctx *qedf)
 	}
 
 	/* Allocate pool of io_bdts - one for each qedf_ioreq */
-	cmgr->io_bdt_pool = kmalloc_array(num_ios, sizeof(struct io_bdt *),
-	    GFP_KERNEL);
+	cmgr->io_bdt_pool = kmalloc_objs(struct io_bdt *, num_ios);
 
 	if (!cmgr->io_bdt_pool) {
 		QEDF_WARN(&(qedf->dbg_ctx), "Failed to alloc io_bdt_pool.\n");
@@ -263,8 +260,7 @@ struct qedf_cmd_mgr *qedf_cmd_mgr_alloc(struct qedf_ctx *qedf)
 	}
 
 	for (i = 0; i < num_ios; i++) {
-		cmgr->io_bdt_pool[i] = kmalloc(sizeof(struct io_bdt),
-		    GFP_KERNEL);
+		cmgr->io_bdt_pool[i] = kmalloc_obj(struct io_bdt);
 		if (!cmgr->io_bdt_pool[i]) {
 			QEDF_WARN(&(qedf->dbg_ctx),
 				  "Failed to alloc io_bdt_pool[%d].\n", i);
@@ -310,7 +306,7 @@ struct qedf_ioreq *qedf_alloc_cmd(struct qedf_rport *fcport, u8 cmd_type)
 
 	if (!free_sqes) {
 		QEDF_INFO(&(qedf->dbg_ctx), QEDF_LOG_IO,
-		    "Returning NULL, free_sqes=%d.\n ",
+		    "Returning NULL, free_sqes=%d.\n",
 		    free_sqes);
 		goto out_failed;
 	}
@@ -930,8 +926,8 @@ int qedf_post_io_req(struct qedf_rport *fcport, struct qedf_ioreq *io_req)
 	return false;
 }
 
-int
-qedf_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *sc_cmd)
+enum scsi_qc_status qedf_queuecommand(struct Scsi_Host *host,
+				      struct scsi_cmnd *sc_cmd)
 {
 	struct fc_lport *lport = shost_priv(host);
 	struct qedf_ctx *qedf = lport_priv(lport);
@@ -2324,9 +2320,6 @@ static int qedf_execute_tmf(struct qedf_rport *fcport, u64 tm_lun,
 	io_req->fcport = fcport;
 	io_req->cmd_type = QEDF_TASK_MGMT_CMD;
 
-	/* Record which cpu this request is associated with */
-	io_req->cpu = smp_processor_id();
-
 	/* Set TM flags */
 	io_req->io_req_flags = QEDF_READ;
 	io_req->data_xfer_len = 0;
@@ -2348,6 +2341,9 @@ static int qedf_execute_tmf(struct qedf_rport *fcport, u64 tm_lun,
 	init_completion(&io_req->tm_done);
 
 	spin_lock_irqsave(&fcport->rport_lock, flags);
+
+	/* Record which cpu this request is associated with */
+	io_req->cpu = smp_processor_id();
 
 	sqe_idx = qedf_get_sqe_idx(fcport);
 	sqe = &fcport->sq[sqe_idx];

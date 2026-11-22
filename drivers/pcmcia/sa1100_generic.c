@@ -141,7 +141,7 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *pdev)
 	if (pdev->id == -1)
 		return sa11x0_drv_pcmcia_legacy_probe(pdev);
 
-	skt = devm_kzalloc(dev, sizeof(*skt), GFP_KERNEL);
+	skt = devm_kzalloc_obj(dev, *skt);
 	if (!skt)
 		return -ENOMEM;
 
@@ -177,7 +177,7 @@ static struct platform_driver sa11x0_pcmcia_driver = {
 		.name		= "sa11x0-pcmcia",
 	},
 	.probe		= sa11x0_drv_pcmcia_probe,
-	.remove_new	= sa11x0_drv_pcmcia_remove,
+	.remove		= sa11x0_drv_pcmcia_remove,
 };
 
 /* sa11x0_pcmcia_init()

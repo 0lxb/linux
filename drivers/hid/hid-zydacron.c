@@ -24,7 +24,7 @@ struct zc_device {
 * Zydacron remote control has an invalid HID report descriptor,
 * that needs fixing before we can parse it.
 */
-static __u8 *zc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+static const __u8 *zc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 	unsigned int *rsize)
 {
 	if (*rsize >= 253 &&
@@ -114,7 +114,10 @@ static int zc_raw_event(struct hid_device *hdev, struct hid_report *report,
 	unsigned key;
 	unsigned short index;
 
-	if (report->id == data[0]) {
+	if (size < 2)
+		return 0;
+
+	if (report->id == data[0] && (hdev->claimed & HID_CLAIMED_INPUT)) {
 
 		/* break keys */
 		for (index = 0; index < 4; index++) {
@@ -166,7 +169,7 @@ static int zc_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	int ret;
 	struct zc_device *zc;
 
-	zc = devm_kzalloc(&hdev->dev, sizeof(*zc), GFP_KERNEL);
+	zc = devm_kzalloc_obj(&hdev->dev, *zc);
 	if (zc == NULL) {
 		hid_err(hdev, "can't alloc descriptor\n");
 		return -ENOMEM;
@@ -205,4 +208,5 @@ static struct hid_driver zc_driver = {
 };
 module_hid_driver(zc_driver);
 
+MODULE_DESCRIPTION("HID driver for zydacron remote control");
 MODULE_LICENSE("GPL");

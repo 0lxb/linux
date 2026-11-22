@@ -97,7 +97,7 @@ static int da903x_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	led = devm_kzalloc(&pdev->dev, sizeof(struct da903x_led), GFP_KERNEL);
+	led = devm_kzalloc_obj(&pdev->dev, struct da903x_led);
 	if (!led)
 		return -ENOMEM;
 
@@ -133,7 +133,7 @@ static struct platform_driver da903x_led_driver = {
 		.name	= "da903x-led",
 	},
 	.probe		= da903x_led_probe,
-	.remove_new	= da903x_led_remove,
+	.remove		= da903x_led_remove,
 };
 
 module_platform_driver(da903x_led_driver);

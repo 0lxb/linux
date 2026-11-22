@@ -154,9 +154,9 @@ static ssize_t master_attr_show(struct device *dev,
 	spin_unlock(&gth->gth_lock);
 
 	if (port >= 0)
-		count = snprintf(buf, PAGE_SIZE, "%x\n", port);
+		count = sysfs_emit(buf, "%x\n", port);
 	else
-		count = snprintf(buf, PAGE_SIZE, "disabled\n");
+		count = sysfs_emit(buf, "disabled\n");
 
 	return count;
 }
@@ -332,8 +332,8 @@ static ssize_t output_attr_show(struct device *dev,
 	pm_runtime_get_sync(dev);
 
 	spin_lock(&gth->gth_lock);
-	count = snprintf(buf, PAGE_SIZE, "%x\n",
-			 gth_output_parm_get(gth, oa->port, oa->parm));
+	count = sysfs_emit(buf, "%x\n",
+			   gth_output_parm_get(gth, oa->port, oa->parm));
 	spin_unlock(&gth->gth_lock);
 
 	pm_runtime_put(dev);
@@ -374,9 +374,8 @@ static int intel_th_master_attributes(struct gth_device *gth)
 	if (!attrs)
 		return -ENOMEM;
 
-	master_attrs = devm_kcalloc(gth->dev, nattrs,
-				    sizeof(struct master_attribute),
-				    GFP_KERNEL);
+	master_attrs = devm_kzalloc_objs(gth->dev, struct master_attribute,
+					 nattrs);
 	if (!master_attrs)
 		return -ENOMEM;
 
@@ -418,9 +417,7 @@ static int intel_th_output_attributes(struct gth_device *gth)
 	if (!attrs)
 		return -ENOMEM;
 
-	out_attrs = devm_kcalloc(gth->dev, nattrs,
-				 sizeof(struct output_attribute),
-				 GFP_KERNEL);
+	out_attrs = devm_kzalloc_objs(gth->dev, struct output_attribute, nattrs);
 	if (!out_attrs)
 		return -ENOMEM;
 
@@ -758,7 +755,7 @@ static int intel_th_gth_probe(struct intel_th_device *thdev)
 	if (!base)
 		return -ENOMEM;
 
-	gth = devm_kzalloc(dev, sizeof(*gth), GFP_KERNEL);
+	gth = devm_kzalloc_obj(dev, *gth);
 	if (!gth)
 		return -ENOMEM;
 

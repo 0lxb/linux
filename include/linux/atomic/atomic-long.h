@@ -1449,7 +1449,7 @@ raw_atomic_long_cmpxchg_relaxed(atomic_long_t *v, long old, long new)
  *
  * Safe to use in noinstr code; prefer atomic_long_try_cmpxchg() elsewhere.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 raw_atomic_long_try_cmpxchg(atomic_long_t *v, long *old, long new)
@@ -1473,7 +1473,7 @@ raw_atomic_long_try_cmpxchg(atomic_long_t *v, long *old, long new)
  *
  * Safe to use in noinstr code; prefer atomic_long_try_cmpxchg_acquire() elsewhere.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 raw_atomic_long_try_cmpxchg_acquire(atomic_long_t *v, long *old, long new)
@@ -1497,7 +1497,7 @@ raw_atomic_long_try_cmpxchg_acquire(atomic_long_t *v, long *old, long new)
  *
  * Safe to use in noinstr code; prefer atomic_long_try_cmpxchg_release() elsewhere.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 raw_atomic_long_try_cmpxchg_release(atomic_long_t *v, long *old, long new)
@@ -1521,7 +1521,7 @@ raw_atomic_long_try_cmpxchg_release(atomic_long_t *v, long *old, long new)
  *
  * Safe to use in noinstr code; prefer atomic_long_try_cmpxchg_relaxed() elsewhere.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 raw_atomic_long_try_cmpxchg_relaxed(atomic_long_t *v, long *old, long new)
@@ -1535,7 +1535,7 @@ raw_atomic_long_try_cmpxchg_relaxed(atomic_long_t *v, long *old, long new)
 
 /**
  * raw_atomic_long_sub_and_test() - atomic subtract and test if zero with full ordering
- * @i: long value to add
+ * @i: long value to subtract
  * @v: pointer to atomic_long_t
  *
  * Atomically updates @v to (@v - @i) with full ordering.
@@ -1809,4 +1809,4 @@ raw_atomic_long_dec_if_positive(atomic_long_t *v)
 }
 
 #endif /* _LINUX_ATOMIC_LONG_H */
-// 1c4a26fc77f345342953770ebe3c4d08e7ce2f9a
+// 4b882bf19018602c10816c52f8b4ae280adc887b

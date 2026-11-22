@@ -49,11 +49,11 @@ static int al_pcie_init(struct pci_config_window *cfg)
 	struct resource *res;
 	int ret;
 
-	al_pcie = devm_kzalloc(dev, sizeof(*al_pcie), GFP_KERNEL);
+	al_pcie = devm_kzalloc_obj(dev, *al_pcie);
 	if (!al_pcie)
 		return -ENOMEM;
 
-	res = devm_kzalloc(dev, sizeof(*res), GFP_KERNEL);
+	res = devm_kzalloc_obj(dev, *res);
 	if (!res)
 		return -ENOMEM;
 
@@ -242,18 +242,23 @@ static struct pci_ops al_child_pci_ops = {
 	.write = pci_generic_config_write,
 };
 
-static void al_pcie_config_prepare(struct al_pcie *pcie)
+static int al_pcie_config_prepare(struct al_pcie *pcie)
 {
 	struct al_pcie_target_bus_cfg *target_bus_cfg;
 	struct dw_pcie_rp *pp = &pcie->pci->pp;
 	unsigned int ecam_bus_mask;
+	struct resource_entry *ft;
 	u32 cfg_control_offset;
+	struct resource *bus;
 	u8 subordinate_bus;
 	u8 secondary_bus;
 	u32 cfg_control;
-	u32 reg;
-	struct resource *bus = resource_list_first_type(&pp->bridge->windows, IORESOURCE_BUS)->res;
 
+	ft = resource_list_first_type(&pp->bridge->windows, IORESOURCE_BUS);
+	if (!ft)
+		return -ENODEV;
+
+	bus = ft->res;
 	target_bus_cfg = &pcie->target_bus_cfg;
 
 	ecam_bus_mask = (pcie->ecam_size >> PCIE_ECAM_BUS_SHIFT) - 1;
@@ -279,14 +284,11 @@ static void al_pcie_config_prepare(struct al_pcie *pcie)
 			     CFG_CONTROL;
 
 	cfg_control = al_pcie_controller_readl(pcie, cfg_control_offset);
+	FIELD_MODIFY(CFG_CONTROL_SUBBUS_MASK, &cfg_control, subordinate_bus);
+	FIELD_MODIFY(CFG_CONTROL_SEC_BUS_MASK, &cfg_control, secondary_bus);
+	al_pcie_controller_writel(pcie, cfg_control_offset, cfg_control);
 
-	reg = cfg_control &
-	      ~(CFG_CONTROL_SEC_BUS_MASK | CFG_CONTROL_SUBBUS_MASK);
-
-	reg |= FIELD_PREP(CFG_CONTROL_SUBBUS_MASK, subordinate_bus) |
-	       FIELD_PREP(CFG_CONTROL_SEC_BUS_MASK, secondary_bus);
-
-	al_pcie_controller_writel(pcie, cfg_control_offset, reg);
+	return 0;
 }
 
 static int al_pcie_host_init(struct dw_pcie_rp *pp)
@@ -305,7 +307,9 @@ static int al_pcie_host_init(struct dw_pcie_rp *pp)
 	if (rc)
 		return rc;
 
-	al_pcie_config_prepare(pcie);
+	rc = al_pcie_config_prepare(pcie);
+	if (rc)
+		return rc;
 
 	return 0;
 }
@@ -322,11 +326,11 @@ static int al_pcie_probe(struct platform_device *pdev)
 	struct al_pcie *al_pcie;
 	struct dw_pcie *pci;
 
-	al_pcie = devm_kzalloc(dev, sizeof(*al_pcie), GFP_KERNEL);
+	al_pcie = devm_kzalloc_obj(dev, *al_pcie);
 	if (!al_pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
+	pci = devm_kzalloc_obj(dev, *pci);
 	if (!pci)
 		return -ENOMEM;
 
@@ -342,6 +346,7 @@ static int al_pcie_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 	al_pcie->ecam_size = resource_size(ecam_res);
+	pci->pp.native_ecam = true;
 
 	controller_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 						      "controller");

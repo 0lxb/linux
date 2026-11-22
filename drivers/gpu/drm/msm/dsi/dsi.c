@@ -5,6 +5,8 @@
 
 #include "dsi.h"
 
+#include <drm/drm_panel.h>
+
 bool msm_dsi_is_cmd_mode(struct msm_dsi *msm_dsi)
 {
 	unsigned long host_flags = msm_dsi_host_get_mode_flags(msm_dsi->host);
@@ -84,7 +86,7 @@ static struct msm_dsi *dsi_init(struct platform_device *pdev)
 	if (!pdev)
 		return ERR_PTR(-ENXIO);
 
-	msm_dsi = devm_kzalloc(&pdev->dev, sizeof(*msm_dsi), GFP_KERNEL);
+	msm_dsi = devm_kzalloc_obj(&pdev->dev, *msm_dsi);
 	if (!msm_dsi)
 		return ERR_PTR(-ENOMEM);
 	DBG("dsi probed=%p", msm_dsi);
@@ -120,7 +122,23 @@ static int dsi_bind(struct device *dev, struct device *master, void *data)
 	struct msm_drm_private *priv = dev_get_drvdata(master);
 	struct msm_dsi *msm_dsi = dev_get_drvdata(dev);
 
-	priv->dsi[msm_dsi->id] = msm_dsi;
+	/*
+	 * Next bridge doesn't exist for the secondary DSI host in a bonded
+	 * pair.
+	 */
+	if (!msm_dsi_is_bonded_dsi(msm_dsi) ||
+	    msm_dsi_is_master_dsi(msm_dsi)) {
+		struct drm_bridge *ext_bridge;
+
+		ext_bridge = devm_drm_of_get_bridge(&msm_dsi->pdev->dev,
+						    msm_dsi->pdev->dev.of_node, 1, 0);
+		if (IS_ERR(ext_bridge))
+			return PTR_ERR(ext_bridge);
+
+		msm_dsi->next_bridge = ext_bridge;
+	}
+
+	priv->kms->dsi[msm_dsi->id] = msm_dsi;
 
 	return 0;
 }
@@ -132,7 +150,7 @@ static void dsi_unbind(struct device *dev, struct device *master,
 	struct msm_dsi *msm_dsi = dev_get_drvdata(dev);
 
 	msm_dsi_tx_buf_free(msm_dsi->host);
-	priv->dsi[msm_dsi->id] = NULL;
+	priv->kms->dsi[msm_dsi->id] = NULL;
 }
 
 static const struct component_ops dsi_ops = {
@@ -182,6 +200,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "qcom,dsi-ctrl-6g-qcm2290" },
 	{}
 };
+MODULE_DEVICE_TABLE(of, dt_match);
 
 static const struct dev_pm_ops dsi_pm_ops = {
 	SET_RUNTIME_PM_OPS(msm_dsi_runtime_suspend, msm_dsi_runtime_resume, NULL)
@@ -191,7 +210,7 @@ static const struct dev_pm_ops dsi_pm_ops = {
 
 static struct platform_driver dsi_driver = {
 	.probe = dsi_dev_probe,
-	.remove_new = dsi_dev_remove,
+	.remove = dsi_dev_remove,
 	.driver = {
 		.name = "msm_dsi",
 		.of_match_table = dt_match,
@@ -216,7 +235,6 @@ void __exit msm_dsi_unregister(void)
 int msm_dsi_modeset_init(struct msm_dsi *msm_dsi, struct drm_device *dev,
 			 struct drm_encoder *encoder)
 {
-	struct drm_bridge *bridge;
 	int ret;
 
 	msm_dsi->dev = dev;
@@ -236,14 +254,7 @@ int msm_dsi_modeset_init(struct msm_dsi *msm_dsi, struct drm_device *dev,
 		return 0;
 	}
 
-	bridge = msm_dsi_manager_bridge_init(msm_dsi, encoder);
-	if (IS_ERR(bridge)) {
-		ret = PTR_ERR(bridge);
-		DRM_DEV_ERROR(dev->dev, "failed to create dsi bridge: %d\n", ret);
-		return ret;
-	}
-
-	ret = msm_dsi_manager_ext_bridge_init(msm_dsi->id, bridge);
+	ret = msm_dsi_manager_connector_init(msm_dsi, encoder);
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev,
 			"failed to create dsi connector: %d\n", ret);
@@ -258,4 +269,3 @@ void msm_dsi_snapshot(struct msm_disp_state *disp_state, struct msm_dsi *msm_dsi
 	msm_dsi_host_snapshot(disp_state, msm_dsi->host);
 	msm_dsi_phy_snapshot(disp_state, msm_dsi->phy);
 }
-

@@ -589,8 +589,8 @@ static void tda1997x_enable_edid(struct v4l2_subdev *sd)
 
 	v4l2_dbg(1, debug, sd, "%s\n", __func__);
 
-	/* Enable hotplug after 100ms */
-	schedule_delayed_work(&state->delayed_work_enable_hpd, HZ / 10);
+	/* Enable hotplug after 143ms */
+	schedule_delayed_work(&state->delayed_work_enable_hpd, V4L2_SET_EDID_HPD_LOW_JIFFIES);
 }
 
 /* -----------------------------------------------------------------------------
@@ -1669,8 +1669,8 @@ tda1997x_g_input_status(struct v4l2_subdev *sd, u32 *status)
 	return 0;
 };
 
-static int tda1997x_s_dv_timings(struct v4l2_subdev *sd,
-				struct v4l2_dv_timings *timings)
+static int tda1997x_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+				 struct v4l2_dv_timings *timings)
 {
 	struct tda1997x_state *state = to_state(sd);
 
@@ -1694,7 +1694,7 @@ static int tda1997x_s_dv_timings(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int tda1997x_g_dv_timings(struct v4l2_subdev *sd,
+static int tda1997x_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				 struct v4l2_dv_timings *timings)
 {
 	struct tda1997x_state *state = to_state(sd);
@@ -1707,7 +1707,7 @@ static int tda1997x_g_dv_timings(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int tda1997x_query_dv_timings(struct v4l2_subdev *sd,
+static int tda1997x_query_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 				     struct v4l2_dv_timings *timings)
 {
 	struct tda1997x_state *state = to_state(sd);
@@ -1724,9 +1724,6 @@ static int tda1997x_query_dv_timings(struct v4l2_subdev *sd,
 
 static const struct v4l2_subdev_video_ops tda1997x_video_ops = {
 	.g_input_status = tda1997x_g_input_status,
-	.s_dv_timings = tda1997x_s_dv_timings,
-	.g_dv_timings = tda1997x_g_dv_timings,
-	.query_dv_timings = tda1997x_query_dv_timings,
 };
 
 
@@ -1801,6 +1798,7 @@ static int tda1997x_get_format(struct v4l2_subdev *sd,
 }
 
 static int tda1997x_set_format(struct v4l2_subdev *sd,
+			       const struct v4l2_subdev_client_info *ci,
 			       struct v4l2_subdev_state *sd_state,
 			       struct v4l2_subdev_format *format)
 {
@@ -1930,6 +1928,9 @@ static const struct v4l2_subdev_pad_ops tda1997x_pad_ops = {
 	.set_fmt = tda1997x_set_format,
 	.get_edid = tda1997x_get_edid,
 	.set_edid = tda1997x_set_edid,
+	.s_dv_timings = tda1997x_s_dv_timings,
+	.g_dv_timings = tda1997x_g_dv_timings,
+	.query_dv_timings = tda1997x_query_dv_timings,
 	.dv_timings_cap = tda1997x_get_dv_timings_cap,
 	.enum_dv_timings = tda1997x_enum_dv_timings,
 };
@@ -2274,9 +2275,9 @@ static int tda1997x_set_power(struct tda1997x_state *state, bool on)
 }
 
 static const struct i2c_device_id tda1997x_i2c_id[] = {
-	{"tda19971", (kernel_ulong_t)&tda1997x_chip_info[TDA19971]},
-	{"tda19973", (kernel_ulong_t)&tda1997x_chip_info[TDA19973]},
-	{ },
+	{ .name = "tda19971", .driver_data = (kernel_ulong_t)&tda1997x_chip_info[TDA19971] },
+	{ .name = "tda19973", .driver_data = (kernel_ulong_t)&tda1997x_chip_info[TDA19973] },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tda1997x_i2c_id);
 
@@ -2315,11 +2316,10 @@ static int tda1997x_parse_dt(struct tda1997x_state *state)
 		return -EINVAL;
 
 	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep), &bus_cfg);
-	if (ret) {
-		of_node_put(ep);
-		return ret;
-	}
 	of_node_put(ep);
+	if (ret)
+		return ret;
+
 	pdata->vidout_bus_type = bus_cfg.bus_type;
 
 	/* polarity of HS/VS/DE */
@@ -2514,7 +2514,7 @@ static void tda1997x_codec_remove(struct snd_soc_component *component)
 {
 }
 
-static struct snd_soc_component_driver tda1997x_codec_driver = {
+static const struct snd_soc_component_driver tda1997x_codec_driver = {
 	.probe			= tda1997x_codec_probe,
 	.remove			= tda1997x_codec_remove,
 	.idle_bias_on		= 1,
@@ -2539,7 +2539,7 @@ static int tda1997x_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -EIO;
 
-	state = kzalloc(sizeof(struct tda1997x_state), GFP_KERNEL);
+	state = kzalloc_obj(struct tda1997x_state);
 	if (!state)
 		return -ENOMEM;
 
@@ -2798,7 +2798,6 @@ err_free_media:
 err_free_handler:
 	v4l2_ctrl_handler_free(&state->hdl);
 err_free_mutex:
-	cancel_delayed_work(&state->delayed_work_enable_hpd);
 	mutex_destroy(&state->page_lock);
 	mutex_destroy(&state->lock);
 	tda1997x_set_power(state, 0);

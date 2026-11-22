@@ -23,10 +23,16 @@ properties:
 
   audio-widgets:
     $ref: /schemas/types.yaml#/definitions/non-unique-string-array
-    minItems: 2
     description: |-
       A list off component DAPM widget. Each entry is a pair of strings,
       the first being the widget type, the second being the widget name
+
+  clocks:
+    minItems: 1
+    maxItems: 3
+    description:
+      Base PLL clocks of audio subsystem, used to configure base clock
+      frequencies for different audio use-cases.
 
 patternProperties:
   "^dai-link-[0-9]+$":
@@ -88,20 +94,20 @@ examples:
         audio-routing = "I2S ENCODER I2S IN", "I2S FIFO Playback";
 
         dai-link-0 {
-               sound-dai = <&i2s_fifo>;
+            sound-dai = <&i2s_fifo>;
         };
 
         dai-link-1 {
-                sound-dai = <&i2s_encoder>;
-                dai-format = "i2s";
-                mclk-fs = <256>;
+            sound-dai = <&i2s_encoder>;
+            dai-format = "i2s";
+            mclk-fs = <256>;
 
-                codec-0 {
-                        sound-dai = <&codec0>;
-                };
+            codec-0 {
+                sound-dai = <&codec0>;
+            };
 
-                codec-1 {
-                        sound-dai = <&codec1>;
-                };
+            codec-1 {
+                sound-dai = <&codec1>;
+            };
         };
     };

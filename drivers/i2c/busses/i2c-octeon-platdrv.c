@@ -122,7 +122,7 @@ static u32 octeon_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm octeon_i2c_algo = {
-	.master_xfer = octeon_i2c_xfer,
+	.xfer = octeon_i2c_xfer,
 	.functionality = octeon_i2c_functionality,
 };
 
@@ -155,7 +155,7 @@ static int octeon_i2c_probe(struct platform_device *pdev)
 			return irq;
 	}
 
-	i2c = devm_kzalloc(&pdev->dev, sizeof(*i2c), GFP_KERNEL);
+	i2c = devm_kzalloc_obj(&pdev->dev, *i2c);
 	if (!i2c) {
 		result = -ENOMEM;
 		goto out;
@@ -269,7 +269,7 @@ MODULE_DEVICE_TABLE(of, octeon_i2c_match);
 
 static struct platform_driver octeon_i2c_driver = {
 	.probe		= octeon_i2c_probe,
-	.remove_new	= octeon_i2c_remove,
+	.remove		= octeon_i2c_remove,
 	.driver		= {
 		.name	= DRV_NAME,
 		.of_match_table = octeon_i2c_match,

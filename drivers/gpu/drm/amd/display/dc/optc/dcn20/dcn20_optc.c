@@ -63,15 +63,10 @@ bool optc2_enable_crtc(struct timing_generator *optc)
 	REG_UPDATE(CONTROL,
 			VTG0_ENABLE, 1);
 
-	REG_SEQ_START();
-
 	/* Enable CRTC */
 	REG_UPDATE_2(OTG_CONTROL,
 			OTG_DISABLE_POINT_CNTL, 3,
 			OTG_MASTER_EN, 1);
-
-	REG_SEQ_SUBMIT();
-	REG_SEQ_WAIT_DONE();
 
 	return true;
 }
@@ -158,13 +153,6 @@ void optc2_get_dsc_status(struct timing_generator *optc,
 		OPTC_DSC_MODE, dsc_mode);
 }
 
-
-/*TEMP: Need to figure out inheritance model here.*/
-bool optc2_is_two_pixels_per_containter(const struct dc_crtc_timing *timing)
-{
-	return optc1_is_two_pixels_per_containter(timing);
-}
-
 void optc2_set_odm_bypass(struct timing_generator *optc,
 		const struct dc_crtc_timing *dc_crtc_timing)
 {
@@ -177,7 +165,7 @@ void optc2_set_odm_bypass(struct timing_generator *optc,
 			OPTC_SEG1_SRC_SEL, 0xf);
 	REG_WRITE(OTG_H_TIMING_CNTL, 0);
 
-	h_div_2 = optc2_is_two_pixels_per_containter(dc_crtc_timing);
+	h_div_2 = optc->funcs->is_two_pixels_per_container(dc_crtc_timing);
 	REG_UPDATE(OTG_H_TIMING_CNTL,
 			OTG_H_TIMING_DIV_BY2, h_div_2);
 	REG_SET(OPTC_MEMORY_CONFIG, 0,
@@ -186,11 +174,10 @@ void optc2_set_odm_bypass(struct timing_generator *optc,
 }
 
 void optc2_set_odm_combine(struct timing_generator *optc, int *opp_id, int opp_cnt,
-		struct dc_crtc_timing *timing)
+		int segment_width, int last_segment_width)
 {
+	(void)last_segment_width;
 	struct optc *optc1 = DCN10TG_FROM_TG(optc);
-	int mpcc_hactive = (timing->h_addressable + timing->h_border_left + timing->h_border_right)
-			/ opp_cnt;
 	uint32_t memory_mask;
 
 	ASSERT(opp_cnt == 2);
@@ -220,7 +207,7 @@ void optc2_set_odm_combine(struct timing_generator *optc, int *opp_id, int opp_c
 			OPTC_SEG1_SRC_SEL, opp_id[1]);
 
 	REG_UPDATE(OPTC_WIDTH_CONTROL,
-			OPTC_SEGMENT_WIDTH, mpcc_hactive);
+			OPTC_SEGMENT_WIDTH, segment_width);
 
 	REG_SET(OTG_H_TIMING_CNTL, 0, OTG_H_TIMING_DIV_BY2, 1);
 	optc1->opp_count = opp_cnt;
@@ -270,6 +257,7 @@ static void optc2_align_vblanks(
 	uint8_t master_clock_divider,
 	uint8_t slave_clock_divider)
 {
+	(void)slave_clock_divider;
 	/* accessing slave OTG registers */
 	struct optc *optc1 = DCN10TG_FROM_TG(optc_slave);
 
@@ -312,8 +300,8 @@ static void optc2_align_vblanks(
 	L = div_u64(L, master_h_total);
 	L = div_u64(L, slave_pixel_clock_100Hz);
 	XY = div_u64(L, p);
-	Y = master_v_active - XY - 1;
-	X = div_u64(((XY + 1) * p - L) * master_h_total, p * master_clock_divider);
+	Y = (uint32_t)(master_v_active - XY - 1);
+	X = (uint32_t)div_u64(((XY + 1) * p - L) * master_h_total, p * master_clock_divider);
 
 	/*
 	 * set master OTG to unlock when V/H
@@ -461,6 +449,13 @@ void optc2_lock_doublebuffer_disable(struct timing_generator *optc)
 void optc2_setup_manual_trigger(struct timing_generator *optc)
 {
 	struct optc *optc1 = DCN10TG_FROM_TG(optc);
+	uint32_t v_total, v_total_max;
+
+	REG_GET(OTG_V_TOTAL_MAX, OTG_V_TOTAL_MAX, &v_total_max);
+	if (!v_total_max) {
+		REG_GET(OTG_V_TOTAL, OTG_V_TOTAL, &v_total);
+		optc->funcs->set_vtotal_min_max(optc, v_total, v_total);
+	}
 
 	/* Set the min/max selectors unconditionally so that
 	 * DMCUB fw may change OTG timings when necessary
@@ -511,7 +506,7 @@ void optc2_get_last_used_drr_vtotal(struct timing_generator *optc, uint32_t *ref
 	REG_GET(OTG_DRR_CONTROL, OTG_V_TOTAL_LAST_USED_BY_DRR, refresh_rate);
 }
 
-static struct timing_generator_funcs dcn20_tg_funcs = {
+static const struct timing_generator_funcs dcn20_tg_funcs = {
 		.validate_timing = optc1_validate_timing,
 		.program_timing = optc1_program_timing,
 		.setup_vertical_interrupt0 = optc1_setup_vertical_interrupt0,
@@ -570,6 +565,8 @@ static struct timing_generator_funcs dcn20_tg_funcs = {
 		.setup_manual_trigger = optc2_setup_manual_trigger,
 		.get_hw_timing = optc1_get_hw_timing,
 		.align_vblanks = optc2_align_vblanks,
+		.is_two_pixels_per_container = optc1_is_two_pixels_per_container,
+		.read_otg_state = optc1_read_otg_state,
 };
 
 void dcn20_timing_generator_init(struct optc *optc1)

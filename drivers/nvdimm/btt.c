@@ -6,6 +6,7 @@
 #include <linux/highmem.h>
 #include <linux/debugfs.h>
 #include <linux/blkdev.h>
+#include <linux/blk-integrity.h>
 #include <linux/pagemap.h>
 #include <linux/module.h>
 #include <linux/device.h>
@@ -538,8 +539,7 @@ static int btt_freelist_init(struct arena_info *arena)
 	struct log_entry log_new;
 	u32 i, map_entry, log_oldmap, log_newmap;
 
-	arena->freelist = kcalloc(arena->nfree, sizeof(struct free_entry),
-					GFP_KERNEL);
+	arena->freelist = kzalloc_objs(struct free_entry, arena->nfree);
 	if (!arena->freelist)
 		return -ENOMEM;
 
@@ -721,7 +721,7 @@ static int log_set_indices(struct arena_info *arena)
 
 static int btt_rtt_init(struct arena_info *arena)
 {
-	arena->rtt = kcalloc(arena->nfree, sizeof(u32), GFP_KERNEL);
+	arena->rtt = kzalloc_objs(u32, arena->nfree);
 	if (arena->rtt == NULL)
 		return -ENOMEM;
 
@@ -732,8 +732,7 @@ static int btt_maplocks_init(struct arena_info *arena)
 {
 	u32 i;
 
-	arena->map_locks = kcalloc(arena->nfree, sizeof(struct aligned_lock),
-				GFP_KERNEL);
+	arena->map_locks = kzalloc_objs(struct aligned_lock, arena->nfree);
 	if (!arena->map_locks)
 		return -ENOMEM;
 
@@ -750,7 +749,7 @@ static struct arena_info *alloc_arena(struct btt *btt, size_t size,
 	u64 logsize, mapsize, datasize;
 	u64 available = size;
 
-	arena = kzalloc(sizeof(struct arena_info), GFP_KERNEL);
+	arena = kzalloc_obj(*arena);
 	if (!arena)
 		return NULL;
 	arena->nd_btt = btt->nd_btt;
@@ -853,7 +852,7 @@ static int discover_arenas(struct btt *btt)
 	size_t cur_off = 0;
 	int num_arenas = 0;
 
-	struct btt_sb *super __free(kfree) = kzalloc(sizeof(*super), GFP_KERNEL);
+	struct btt_sb *super __free(kfree) = kzalloc_obj(*super);
 	if (!super)
 		return -ENOMEM;
 
@@ -883,6 +882,14 @@ static int discover_arenas(struct btt *btt)
 
 		arena->external_lba_start = cur_nlba;
 		parse_arena_meta(arena, super, cur_off);
+
+		if (arena->nfree < btt->nd_region->num_lanes) {
+			dev_err(to_dev(arena),
+				"nfree %u smaller than lane count %d\n",
+				arena->nfree, btt->nd_region->num_lanes);
+			ret = -ENODEV;
+			goto out;
+		}
 
 		ret = log_set_indices(arena);
 		if (ret) {
@@ -920,6 +927,9 @@ static int discover_arenas(struct btt *btt)
 	return ret;
 
  out:
+	kfree(arena->freelist);
+	kfree(arena->rtt);
+	kfree(arena->map_locks);
 	kfree(arena);
 	free_arenas(btt);
 	return ret;
@@ -977,7 +987,7 @@ static int btt_arena_write_layout(struct arena_info *arena)
 	if (ret)
 		return ret;
 
-	super = kzalloc(sizeof(struct btt_sb), GFP_NOIO);
+	super = kzalloc_obj(*super, GFP_NOIO);
 	if (!super)
 		return -ENOMEM;
 
@@ -1103,10 +1113,10 @@ static int btt_data_read(struct arena_info *arena, struct page *page,
 {
 	int ret;
 	u64 nsoff = to_namespace_offset(arena, lba);
-	void *mem = kmap_atomic(page);
+	void *mem = kmap_local_page(page);
 
 	ret = arena_read_bytes(arena, nsoff, mem + off, len, NVDIMM_IO_ATOMIC);
-	kunmap_atomic(mem);
+	kunmap_local(mem);
 
 	return ret;
 }
@@ -1116,20 +1126,20 @@ static int btt_data_write(struct arena_info *arena, u32 lba,
 {
 	int ret;
 	u64 nsoff = to_namespace_offset(arena, lba);
-	void *mem = kmap_atomic(page);
+	void *mem = kmap_local_page(page);
 
 	ret = arena_write_bytes(arena, nsoff, mem + off, len, NVDIMM_IO_ATOMIC);
-	kunmap_atomic(mem);
+	kunmap_local(mem);
 
 	return ret;
 }
 
 static void zero_fill_data(struct page *page, unsigned int off, u32 len)
 {
-	void *mem = kmap_atomic(page);
+	void *mem = kmap_local_page(page);
 
 	memset(mem + off, 0, len);
-	kunmap_atomic(mem);
+	kunmap_local(mem);
 }
 
 #ifdef CONFIG_BLK_DEV_INTEGRITY
@@ -1153,7 +1163,7 @@ static int btt_rw_integrity(struct btt *btt, struct bio_integrity_payload *bip,
 		bv = bvec_iter_bvec(bip->bip_vec, bip->bip_iter);
 		/*
 		 * The 'bv' obtained from bvec_iter_bvec has its .bv_len and
-		 * .bv_offset already adjusted for iter->bi_bvec_done, and we
+		 * .bv_offset already adjusted for iter->bi_offset, and we
 		 * can use those directly
 		 */
 
@@ -1436,14 +1446,16 @@ static void btt_submit_bio(struct bio *bio)
 {
 	struct bio_integrity_payload *bip = bio_integrity(bio);
 	struct btt *btt = bio->bi_bdev->bd_disk->private_data;
+	unsigned int integrity_action;
 	struct bvec_iter iter;
 	unsigned long start;
 	struct bio_vec bvec;
 	int err = 0;
 	bool do_acct;
 
-	if (!bio_integrity_prep(bio))
-		return;
+	integrity_action = bio_integrity_action(bio);
+	if (integrity_action)
+		bio_integrity_prep(bio, integrity_action);
 
 	do_acct = blk_queue_io_stat(bio->bi_bdev->bd_disk->queue);
 	if (do_acct)
@@ -1477,12 +1489,12 @@ static void btt_submit_bio(struct bio *bio)
 	bio_endio(bio);
 }
 
-static int btt_getgeo(struct block_device *bd, struct hd_geometry *geo)
+static int btt_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
 	/* some standard values */
 	geo->heads = 1 << 6;
 	geo->sectors = 1 << 5;
-	geo->cylinders = get_capacity(bd->bd_disk) >> 11;
+	geo->cylinders = get_capacity(disk) >> 11;
 	return 0;
 }
 
@@ -1499,8 +1511,15 @@ static int btt_blk_init(struct btt *btt)
 	struct queue_limits lim = {
 		.logical_block_size	= btt->sector_size,
 		.max_hw_sectors		= UINT_MAX,
+		.max_integrity_segments	= 1,
+		.features		= BLK_FEAT_SYNCHRONOUS,
 	};
 	int rc;
+
+	if (btt_meta_size(btt) && IS_ENABLED(CONFIG_BLK_DEV_INTEGRITY)) {
+		lim.integrity.metadata_size = btt_meta_size(btt);
+		lim.integrity.tag_size = btt_meta_size(btt);
+	}
 
 	btt->btt_disk = blk_alloc_disk(&lim, NUMA_NO_NODE);
 	if (IS_ERR(btt->btt_disk))
@@ -1510,15 +1529,6 @@ static int btt_blk_init(struct btt *btt)
 	btt->btt_disk->first_minor = 0;
 	btt->btt_disk->fops = &btt_fops;
 	btt->btt_disk->private_data = btt;
-
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, btt->btt_disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_SYNCHRONOUS, btt->btt_disk->queue);
-
-	if (btt_meta_size(btt)) {
-		rc = nd_integrity_init(btt->btt_disk, btt_meta_size(btt));
-		if (rc)
-			goto out_cleanup_disk;
-	}
 
 	set_capacity(btt->btt_disk, btt->nlba * btt->sector_size >> 9);
 	rc = device_add_disk(&btt->nd_btt->dev, btt->btt_disk, NULL);
@@ -1567,7 +1577,7 @@ static struct btt *btt_init(struct nd_btt *nd_btt, unsigned long long rawsize,
 	struct nd_namespace_io *nsio;
 	struct device *dev = &nd_btt->dev;
 
-	btt = devm_kzalloc(dev, sizeof(struct btt), GFP_KERNEL);
+	btt = devm_kzalloc_obj(dev, struct btt);
 	if (!btt)
 		return NULL;
 
@@ -1590,7 +1600,7 @@ static struct btt *btt_init(struct nd_btt *nd_btt, unsigned long long rawsize,
 	if (btt->init_state != INIT_READY && nd_region->ro) {
 		dev_warn(dev, "%s is read-only, unable to init btt metadata\n",
 				dev_name(&nd_region->dev));
-		return NULL;
+		goto err;
 	} else if (btt->init_state != INIT_READY) {
 		btt->num_arenas = (rawsize / ARENA_MAX_SIZE) +
 			((rawsize % ARENA_MAX_SIZE) ? 1 : 0);
@@ -1600,25 +1610,28 @@ static struct btt *btt_init(struct nd_btt *nd_btt, unsigned long long rawsize,
 		ret = create_arenas(btt);
 		if (ret) {
 			dev_info(dev, "init: create_arenas: %d\n", ret);
-			return NULL;
+			goto err;
 		}
 
 		ret = btt_meta_init(btt);
 		if (ret) {
 			dev_err(dev, "init: error in meta_init: %d\n", ret);
-			return NULL;
+			goto err;
 		}
 	}
 
 	ret = btt_blk_init(btt);
 	if (ret) {
 		dev_err(dev, "init: error in blk_init: %d\n", ret);
-		return NULL;
+		goto err;
 	}
 
 	btt_debugfs_init(btt);
 
 	return btt;
+err:
+	free_arenas(btt);
+	return NULL;
 }
 
 /**
@@ -1653,7 +1666,7 @@ int nvdimm_namespace_attach_btt(struct nd_namespace_common *ndns)
 		return -ENODEV;
 	}
 
-	btt_sb = devm_kzalloc(&nd_btt->dev, sizeof(*btt_sb), GFP_KERNEL);
+	btt_sb = devm_kzalloc_obj(&nd_btt->dev, *btt_sb);
 	if (!btt_sb)
 		return -ENOMEM;
 
@@ -1717,6 +1730,7 @@ static void __exit nd_btt_exit(void)
 
 MODULE_ALIAS_ND_DEVICE(ND_DEVICE_BTT);
 MODULE_AUTHOR("Vishal Verma <vishal.l.verma@linux.intel.com>");
+MODULE_DESCRIPTION("NVDIMM Block Translation Table");
 MODULE_LICENSE("GPL v2");
 module_init(nd_btt_init);
 module_exit(nd_btt_exit);

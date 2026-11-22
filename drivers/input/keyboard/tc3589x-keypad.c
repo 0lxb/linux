@@ -325,12 +325,11 @@ tc3589x_keypad_of_probe(struct device *dev)
 	struct tc3589x_keypad_platform_data *plat;
 	u32 cols, rows;
 	u32 debounce_ms;
-	int proplen;
 
 	if (!np)
 		return ERR_PTR(-ENODEV);
 
-	plat = devm_kzalloc(dev, sizeof(*plat), GFP_KERNEL);
+	plat = devm_kzalloc_obj(dev, *plat);
 	if (!plat)
 		return ERR_PTR(-ENOMEM);
 
@@ -346,7 +345,7 @@ tc3589x_keypad_of_probe(struct device *dev)
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (!of_get_property(np, "linux,keymap", &proplen)) {
+	if (!of_property_present(np, "linux,keymap")) {
 		dev_err(dev, "property linux,keymap not found\n");
 		return ERR_PTR(-ENOENT);
 	}
@@ -389,8 +388,7 @@ static int tc3589x_keypad_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	keypad = devm_kzalloc(&pdev->dev, sizeof(struct tc_keypad),
-			      GFP_KERNEL);
+	keypad = devm_kzalloc_obj(&pdev->dev, struct tc_keypad);
 	if (!keypad)
 		return -ENOMEM;
 
@@ -406,7 +404,6 @@ static int tc3589x_keypad_probe(struct platform_device *pdev)
 
 	input->id.bustype = BUS_I2C;
 	input->name = pdev->name;
-	input->dev.parent = &pdev->dev;
 
 	input->open = tc3589x_keypad_open;
 	input->close = tc3589x_keypad_close;

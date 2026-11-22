@@ -1,38 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2023 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 
-#include <linux/types.h>
-#include <linux/atomic.h>
-#include <linux/bitfield.h>
 #include <linux/bug.h>
-#include <linux/io.h>
 #include <linux/firmware.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/firmware/qcom/qcom_scm.h>
+#include <linux/types.h>
+
+#include <linux/firmware/qcom/qcom_pas.h>
 #include <linux/soc/qcom/mdt_loader.h>
 
 #include "ipa.h"
-#include "ipa_power.h"
+#include "ipa_cmd.h"
 #include "ipa_data.h"
 #include "ipa_endpoint.h"
-#include "ipa_resource.h"
-#include "ipa_cmd.h"
-#include "ipa_reg.h"
-#include "ipa_mem.h"
-#include "ipa_table.h"
-#include "ipa_smp2p.h"
-#include "ipa_modem.h"
-#include "ipa_uc.h"
 #include "ipa_interrupt.h"
-#include "gsi_trans.h"
+#include "ipa_mem.h"
+#include "ipa_modem.h"
+#include "ipa_power.h"
+#include "ipa_reg.h"
+#include "ipa_resource.h"
+#include "ipa_smp2p.h"
 #include "ipa_sysfs.h"
+#include "ipa_table.h"
+#include "ipa_uc.h"
+#include "ipa_version.h"
 
 /**
  * DOC: The IP Accelerator
@@ -120,10 +119,6 @@ int ipa_setup(struct ipa *ipa)
 	if (ret)
 		return ret;
 
-	ret = ipa_power_setup(ipa);
-	if (ret)
-		goto err_gsi_teardown;
-
 	ipa_endpoint_setup(ipa);
 
 	/* We need to use the AP command TX endpoint to perform other
@@ -170,8 +165,6 @@ err_command_disable:
 	ipa_endpoint_disable_one(command_endpoint);
 err_endpoint_teardown:
 	ipa_endpoint_teardown(ipa);
-	ipa_power_teardown(ipa);
-err_gsi_teardown:
 	gsi_teardown(&ipa->gsi);
 
 	return ret;
@@ -196,7 +189,6 @@ static void ipa_teardown(struct ipa *ipa)
 	command_endpoint = ipa->name_map[IPA_ENDPOINT_AP_COMMAND_TX];
 	ipa_endpoint_disable_one(command_endpoint);
 	ipa_endpoint_teardown(ipa);
-	ipa_power_teardown(ipa);
 	gsi_teardown(&ipa->gsi);
 }
 
@@ -369,7 +361,7 @@ static void ipa_qtime_config(struct ipa *ipa)
 {
 	const struct reg *reg;
 	u32 offset;
-	u32 val;
+	u32 val = 0;
 
 	/* Timer clock divider must be disabled when we change the rate */
 	reg = ipa_reg(ipa, TIMERS_XO_CLK_DIV_CFG);
@@ -382,8 +374,8 @@ static void ipa_qtime_config(struct ipa *ipa)
 		val |= reg_bit(reg, DPL_TIMESTAMP_SEL);
 	}
 	/* Configure tag and NAT Qtime timestamp resolution as well */
-	val = reg_encode(reg, TAG_TIMESTAMP_LSB, TAG_TIMESTAMP_SHIFT);
-	val = reg_encode(reg, NAT_TIMESTAMP_LSB, NAT_TIMESTAMP_SHIFT);
+	val |= reg_encode(reg, TAG_TIMESTAMP_LSB, TAG_TIMESTAMP_SHIFT);
+	val |= reg_encode(reg, NAT_TIMESTAMP_LSB, NAT_TIMESTAMP_SHIFT);
 
 	iowrite32(val, ipa->reg_virt + reg_offset(reg));
 
@@ -594,7 +586,6 @@ static void ipa_deconfig(struct ipa *ipa)
 static int ipa_firmware_load(struct device *dev)
 {
 	const struct firmware *fw;
-	struct device_node *node;
 	struct resource res;
 	phys_addr_t phys;
 	const char *path;
@@ -602,14 +593,7 @@ static int ipa_firmware_load(struct device *dev)
 	void *virt;
 	int ret;
 
-	node = of_parse_phandle(dev->of_node, "memory-region", 0);
-	if (!node) {
-		dev_err(dev, "DT error getting \"memory-region\" property\n");
-		return -EINVAL;
-	}
-
-	ret = of_address_to_resource(node, 0, &res);
-	of_node_put(node);
+	ret = of_reserved_mem_region_to_resource(dev->of_node, 0, &res);
 	if (ret) {
 		dev_err(dev, "error %d getting \"memory-region\" resource\n",
 			ret);
@@ -640,10 +624,13 @@ static int ipa_firmware_load(struct device *dev)
 	}
 
 	ret = qcom_mdt_load(dev, fw, path, IPA_PAS_ID, virt, phys, size, NULL);
-	if (ret)
+	if (ret) {
 		dev_err(dev, "error %d loading \"%s\"\n", ret, path);
-	else if ((ret = qcom_scm_pas_auth_and_reset(IPA_PAS_ID)))
-		dev_err(dev, "error %d authenticating \"%s\"\n", ret, path);
+	} else {
+		ret = qcom_pas_auth_and_reset(IPA_PAS_ID);
+		if (ret)
+			dev_err(dev, "error %d authenticating \"%s\"\n", ret, path);
+	}
 
 	memunmap(virt);
 out_release_firmware:
@@ -684,6 +671,10 @@ static const struct of_device_id ipa_match[] = {
 	{
 		.compatible	= "qcom,sdx65-ipa",
 		.data		= &ipa_data_v5_0,
+	},
+	{
+		.compatible	= "qcom,milos-ipa",
+		.data		= &ipa_data_v5_2,
 	},
 	{
 		.compatible	= "qcom,sm8550-ipa",
@@ -770,7 +761,7 @@ static enum ipa_firmware_loader ipa_firmware_loader(struct device *dev)
 		return IPA_LOADER_INVALID;
 out_self:
 	/* We need Trust Zone to load firmware; make sure it's available */
-	if (qcom_scm_is_available())
+	if (qcom_pas_is_available())
 		return IPA_LOADER_SELF;
 
 	return IPA_LOADER_DEFER;
@@ -818,11 +809,6 @@ static int ipa_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	if (!ipa_version_supported(data->version)) {
-		dev_err(dev, "unsupported IPA version %u\n", data->version);
-		return -EINVAL;
-	}
-
 	if (!data->modem_route_count) {
 		dev_err(dev, "modem_route_count cannot be zero\n");
 		return -EINVAL;
@@ -851,7 +837,7 @@ static int ipa_probe(struct platform_device *pdev)
 	}
 
 	/* No more EPROBE_DEFER.  Allocate and initialize the IPA structure */
-	ipa = kzalloc(sizeof(*ipa), GFP_KERNEL);
+	ipa = kzalloc_obj(*ipa);
 	if (!ipa) {
 		ret = -ENOMEM;
 		goto err_power_exit;
@@ -872,6 +858,10 @@ static int ipa_probe(struct platform_device *pdev)
 	ret = ipa_mem_init(ipa, pdev, data->mem_data);
 	if (ret)
 		goto err_reg_exit;
+
+	ret = ipa_cmd_init(ipa);
+	if (ret)
+		goto err_mem_exit;
 
 	ret = gsi_init(&ipa->gsi, pdev, ipa->version, data->endpoint_count,
 		       data->endpoint_data);
@@ -920,7 +910,6 @@ static int ipa_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_deconfig;
 done:
-	pm_runtime_mark_last_busy(dev);
 	(void)pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -983,12 +972,12 @@ static void ipa_remove(struct platform_device *pdev)
 		}
 		if (ret) {
 			/*
-			 * Not cleaning up here properly might also yield a
-			 * crash later on. As the device is still unregistered
-			 * in this case, this might even yield a crash later on.
+			 * Continuing teardown after failing to stop the modem
+			 * could crash, so leave the remaining resources allocated.
 			 */
 			dev_err(dev, "Failed to stop modem (%pe), leaking resources\n",
 				ERR_PTR(ret));
+			pm_runtime_put_noidle(dev);
 			return;
 		}
 
@@ -1021,7 +1010,7 @@ static const struct attribute_group *ipa_attribute_groups[] = {
 
 static struct platform_driver ipa_driver = {
 	.probe		= ipa_probe,
-	.remove_new	= ipa_remove,
+	.remove		= ipa_remove,
 	.shutdown	= ipa_remove,
 	.driver	= {
 		.name		= "ipa",

@@ -141,7 +141,7 @@ static int rcar_gen3_phy_usb3_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	r = devm_kzalloc(dev, sizeof(*r), GFP_KERNEL);
+	r = devm_kzalloc_obj(dev, *r);
 	if (!r)
 		return -ENOMEM;
 
@@ -202,15 +202,15 @@ error:
 static void rcar_gen3_phy_usb3_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-};
+}
 
 static struct platform_driver rcar_gen3_phy_usb3_driver = {
 	.driver = {
-		.name		= "phy_rcar_gen3_usb3",
-		.of_match_table	= rcar_gen3_phy_usb3_match_table,
+		.name = "phy_rcar_gen3_usb3",
+		.of_match_table = rcar_gen3_phy_usb3_match_table,
 	},
-	.probe	= rcar_gen3_phy_usb3_probe,
-	.remove_new = rcar_gen3_phy_usb3_remove,
+	.probe = rcar_gen3_phy_usb3_probe,
+	.remove = rcar_gen3_phy_usb3_remove,
 };
 module_platform_driver(rcar_gen3_phy_usb3_driver);
 

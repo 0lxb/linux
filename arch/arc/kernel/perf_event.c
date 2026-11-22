@@ -38,7 +38,7 @@
  * (based on a specific RTL build)
  * Below is the static map between perf generic/arc specific event_id and
  * h/w condition names.
- * At the time of probe, we loop thru each index and find it's name to
+ * At the time of probe, we loop thru each index and find its name to
  * complete the mapping of perf event_id to h/w index as latter is needed
  * to program the counter really
  */
@@ -599,10 +599,8 @@ static irqreturn_t arc_pmu_intr(int irq, void *dev)
 
 		arc_perf_event_update(event, &event->hw, event->hw.idx);
 		perf_sample_data_init(&data, 0, hwc->last_period);
-		if (arc_pmu_event_set_period(event)) {
-			if (perf_event_overflow(event, &data, regs))
-				arc_pmu_stop(event, 0);
-		}
+		if (arc_pmu_event_set_period(event))
+			perf_event_overflow(event, &data, regs);
 
 		active_ints &= ~BIT(idx);
 	} while (active_ints);
@@ -674,18 +672,21 @@ static void arc_pmu_add_raw_event_attr(int j, char *str)
 
 static int arc_pmu_raw_alloc(struct device *dev)
 {
-	arc_pmu->attr = devm_kmalloc_array(dev, arc_pmu->n_events + 1,
-		sizeof(*arc_pmu->attr), GFP_KERNEL | __GFP_ZERO);
+	arc_pmu->attr = devm_kmalloc_objs(dev, *arc_pmu->attr,
+					  arc_pmu->n_events + 1,
+					  GFP_KERNEL | __GFP_ZERO);
 	if (!arc_pmu->attr)
 		return -ENOMEM;
 
-	arc_pmu->attrs = devm_kmalloc_array(dev, arc_pmu->n_events + 1,
-		sizeof(*arc_pmu->attrs), GFP_KERNEL | __GFP_ZERO);
+	arc_pmu->attrs = devm_kmalloc_objs(dev, *arc_pmu->attrs,
+					   arc_pmu->n_events + 1,
+					   GFP_KERNEL | __GFP_ZERO);
 	if (!arc_pmu->attrs)
 		return -ENOMEM;
 
-	arc_pmu->raw_entry = devm_kmalloc_array(dev, arc_pmu->n_events,
-		sizeof(*arc_pmu->raw_entry), GFP_KERNEL | __GFP_ZERO);
+	arc_pmu->raw_entry = devm_kmalloc_objs(dev, *arc_pmu->raw_entry,
+					       arc_pmu->n_events,
+					       GFP_KERNEL | __GFP_ZERO);
 	if (!arc_pmu->raw_entry)
 		return -ENOMEM;
 
@@ -749,7 +750,7 @@ static int arc_pmu_device_probe(struct platform_device *pdev)
 	if (WARN(!cc_bcr.v, "Counters exist but No countable conditions?"))
 		return -EINVAL;
 
-	arc_pmu = devm_kzalloc(&pdev->dev, sizeof(struct arc_pmu), GFP_KERNEL);
+	arc_pmu = devm_kzalloc_obj(&pdev->dev, struct arc_pmu);
 	if (!arc_pmu)
 		return -ENOMEM;
 

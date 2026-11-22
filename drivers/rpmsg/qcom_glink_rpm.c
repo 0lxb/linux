@@ -296,7 +296,7 @@ static int glink_rpm_probe(struct platform_device *pdev)
 	struct resource r;
 	int ret;
 
-	rpm = devm_kzalloc(&pdev->dev, sizeof(*rpm), GFP_KERNEL);
+	rpm = devm_kzalloc_obj(&pdev->dev, *rpm);
 	if (!rpm)
 		return -ENOMEM;
 
@@ -381,7 +381,7 @@ MODULE_DEVICE_TABLE(of, glink_rpm_of_match);
 
 static struct platform_driver glink_rpm_driver = {
 	.probe = glink_rpm_probe,
-	.remove_new = glink_rpm_remove,
+	.remove = glink_rpm_remove,
 	.driver = {
 		.name = "qcom_glink_rpm",
 		.of_match_table = glink_rpm_of_match,

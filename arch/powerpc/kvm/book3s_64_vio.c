@@ -115,22 +115,19 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 	struct iommu_table_group *table_group;
 	long i;
 	struct kvmppc_spapr_tce_iommu_table *stit;
-	struct fd f;
+	CLASS(fd, f)(tablefd);
 
-	f = fdget(tablefd);
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(stt, &kvm->arch.spapr_tce_tables, list) {
-		if (stt == f.file->private_data) {
+		if (stt == fd_file(f)->private_data) {
 			found = true;
 			break;
 		}
 	}
 	rcu_read_unlock();
-
-	fdput(f);
 
 	if (!found)
 		return -EINVAL;
@@ -181,7 +178,7 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 	}
 	rcu_read_unlock();
 
-	stit = kzalloc(sizeof(*stit), GFP_KERNEL);
+	stit = kzalloc_obj(*stit);
 	if (!stit) {
 		iommu_tce_table_put(tbl);
 		return -ENOMEM;
@@ -308,7 +305,7 @@ int kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 		return ret;
 
 	ret = -ENOMEM;
-	stt = kzalloc(struct_size(stt, pages, npages), GFP_KERNEL | __GFP_NOWARN);
+	stt = kzalloc_flex(*stt, pages, npages, GFP_KERNEL | __GFP_NOWARN);
 	if (!stt)
 		goto fail_acct;
 

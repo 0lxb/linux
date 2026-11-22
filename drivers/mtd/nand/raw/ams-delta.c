@@ -250,8 +250,7 @@ static int gpio_nand_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate memory for MTD device structure and private data */
-	priv = devm_kzalloc(&pdev->dev, sizeof(struct gpio_nand),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, struct gpio_nand);
 	if (!priv)
 		return -ENOMEM;
 
@@ -432,7 +431,7 @@ MODULE_DEVICE_TABLE(platform, gpio_nand_plat_id_table);
 
 static struct platform_driver gpio_nand_driver = {
 	.probe		= gpio_nand_probe,
-	.remove_new	= gpio_nand_remove,
+	.remove		= gpio_nand_remove,
 	.id_table	= gpio_nand_plat_id_table,
 	.driver		= {
 		.name	= "ams-delta-nand",

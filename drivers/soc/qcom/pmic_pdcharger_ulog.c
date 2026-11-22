@@ -125,7 +125,7 @@ static int pmic_pdcharger_ulog_rpmsg_probe(struct rpmsg_device *rpdev)
 	struct pmic_pdcharger_ulog *pg;
 	struct device *dev = &rpdev->dev;
 
-	pg = devm_kzalloc(dev, sizeof(*pg), GFP_KERNEL);
+	pg = devm_kzalloc_obj(dev, *pg);
 	if (!pg)
 		return -ENOMEM;
 
@@ -143,13 +143,17 @@ static void pmic_pdcharger_ulog_rpmsg_remove(struct rpmsg_device *rpdev)
 {
 	struct pmic_pdcharger_ulog *pg = dev_get_drvdata(&rpdev->dev);
 
-	cancel_delayed_work_sync(&pg->ulog_work);
+	disable_delayed_work_sync(&pg->ulog_work);
 }
 
 static const struct rpmsg_device_id pmic_pdcharger_ulog_rpmsg_id_match[] = {
 	{ "PMIC_LOGS_ADSP_APPS" },
 	{}
 };
+/*
+ * No MODULE_DEVICE_TABLE intentionally: that's a debugging module, to be
+ * loaded manually only.
+ */
 
 static struct rpmsg_driver pmic_pdcharger_ulog_rpmsg_driver = {
 	.probe = pmic_pdcharger_ulog_rpmsg_probe,

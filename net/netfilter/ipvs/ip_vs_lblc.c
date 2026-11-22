@@ -34,8 +34,7 @@
  * me to write this module.
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "IPVS: " fmt
 
 #include <linux/ip.h>
 #include <linux/slab.h>
@@ -123,7 +122,6 @@ static struct ctl_table vs_vars_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
-	{ }
 };
 #endif
 
@@ -205,8 +203,12 @@ ip_vs_lblc_new(struct ip_vs_lblc_table *tbl, const union nf_inet_addr *daddr,
 		if (en->dest == dest)
 			return en;
 		ip_vs_lblc_del(en);
+		atomic_dec(&tbl->entries);
 	}
-	en = kmalloc(sizeof(*en), GFP_ATOMIC);
+	if (atomic_read(&tbl->entries) >= tbl->max_size * 3 / 2)
+		return NULL;
+
+	en = kmalloc_obj(*en, GFP_ATOMIC);
 	if (!en)
 		return NULL;
 
@@ -293,7 +295,8 @@ static inline void ip_vs_lblc_full_check(struct ip_vs_service *svc)
  */
 static void ip_vs_lblc_check_expire(struct timer_list *t)
 {
-	struct ip_vs_lblc_table *tbl = from_timer(tbl, t, periodic_timer);
+	struct ip_vs_lblc_table *tbl = timer_container_of(tbl, t,
+							  periodic_timer);
 	struct ip_vs_service *svc = tbl->svc;
 	unsigned long now = jiffies;
 	int goal;
@@ -348,7 +351,7 @@ static int ip_vs_lblc_init_svc(struct ip_vs_service *svc)
 	/*
 	 *    Allocate the ip_vs_lblc_table for this service
 	 */
-	tbl = kmalloc(sizeof(*tbl), GFP_KERNEL);
+	tbl = kmalloc_obj(*tbl);
 	if (tbl == NULL)
 		return -ENOMEM;
 
@@ -415,7 +418,7 @@ __ip_vs_lblc_schedule(struct ip_vs_service *svc)
 	 * new connection.
 	 */
 	list_for_each_entry_rcu(dest, &svc->destinations, n_list) {
-		if (dest->flags & IP_VS_DEST_F_OVERLOAD)
+		if (ip_vs_dest_is_overloaded(dest))
 			continue;
 		if (atomic_read(&dest->weight) > 0) {
 			least = dest;
@@ -430,7 +433,7 @@ __ip_vs_lblc_schedule(struct ip_vs_service *svc)
 	 */
   nextstage:
 	list_for_each_entry_continue_rcu(dest, &svc->destinations, n_list) {
-		if (dest->flags & IP_VS_DEST_F_OVERLOAD)
+		if (ip_vs_dest_is_overloaded(dest))
 			continue;
 
 		doh = ip_vs_dest_conn_overhead(dest);
@@ -464,10 +467,11 @@ is_overloaded(struct ip_vs_dest *dest, struct ip_vs_service *svc)
 		struct ip_vs_dest *d;
 
 		list_for_each_entry_rcu(d, &svc->destinations, n_list) {
-			if (atomic_read(&d->activeconns)*2
-			    < atomic_read(&d->weight)) {
+			if (ip_vs_dest_is_overloaded(d))
+				continue;
+			if (atomic_read(&d->activeconns) * 2 <
+			    atomic_read(&d->weight))
 				return 1;
-			}
 		}
 	}
 	return 0;
@@ -503,7 +507,8 @@ ip_vs_lblc_schedule(struct ip_vs_service *svc, const struct sk_buff *skb,
 		 */
 
 		dest = en->dest;
-		if ((dest->flags & IP_VS_DEST_F_AVAILABLE) &&
+		if ((dest->cflags & IP_VS_DEST_CF_AVAILABLE) &&
+		    !ip_vs_dest_is_overloaded(dest) &&
 		    atomic_read(&dest->weight) > 0 && !is_overloaded(dest, svc))
 			goto out;
 	}
@@ -563,10 +568,8 @@ static int __net_init __ip_vs_lblc_init(struct net *net)
 			return -ENOMEM;
 
 		/* Don't export sysctls to unprivileged users */
-		if (net->user_ns != &init_user_ns) {
-			ipvs->lblc_ctl_table[0].procname = NULL;
+		if (net->user_ns != &init_user_ns)
 			vars_table_size = 0;
-		}
 
 	} else
 		ipvs->lblc_ctl_table = vs_vars_table;

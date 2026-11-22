@@ -172,7 +172,7 @@ static int cdns_imx_probe(struct platform_device *pdev)
 	if (!node)
 		return -ENODEV;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -422,7 +422,7 @@ MODULE_DEVICE_TABLE(of, cdns_imx_of_match);
 
 static struct platform_driver cdns_imx_driver = {
 	.probe		= cdns_imx_probe,
-	.remove_new	= cdns_imx_remove,
+	.remove		= cdns_imx_remove,
 	.driver		= {
 		.name	= "cdns3-imx",
 		.of_match_table	= cdns_imx_of_match,

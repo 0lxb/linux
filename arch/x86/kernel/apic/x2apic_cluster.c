@@ -178,13 +178,16 @@ static int x2apic_prepare_cpu(unsigned int cpu)
 	u32 phys_apicid = apic->cpu_present_to_apicid(cpu);
 	u32 cluster = apic_cluster(phys_apicid);
 	u32 logical_apicid = (cluster << 16) | (1 << (phys_apicid & 0xf));
+	int node = cpu_to_node(cpu);
 
 	x86_cpu_to_logical_apicid[cpu] = logical_apicid;
 
-	if (alloc_clustermask(cpu, cluster, cpu_to_node(cpu)) < 0)
+	if (alloc_clustermask(cpu, cluster, node) < 0)
 		return -ENOMEM;
-	if (!zalloc_cpumask_var(&per_cpu(ipi_mask, cpu), GFP_KERNEL))
+
+	if (!zalloc_cpumask_var_node(&per_cpu(ipi_mask, cpu), GFP_KERNEL, node))
 		return -ENOMEM;
+
 	return 0;
 }
 
@@ -206,7 +209,7 @@ static int x2apic_cluster_probe(void)
 		return 0;
 
 	slots = max_t(u32, L1_CACHE_BYTES/sizeof(u32), nr_cpu_ids);
-	x86_cpu_to_logical_apicid = kcalloc(slots, sizeof(u32), GFP_KERNEL);
+	x86_cpu_to_logical_apicid = kzalloc_objs(u32, slots);
 	if (!x86_cpu_to_logical_apicid)
 		return 0;
 

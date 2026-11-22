@@ -142,7 +142,7 @@ static int socrates_nand_probe(struct platform_device *ofdev)
 	int res;
 
 	/* Allocate memory for the device structure (and zero it) */
-	host = devm_kzalloc(&ofdev->dev, sizeof(*host), GFP_KERNEL);
+	host = devm_kzalloc_obj(&ofdev->dev, *host);
 	if (!host)
 		return -ENOMEM;
 
@@ -231,7 +231,7 @@ static struct platform_driver socrates_nand_driver = {
 		.of_match_table = socrates_nand_match,
 	},
 	.probe		= socrates_nand_probe,
-	.remove_new	= socrates_nand_remove,
+	.remove		= socrates_nand_remove,
 };
 
 module_platform_driver(socrates_nand_driver);

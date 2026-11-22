@@ -162,18 +162,9 @@ enum xgene_pmu_dev_type {
 /*
  * sysfs format attributes
  */
-static ssize_t xgene_pmu_format_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
-{
-	struct dev_ext_attribute *eattr;
-
-	eattr = container_of(attr, struct dev_ext_attribute, attr);
-	return sysfs_emit(buf, "%s\n", (char *) eattr->var);
-}
-
 #define XGENE_PMU_FORMAT_ATTR(_name, _config)		\
 	(&((struct dev_ext_attribute[]) {		\
-		{ .attr = __ATTR(_name, S_IRUGO, xgene_pmu_format_show, NULL), \
+		{ .attr = __DEVICE_ATTR(_name, S_IRUGO, device_show_string, NULL), \
 		  .var = (void *) _config, }		\
 	})[0].attr.attr)
 
@@ -604,7 +595,7 @@ static ssize_t cpumask_show(struct device *dev,
 {
 	struct xgene_pmu_dev *pmu_dev = to_pmu_dev(dev_get_drvdata(dev));
 
-	return cpumap_print_to_pagebuf(true, buf, &pmu_dev->parent->cpu);
+	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(&pmu_dev->parent->cpu));
 }
 
 static DEVICE_ATTR_RO(cpumask);
@@ -1102,6 +1093,7 @@ static int xgene_init_perf(struct xgene_pmu_dev *pmu_dev, char *name)
 
 	/* Perf driver registration */
 	pmu_dev->pmu = (struct pmu) {
+		.parent		= pmu_dev->parent->dev,
 		.attr_groups	= pmu_dev->attr_groups,
 		.task_ctx_nr	= perf_invalid_context,
 		.pmu_enable	= xgene_perf_pmu_enable,
@@ -1128,7 +1120,7 @@ xgene_pmu_dev_add(struct xgene_pmu *xgene_pmu, struct xgene_pmu_dev_ctx *ctx)
 	struct device *dev = xgene_pmu->dev;
 	struct xgene_pmu_dev *pmu;
 
-	pmu = devm_kzalloc(dev, sizeof(*pmu), GFP_KERNEL);
+	pmu = devm_kzalloc_obj(dev, *pmu);
 	if (!pmu)
 		return -ENOMEM;
 	pmu->parent = xgene_pmu;
@@ -1462,7 +1454,7 @@ xgene_pmu_dev_ctx *acpi_get_pmu_hw_inf(struct xgene_pmu *xgene_pmu,
 	int enable_bit;
 	int rc;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	ctx = devm_kzalloc_obj(dev, *ctx);
 	if (!ctx)
 		return NULL;
 
@@ -1628,7 +1620,7 @@ xgene_pmu_dev_ctx *fdt_get_pmu_hw_inf(struct xgene_pmu *xgene_pmu,
 	struct resource res;
 	int enable_bit;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	ctx = devm_kzalloc_obj(dev, *ctx);
 	if (!ctx)
 		return NULL;
 
@@ -1847,7 +1839,7 @@ static int xgene_pmu_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
-	xgene_pmu = devm_kzalloc(&pdev->dev, sizeof(*xgene_pmu), GFP_KERNEL);
+	xgene_pmu = devm_kzalloc_obj(&pdev->dev, *xgene_pmu);
 	if (!xgene_pmu)
 		return -ENOMEM;
 	xgene_pmu->dev = &pdev->dev;
@@ -1881,17 +1873,15 @@ static int xgene_pmu_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return -EINVAL;
 
+	raw_spin_lock_init(&xgene_pmu->lock);
+
 	rc = devm_request_irq(&pdev->dev, irq, xgene_pmu_isr,
 				IRQF_NOBALANCING | IRQF_NO_THREAD,
 				dev_name(&pdev->dev), xgene_pmu);
-	if (rc) {
-		dev_err(&pdev->dev, "Could not request IRQ %d\n", irq);
+	if (rc)
 		return rc;
-	}
 
 	xgene_pmu->irq = irq;
-
-	raw_spin_lock_init(&xgene_pmu->lock);
 
 	/* Check for active MCBs and MCUs */
 	rc = xgene_pmu_probe_active_mcb_mcu_l3c(xgene_pmu, pdev);
@@ -1951,7 +1941,7 @@ static void xgene_pmu_remove(struct platform_device *pdev)
 
 static struct platform_driver xgene_pmu_driver = {
 	.probe = xgene_pmu_probe,
-	.remove_new = xgene_pmu_remove,
+	.remove = xgene_pmu_remove,
 	.driver = {
 		.name		= "xgene-pmu",
 		.of_match_table = xgene_pmu_of_match,

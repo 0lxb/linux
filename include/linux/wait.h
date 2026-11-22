@@ -164,6 +164,8 @@ static inline bool wq_has_sleeper(struct wait_queue_head *wq_head)
 extern void add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
 extern void add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
 extern void add_wait_queue_priority(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
+extern int add_wait_queue_priority_exclusive(struct wait_queue_head *wq_head,
+					     struct wait_queue_entry *wq_entry);
 extern void remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
 
 static inline void __add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
@@ -221,6 +223,7 @@ void __wake_up_pollfree(struct wait_queue_head *wq_head);
 #define wake_up_all(x)			__wake_up(x, TASK_NORMAL, 0, NULL)
 #define wake_up_locked(x)		__wake_up_locked((x), TASK_NORMAL, 1)
 #define wake_up_all_locked(x)		__wake_up_locked((x), TASK_NORMAL, 0)
+#define wake_up_sync(x)			__wake_up_sync(x, TASK_NORMAL)
 
 #define wake_up_interruptible(x)	__wake_up(x, TASK_INTERRUPTIBLE, 1, NULL)
 #define wake_up_interruptible_nr(x, nr)	__wake_up(x, TASK_INTERRUPTIBLE, nr, NULL)
@@ -296,13 +299,13 @@ extern void init_wait_entry(struct wait_queue_entry *wq_entry, int flags);
  * otherwise.
  */
 
-#define ___wait_event(wq_head, condition, state, exclusive, ret, cmd)		\
+#define ___wait_event(wq_head, condition, state, wq_flag, ret, cmd)		\
 ({										\
 	__label__ __out;							\
 	struct wait_queue_entry __wq_entry;					\
 	long __ret = ret;	/* explicit shadow */				\
 										\
-	init_wait_entry(&__wq_entry, exclusive ? WQ_FLAG_EXCLUSIVE : 0);	\
+	init_wait_entry(&__wq_entry, wq_flag);					\
 	for (;;) {								\
 		long __int = prepare_to_wait_event(&wq_head, &__wq_entry, state);\
 										\
@@ -315,14 +318,16 @@ extern void init_wait_entry(struct wait_queue_entry *wq_entry, int flags);
 		}								\
 										\
 		cmd;								\
+										\
+		if (condition)							\
+			break;							\
 	}									\
 	finish_wait(&wq_head, &__wq_entry);					\
 __out:	__ret;									\
 })
 
 #define __wait_event(wq_head, condition)					\
-	(void)___wait_event(wq_head, condition, TASK_UNINTERRUPTIBLE, 0, 0,	\
-			    schedule())
+	(void)__wait_event_state(wq_head, condition, TASK_UNINTERRUPTIBLE)
 
 /**
  * wait_event - sleep until a condition gets true
@@ -360,8 +365,7 @@ do {										\
 } while (0)
 
 #define __wait_event_freezable(wq_head, condition)				\
-	___wait_event(wq_head, condition, (TASK_INTERRUPTIBLE|TASK_FREEZABLE),	\
-			0, 0, schedule())
+	__wait_event_state(wq_head, condition, (TASK_INTERRUPTIBLE|TASK_FREEZABLE))
 
 /**
  * wait_event_freezable - sleep (or freeze) until a condition gets true
@@ -436,8 +440,8 @@ do {										\
 })
 
 #define __wait_event_exclusive_cmd(wq_head, condition, cmd1, cmd2)		\
-	(void)___wait_event(wq_head, condition, TASK_UNINTERRUPTIBLE, 1, 0,	\
-			    cmd1; schedule(); cmd2)
+	(void)___wait_event(wq_head, condition, TASK_UNINTERRUPTIBLE,		\
+			    WQ_FLAG_EXCLUSIVE, 0, cmd1; schedule(); cmd2)
 /*
  * Just like wait_event_cmd(), except it sets exclusive flag
  */
@@ -474,8 +478,7 @@ do {										\
 } while (0)
 
 #define __wait_event_interruptible(wq_head, condition)				\
-	___wait_event(wq_head, condition, TASK_INTERRUPTIBLE, 0, 0,		\
-		      schedule())
+	__wait_event_state(wq_head, condition, TASK_INTERRUPTIBLE)
 
 /**
  * wait_event_interruptible - sleep until a condition gets true
@@ -541,8 +544,8 @@ do {										\
 	int __ret = 0;								\
 	struct hrtimer_sleeper __t;						\
 										\
-	hrtimer_init_sleeper_on_stack(&__t, CLOCK_MONOTONIC,			\
-				      HRTIMER_MODE_REL);			\
+	hrtimer_setup_sleeper_on_stack(&__t, CLOCK_MONOTONIC,			\
+				       HRTIMER_MODE_REL);			\
 	if ((timeout) != KTIME_MAX) {						\
 		hrtimer_set_expires_range_ns(&__t.timer, timeout,		\
 					current->timer_slack_ns);		\
@@ -550,7 +553,7 @@ do {										\
 	}									\
 										\
 	__ret = ___wait_event(wq_head, condition, state, 0, 0,			\
-		if (!__t.task) {						\
+		if (!hrtimer_sleeper_task_get(&__t)) {				\
 			__ret = -ETIME;						\
 			break;							\
 		}								\
@@ -614,8 +617,7 @@ do {										\
 })
 
 #define __wait_event_interruptible_exclusive(wq, condition)			\
-	___wait_event(wq, condition, TASK_INTERRUPTIBLE, 1, 0,			\
-		      schedule())
+	__wait_event_state_exclusive(wq, condition, TASK_INTERRUPTIBLE)
 
 #define wait_event_interruptible_exclusive(wq, condition)			\
 ({										\
@@ -627,8 +629,7 @@ do {										\
 })
 
 #define __wait_event_killable_exclusive(wq, condition)				\
-	___wait_event(wq, condition, TASK_KILLABLE, 1, 0,			\
-		      schedule())
+	__wait_event_state_exclusive(wq, condition, TASK_KILLABLE)
 
 #define wait_event_killable_exclusive(wq, condition)				\
 ({										\
@@ -641,8 +642,7 @@ do {										\
 
 
 #define __wait_event_freezable_exclusive(wq, condition)				\
-	___wait_event(wq, condition, (TASK_INTERRUPTIBLE|TASK_FREEZABLE), 1, 0,\
-			schedule())
+	__wait_event_state_exclusive(wq, condition, (TASK_INTERRUPTIBLE|TASK_FREEZABLE))
 
 #define wait_event_freezable_exclusive(wq, condition)				\
 ({										\
@@ -670,7 +670,7 @@ do {										\
 do {										\
 	might_sleep();								\
 	if (!(condition))							\
-		___wait_event(wq_head, condition, TASK_IDLE, 0, 0, schedule());	\
+		__wait_event_state(wq_head, condition, TASK_IDLE);		\
 } while (0)
 
 /**
@@ -694,7 +694,7 @@ do {										\
 do {										\
 	might_sleep();								\
 	if (!(condition))							\
-		___wait_event(wq_head, condition, TASK_IDLE, 1, 0, schedule());	\
+		__wait_event_state_exclusive(wq_head, condition, TASK_IDLE);	\
 } while (0)
 
 #define __wait_event_idle_timeout(wq_head, condition, timeout)			\
@@ -732,7 +732,7 @@ do {										\
 
 #define __wait_event_idle_exclusive_timeout(wq_head, condition, timeout)	\
 	___wait_event(wq_head, ___wait_cond_timeout(condition),			\
-		      TASK_IDLE, 1, timeout,					\
+		      TASK_IDLE, WQ_FLAG_EXCLUSIVE, timeout,			\
 		      __ret = schedule_timeout(__ret))
 
 /**
@@ -905,7 +905,7 @@ extern int do_wait_intr_irq(wait_queue_head_t *, wait_queue_entry_t *);
 
 
 #define __wait_event_killable(wq, condition)					\
-	___wait_event(wq, condition, TASK_KILLABLE, 0, 0, schedule())
+	__wait_event_state(wq, condition, TASK_KILLABLE)
 
 /**
  * wait_event_killable - sleep until a condition gets true
@@ -928,6 +928,21 @@ extern int do_wait_intr_irq(wait_queue_head_t *, wait_queue_entry_t *);
 	might_sleep();								\
 	if (!(condition))							\
 		__ret = __wait_event_killable(wq_head, condition);		\
+	__ret;									\
+})
+
+#define __io_wait_event_killable(wq, condition)					\
+	___wait_event(wq, condition, TASK_KILLABLE, 0, 0, io_schedule())
+
+/*
+ * wait_event_killable() - link wait_event_killable but with io_schedule()
+ */
+#define io_wait_event_killable(wq_head, condition)				\
+({										\
+	int __ret = 0;								\
+	might_sleep();								\
+	if (!(condition))							\
+		__ret = __io_wait_event_killable(wq_head, condition);		\
 	__ret;									\
 })
 
@@ -956,6 +971,18 @@ extern int do_wait_intr_irq(wait_queue_head_t *, wait_queue_entry_t *);
 	might_sleep();								\
 	if (!(condition))							\
 		__ret = __wait_event_state(wq_head, condition, state);		\
+	__ret;									\
+})
+
+#define __wait_event_state_exclusive(wq, condition, state)			\
+	___wait_event(wq, condition, state, WQ_FLAG_EXCLUSIVE, 0, schedule())
+
+#define wait_event_state_exclusive(wq, condition, state)			\
+({										\
+	int __ret = 0;								\
+	might_sleep();								\
+	if (!(condition))							\
+		__ret = __wait_event_state_exclusive(wq, condition, state);	\
 	__ret;									\
 })
 
@@ -1195,6 +1222,7 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
 long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout);
 int woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+int woken_wake_bit_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
 int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
 
 #define DEFINE_WAIT_FUNC(name, function)					\
@@ -1206,13 +1234,15 @@ int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, i
 
 #define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
 
-#define init_wait(wait)								\
+#define init_wait_func(wait, function)						\
 	do {									\
 		(wait)->private = current;					\
-		(wait)->func = autoremove_wake_function;			\
+		(wait)->func = function;					\
 		INIT_LIST_HEAD(&(wait)->entry);					\
 		(wait)->flags = 0;						\
 	} while (0)
+
+#define init_wait(wait)	init_wait_func(wait, autoremove_wake_function)
 
 typedef int (*task_call_f)(struct task_struct *p, void *arg);
 extern int task_call_func(struct task_struct *p, task_call_f func, void *arg);

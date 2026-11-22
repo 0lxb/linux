@@ -53,7 +53,7 @@ struct pic32_spi_regs {
 #define  TX_FIFO_ALL_EMPTY	0 /* completely empty */
 #define  TX_FIFO_EMPTY		1 /* empty */
 #define  TX_FIFO_HALF_EMPTY	2 /* empty by half or more */
-#define  TX_FIFO_NOT_FULL	3 /* atleast one empty */
+#define  TX_FIFO_NOT_FULL	3 /* at least one empty */
 
 #define CTRL_MSTEN	BIT(5) /* enable master mode */
 #define CTRL_CKP	BIT(6) /* active low */
@@ -498,7 +498,7 @@ static int pic32_spi_one_transfer(struct spi_controller *host,
 {
 	struct pic32_spi *pic32s;
 	bool dma_issued = false;
-	unsigned long timeout;
+	unsigned long time_left;
 	int ret;
 
 	pic32s = spi_controller_get_devdata(host);
@@ -545,8 +545,8 @@ static int pic32_spi_one_transfer(struct spi_controller *host,
 	}
 
 	/* wait for completion */
-	timeout = wait_for_completion_timeout(&pic32s->xfer_done, 2 * HZ);
-	if (timeout == 0) {
+	time_left = wait_for_completion_timeout(&pic32s->xfer_done, 2 * HZ);
+	if (time_left == 0) {
 		dev_err(&spi->dev, "wait error/timedout\n");
 		if (dma_issued) {
 			dmaengine_terminate_all(host->dma_rx);
@@ -752,7 +752,7 @@ static int pic32_spi_probe(struct platform_device *pdev)
 	struct pic32_spi *pic32s;
 	int ret;
 
-	host = spi_alloc_host(&pdev->dev, sizeof(*pic32s));
+	host = devm_spi_alloc_host(&pdev->dev, sizeof(*pic32s));
 	if (!host)
 		return -ENOMEM;
 
@@ -761,7 +761,7 @@ static int pic32_spi_probe(struct platform_device *pdev)
 
 	ret = pic32_spi_hw_probe(pdev, pic32s);
 	if (ret)
-		goto err_host;
+		return ret;
 
 	host->dev.of_node	= pdev->dev.of_node;
 	host->mode_bits	= SPI_MODE_3 | SPI_MODE_0 | SPI_CS_HIGH;
@@ -821,7 +821,7 @@ static int pic32_spi_probe(struct platform_device *pdev)
 	}
 
 	/* register host */
-	ret = devm_spi_register_controller(&pdev->dev, host);
+	ret = spi_register_controller(host);
 	if (ret) {
 		dev_err(&host->dev, "failed registering spi host\n");
 		goto err_bailout;
@@ -833,16 +833,16 @@ static int pic32_spi_probe(struct platform_device *pdev)
 
 err_bailout:
 	pic32_spi_dma_unprep(pic32s);
-err_host:
-	spi_controller_put(host);
+
 	return ret;
 }
 
 static void pic32_spi_remove(struct platform_device *pdev)
 {
-	struct pic32_spi *pic32s;
+	struct pic32_spi *pic32s = platform_get_drvdata(pdev);
 
-	pic32s = platform_get_drvdata(pdev);
+	spi_unregister_controller(pic32s->host);
+
 	pic32_spi_disable(pic32s);
 	pic32_spi_dma_unprep(pic32s);
 }
@@ -859,7 +859,7 @@ static struct platform_driver pic32_spi_driver = {
 		.of_match_table = of_match_ptr(pic32_spi_of_match),
 	},
 	.probe = pic32_spi_probe,
-	.remove_new = pic32_spi_remove,
+	.remove = pic32_spi_remove,
 };
 
 module_platform_driver(pic32_spi_driver);

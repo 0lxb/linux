@@ -132,7 +132,7 @@ static int regulator_userspace_consumer_probe(struct platform_device *pdev)
 
 		pdata->no_autoswitch = true;
 		pdata->num_supplies = 1;
-		pdata->supplies = devm_kzalloc(&pdev->dev, sizeof(*pdata->supplies), GFP_KERNEL);
+		pdata->supplies = devm_kzalloc_obj(&pdev->dev, *pdata->supplies);
 		if (!pdata->supplies)
 			return -ENOMEM;
 		pdata->supplies[0].supply = "vout";
@@ -143,9 +143,7 @@ static int regulator_userspace_consumer_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	drvdata = devm_kzalloc(&pdev->dev,
-			       sizeof(struct userspace_consumer_data),
-			       GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(&pdev->dev, struct userspace_consumer_data);
 	if (drvdata == NULL)
 		return -ENOMEM;
 
@@ -158,10 +156,8 @@ static int regulator_userspace_consumer_probe(struct platform_device *pdev)
 
 	ret = devm_regulator_bulk_get_exclusive(&pdev->dev, drvdata->num_supplies,
 						drvdata->supplies);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to get supplies: %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Failed to get supplies\n");
 
 	platform_set_drvdata(pdev, drvdata);
 
@@ -212,7 +208,7 @@ MODULE_DEVICE_TABLE(of, regulator_userspace_consumer_of_match);
 
 static struct platform_driver regulator_userspace_consumer_driver = {
 	.probe		= regulator_userspace_consumer_probe,
-	.remove_new	= regulator_userspace_consumer_remove,
+	.remove		= regulator_userspace_consumer_remove,
 	.driver		= {
 		.name		= "reg-userspace-consumer",
 		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,

@@ -147,7 +147,8 @@ static int lp3943_gpio_get(struct gpio_chip *chip, unsigned int offset)
 		return lp3943_get_gpio_out_status(lp3943_gpio, chip, offset);
 }
 
-static void lp3943_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static int lp3943_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			   int value)
 {
 	struct lp3943_gpio *lp3943_gpio = gpiochip_get_data(chip);
 	u8 data;
@@ -157,15 +158,19 @@ static void lp3943_gpio_set(struct gpio_chip *chip, unsigned int offset, int val
 	else
 		data = LP3943_GPIO_OUT_LOW;
 
-	lp3943_gpio_set_mode(lp3943_gpio, offset, data);
+	return lp3943_gpio_set_mode(lp3943_gpio, offset, data);
 }
 
 static int lp3943_gpio_direction_output(struct gpio_chip *chip, unsigned int offset,
 					int value)
 {
 	struct lp3943_gpio *lp3943_gpio = gpiochip_get_data(chip);
+	int ret;
 
-	lp3943_gpio_set(chip, offset, value);
+	ret = lp3943_gpio_set(chip, offset, value);
+	if (ret)
+		return ret;
+
 	lp3943_gpio->input_mask &= ~BIT(offset);
 
 	return 0;
@@ -190,8 +195,7 @@ static int lp3943_gpio_probe(struct platform_device *pdev)
 	struct lp3943 *lp3943 = dev_get_drvdata(pdev->dev.parent);
 	struct lp3943_gpio *lp3943_gpio;
 
-	lp3943_gpio = devm_kzalloc(&pdev->dev, sizeof(*lp3943_gpio),
-				GFP_KERNEL);
+	lp3943_gpio = devm_kzalloc_obj(&pdev->dev, *lp3943_gpio);
 	if (!lp3943_gpio)
 		return -ENOMEM;
 

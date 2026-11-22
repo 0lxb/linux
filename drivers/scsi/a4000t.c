@@ -47,8 +47,7 @@ static int __init amiga_a4000t_scsi_probe(struct platform_device *pdev)
 				"A4000T builtin SCSI"))
 		return -EBUSY;
 
-	hostdata = kzalloc(sizeof(struct NCR_700_Host_Parameters),
-			   GFP_KERNEL);
+	hostdata = kzalloc_obj(struct NCR_700_Host_Parameters);
 	if (!hostdata) {
 		dev_err(&pdev->dev, "Failed to allocate host data\n");
 		goto out_release;
@@ -108,10 +107,16 @@ static void __exit amiga_a4000t_scsi_remove(struct platform_device *pdev)
 	release_mem_region(res->start, resource_size(res));
 }
 
-static struct platform_driver amiga_a4000t_scsi_driver = {
-	.remove_new = __exit_p(amiga_a4000t_scsi_remove),
-	.driver   = {
-		.name	= "amiga-a4000t-scsi",
+/*
+ * amiga_a4000t_scsi_remove() lives in .exit.text. For drivers registered via
+ * module_platform_driver_probe() this is ok because they cannot get unbound at
+ * runtime. So mark the driver struct with __refdata to prevent modpost
+ * triggering a section mismatch warning.
+ */
+static struct platform_driver amiga_a4000t_scsi_driver __refdata = {
+	.remove = __exit_p(amiga_a4000t_scsi_remove),
+	.driver = {
+		.name = "amiga-a4000t-scsi",
 	},
 };
 

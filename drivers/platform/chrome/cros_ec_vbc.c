@@ -14,7 +14,7 @@
 #define DRV_NAME "cros-ec-vbc"
 
 static ssize_t vboot_context_read(struct file *filp, struct kobject *kobj,
-				  struct bin_attribute *att, char *buf,
+				  const struct bin_attribute *att, char *buf,
 				  loff_t pos, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -58,7 +58,7 @@ static ssize_t vboot_context_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t vboot_context_write(struct file *filp, struct kobject *kobj,
-				   struct bin_attribute *attr, char *buf,
+				   const struct bin_attribute *attr, char *buf,
 				   loff_t pos, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -98,9 +98,9 @@ static ssize_t vboot_context_write(struct file *filp, struct kobject *kobj,
 	return data_sz;
 }
 
-static BIN_ATTR_RW(vboot_context, 16);
+static const BIN_ATTR_RW(vboot_context, 16);
 
-static struct bin_attribute *cros_ec_vbc_bin_attrs[] = {
+static const struct bin_attribute *const cros_ec_vbc_bin_attrs[] = {
 	&bin_attr_vboot_context,
 	NULL
 };
@@ -133,16 +133,22 @@ static void cros_ec_vbc_remove(struct platform_device *pd)
 			   &cros_ec_vbc_attr_group);
 }
 
+static const struct platform_device_id cros_ec_vbc_id[] = {
+	{ .name = DRV_NAME },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, cros_ec_vbc_id);
+
 static struct platform_driver cros_ec_vbc_driver = {
 	.driver = {
 		.name = DRV_NAME,
 	},
 	.probe = cros_ec_vbc_probe,
-	.remove_new = cros_ec_vbc_remove,
+	.remove = cros_ec_vbc_remove,
+	.id_table = cros_ec_vbc_id,
 };
 
 module_platform_driver(cros_ec_vbc_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Expose the vboot context nvram to userspace");
-MODULE_ALIAS("platform:" DRV_NAME);

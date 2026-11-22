@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019-2023 Linaro Ltd.
+ * Copyright (C) 2019-2024 Linaro Ltd.
  */
 
-#include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/platform_device.h>
 
 #include "ipa.h"
 #include "ipa_reg.h"
@@ -125,6 +125,7 @@ static const struct regs *ipa_regs(enum ipa_version version)
 	case IPA_VERSION_4_11:
 		return &ipa_regs_v4_11;
 	case IPA_VERSION_5_0:
+	case IPA_VERSION_5_2:
 		return &ipa_regs_v5_0;
 	case IPA_VERSION_5_5:
 		return &ipa_regs_v5_5;

@@ -207,8 +207,7 @@ static int fsl_ifc_ctrl_probe(struct platform_device *dev)
 
 	dev_info(&dev->dev, "Freescale Integrated Flash Controller\n");
 
-	fsl_ifc_ctrl_dev = devm_kzalloc(&dev->dev, sizeof(*fsl_ifc_ctrl_dev),
-					GFP_KERNEL);
+	fsl_ifc_ctrl_dev = devm_kzalloc_obj(&dev->dev, *fsl_ifc_ctrl_dev);
 	if (!fsl_ifc_ctrl_dev)
 		return -ENOMEM;
 
@@ -316,7 +315,7 @@ static struct platform_driver fsl_ifc_ctrl_driver = {
 		.of_match_table = fsl_ifc_match,
 	},
 	.probe       = fsl_ifc_ctrl_probe,
-	.remove_new  = fsl_ifc_ctrl_remove,
+	.remove  = fsl_ifc_ctrl_remove,
 };
 
 static int __init fsl_ifc_init(void)

@@ -2,6 +2,8 @@
 DRM Driver uAPI
 ===============
 
+.. contents::
+
 drm/i915 uAPI
 =============
 
@@ -18,7 +20,17 @@ VM_BIND / EXEC uAPI
 
 .. kernel-doc:: include/uapi/drm/nouveau_drm.h
 
+drm/panthor uAPI
+================
+
+.. kernel-doc:: include/uapi/drm/panthor_drm.h
+
 drm/xe uAPI
 ===========
 
 .. kernel-doc:: include/uapi/drm/xe_drm.h
+
+drm/asahi uAPI
+================
+
+.. kernel-doc:: include/uapi/drm/asahi_drm.h

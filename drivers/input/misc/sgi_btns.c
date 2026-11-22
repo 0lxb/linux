@@ -81,7 +81,7 @@ static int sgi_buttons_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int error, i;
 
-	bdev = devm_kzalloc(&pdev->dev, sizeof(*bdev), GFP_KERNEL);
+	bdev = devm_kzalloc_obj(&pdev->dev, *bdev);
 	if (!bdev)
 		return -ENOMEM;
 
@@ -128,4 +128,5 @@ static struct platform_driver sgi_buttons_driver = {
 };
 module_platform_driver(sgi_buttons_driver);
 
+MODULE_DESCRIPTION("SGI Indy/O2 volume button interface driver");
 MODULE_LICENSE("GPL");

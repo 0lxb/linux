@@ -29,7 +29,6 @@
 #include <linux/bcd.h>
 #include <linux/slab.h>
 #include <linux/mfd/menelaus.h>
-#include <linux/gpio.h>
 
 #include <asm/mach/irq.h>
 
@@ -1156,7 +1155,7 @@ static int menelaus_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	menelaus = devm_kzalloc(&client->dev, sizeof(*menelaus), GFP_KERNEL);
+	menelaus = devm_kzalloc_obj(&client->dev, *menelaus);
 	if (!menelaus)
 		return -ENOMEM;
 
@@ -1231,7 +1230,7 @@ static void menelaus_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id menelaus_id[] = {
-	{ "menelaus", 0 },
+	{ "menelaus" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, menelaus_id);

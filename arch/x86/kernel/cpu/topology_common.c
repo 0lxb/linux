@@ -3,8 +3,10 @@
 
 #include <xen/xen.h>
 
+#include <asm/intel-family.h>
 #include <asm/apic.h>
 #include <asm/processor.h>
+#include <asm/cpuid/api.h>
 #include <asm/smp.h>
 
 #include "cpu.h"
@@ -14,6 +16,9 @@ EXPORT_SYMBOL_GPL(x86_topo_system);
 
 unsigned int __amd_nodes_per_pkg __ro_after_init;
 EXPORT_SYMBOL_GPL(__amd_nodes_per_pkg);
+
+/* CPUs which are the primary SMT threads */
+struct cpumask __cpu_primary_thread_mask __read_mostly;
 
 void topology_set_dom(struct topo_scan *tscan, enum x86_topology_domains dom,
 		      unsigned int shift, unsigned int ncpus)
@@ -27,7 +32,40 @@ void topology_set_dom(struct topo_scan *tscan, enum x86_topology_domains dom,
 	}
 }
 
-static unsigned int __maybe_unused parse_num_cores_legacy(struct cpuinfo_x86 *c)
+enum x86_topology_cpu_type get_topology_cpu_type(struct cpuinfo_x86 *c)
+{
+	if (c->x86_vendor == X86_VENDOR_INTEL) {
+		switch (c->topo.intel_type) {
+		case INTEL_CPU_TYPE_ATOM: return TOPO_CPU_TYPE_EFFICIENCY;
+		case INTEL_CPU_TYPE_CORE: return TOPO_CPU_TYPE_PERFORMANCE;
+		}
+	}
+	if (c->x86_vendor == X86_VENDOR_AMD) {
+		switch (c->topo.amd_type) {
+		case AMD_CPU_TYPE_PERFORMANCE:	return TOPO_CPU_TYPE_PERFORMANCE;
+		case AMD_CPU_TYPE_EFFICIENCY:	return TOPO_CPU_TYPE_EFFICIENCY;
+		case AMD_CPU_TYPE_LOW_POWER:	return TOPO_CPU_TYPE_LOW_POWER;
+		}
+	}
+
+	return TOPO_CPU_TYPE_UNKNOWN;
+}
+
+const char *get_topology_cpu_type_name(struct cpuinfo_x86 *c)
+{
+	switch (get_topology_cpu_type(c)) {
+	case TOPO_CPU_TYPE_PERFORMANCE:
+		return "performance";
+	case TOPO_CPU_TYPE_EFFICIENCY:
+		return "efficiency";
+	case TOPO_CPU_TYPE_LOW_POWER:
+		return "low_power";
+	default:
+		return "unknown";
+	}
+}
+
+static unsigned int parse_num_cores_legacy(struct cpuinfo_x86 *c)
 {
 	struct {
 		u32	cache_type	:  5,
@@ -87,6 +125,7 @@ static void parse_topology(struct topo_scan *tscan, bool early)
 		.cu_id			= 0xff,
 		.llc_id			= BAD_APICID,
 		.l2c_id			= BAD_APICID,
+		.cpu_type		= TOPO_CPU_TYPE_UNKNOWN,
 	};
 	struct cpuinfo_x86 *c = tscan->c;
 	struct {
@@ -122,8 +161,8 @@ static void parse_topology(struct topo_scan *tscan, bool early)
 
 	switch (c->x86_vendor) {
 	case X86_VENDOR_AMD:
-		if (IS_ENABLED(CONFIG_CPU_SUP_AMD))
-			cpu_parse_topology_amd(tscan);
+	case X86_VENDOR_HYGON:
+		cpu_parse_topology_amd(tscan);
 		break;
 	case X86_VENDOR_CENTAUR:
 	case X86_VENDOR_ZHAOXIN:
@@ -132,15 +171,17 @@ static void parse_topology(struct topo_scan *tscan, bool early)
 	case X86_VENDOR_INTEL:
 		if (!IS_ENABLED(CONFIG_CPU_SUP_INTEL) || !cpu_parse_topology_ext(tscan))
 			parse_legacy(tscan);
-		break;
-	case X86_VENDOR_HYGON:
-		if (IS_ENABLED(CONFIG_CPU_SUP_HYGON))
-			cpu_parse_topology_amd(tscan);
+
+		if (c->cpuid_level >= 0x1a) {
+			c->topo.hw_cpu_type = cpuid_eax(0x1a);
+			c->topo.cpu_type    = get_topology_cpu_type(c);
+		}
+
 		break;
 	}
 }
 
-static void topo_set_ids(struct topo_scan *tscan)
+static void topo_set_ids(struct topo_scan *tscan, bool early)
 {
 	struct cpuinfo_x86 *c = tscan->c;
 	u32 apicid = c->topo.apicid;
@@ -148,8 +189,11 @@ static void topo_set_ids(struct topo_scan *tscan)
 	c->topo.pkg_id = topo_shift_apicid(apicid, TOPO_PKG_DOMAIN);
 	c->topo.die_id = topo_shift_apicid(apicid, TOPO_DIE_DOMAIN);
 
-	c->topo.logical_pkg_id = topology_get_logical_id(apicid, TOPO_PKG_DOMAIN);
-	c->topo.logical_die_id = topology_get_logical_id(apicid, TOPO_DIE_DOMAIN);
+	if (!early) {
+		c->topo.logical_pkg_id = topology_get_logical_id(apicid, TOPO_PKG_DOMAIN);
+		c->topo.logical_die_id = topology_get_logical_id(apicid, TOPO_DIE_DOMAIN);
+		c->topo.logical_core_id = topology_get_logical_id(apicid, TOPO_CORE_DOMAIN);
+	}
 
 	/* Package relative core ID */
 	c->topo.core_id = (apicid & topo_domain_mask(TOPO_PKG_DOMAIN)) >>
@@ -187,7 +231,7 @@ void cpu_parse_topology(struct cpuinfo_x86 *c)
 		       tscan.dom_shifts[dom], x86_topo_system.dom_shifts[dom]);
 	}
 
-	topo_set_ids(&tscan);
+	topo_set_ids(&tscan, false);
 }
 
 void __init cpu_init_topology(struct cpuinfo_x86 *c)
@@ -208,7 +252,7 @@ void __init cpu_init_topology(struct cpuinfo_x86 *c)
 		x86_topo_system.dom_size[dom] = 1U << sft;
 	}
 
-	topo_set_ids(&tscan);
+	topo_set_ids(&tscan, true);
 
 	/*
 	 * AMD systems have Nodes per package which cannot be mapped to

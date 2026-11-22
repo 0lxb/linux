@@ -7,6 +7,7 @@
 #include <linux/etherdevice.h>
 #include <linux/if_vlan.h>
 #include <linux/jiffies.h>
+#include <linux/mmzone.h>
 #include <linux/phy.h>
 #include <linux/phylink.h>
 #include <linux/ptp_clock_kernel.h>
@@ -16,6 +17,8 @@
 #include <net/switchdev.h>
 #include <net/xdp.h>
 
+#include <fdma_api.h>
+#include <fdma_pci.h>
 #include <vcap_api.h>
 #include <vcap_api_client.h>
 
@@ -74,21 +77,43 @@
 #define IFH_REW_OP_ONE_STEP_PTP		0x3
 #define IFH_REW_OP_TWO_STEP_PTP		0x4
 
+#define IFH_PDU_TYPE_NONE		0
+#define IFH_PDU_TYPE_IPV4		7
+#define IFH_PDU_TYPE_IPV6		8
+
 #define FDMA_RX_DCB_MAX_DBS		1
 #define FDMA_TX_DCB_MAX_DBS		1
-#define FDMA_DCB_INFO_DATAL(x)		((x) & GENMASK(15, 0))
-
-#define FDMA_DCB_STATUS_BLOCKL(x)	((x) & GENMASK(15, 0))
-#define FDMA_DCB_STATUS_SOF		BIT(16)
-#define FDMA_DCB_STATUS_EOF		BIT(17)
-#define FDMA_DCB_STATUS_INTR		BIT(18)
-#define FDMA_DCB_STATUS_DONE		BIT(19)
-#define FDMA_DCB_STATUS_BLOCKO(x)	(((x) << 20) & GENMASK(31, 20))
-#define FDMA_DCB_INVALID_DATA		0x1
 
 #define FDMA_XTR_CHANNEL		6
 #define FDMA_INJ_CHANNEL		0
 #define FDMA_DCB_MAX			512
+
+/* Ring must fit in one MAX_PAGE_ORDER DMA block; 512 DCBs overflows
+ * at jumbo MTU.
+ */
+#define FDMA_PCI_DCB_MAX		256
+
+#define FDMA_OVERHEAD							\
+	(IFH_LEN_BYTES +						\
+	 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) +		\
+	 VLAN_HLEN * 2 +						\
+	 XDP_PACKET_HEADROOM)
+
+/* Largest db_size keeping the ATU-padded ring inside one MAX_PAGE_ORDER
+ * block and within the 16-bit DCB DATAL field. Inverts ALIGN(x, R) <= L
+ * into x <= ALIGN_DOWN(L, R) to bound x directly.
+ */
+#define FDMA_PCI_DB_SIZE_MAX						\
+	MIN_T(u32,							\
+	      (ALIGN_DOWN(PAGE_SIZE << MAX_PAGE_ORDER,			\
+			  FDMA_PCI_ATU_REGION_ALIGN) -			\
+	       FDMA_PCI_DCB_MAX * sizeof(struct fdma_dcb)) /		\
+	      (FDMA_PCI_DCB_MAX * FDMA_RX_DCB_MAX_DBS),			\
+	      ALIGN_DOWN(GENMASK(15, 0), FDMA_PCI_DB_ALIGN))
+
+#define FDMA_PCI_MAX_MTU						\
+	(FDMA_PCI_DB_SIZE_MAX - FDMA_OVERHEAD -				\
+	 (ETH_HLEN + ETH_FCS_LEN))
 
 #define SE_IDX_QUEUE			0  /* 0-79 : Queue scheduler elements */
 #define SE_IDX_PORT			80 /* 80-89 : Port schedular elements */
@@ -197,50 +222,26 @@ enum vcap_is1_port_sel_rt {
 	VCAP_IS1_PS_RT_FOLLOW_OTHER = 7,
 };
 
+struct lan966x;
+
+struct lan966x_fdma_ops {
+	int (*fdma_init)(struct lan966x *lan966x);
+	void (*fdma_deinit)(struct lan966x *lan966x);
+	int (*fdma_xmit)(struct sk_buff *skb, __be32 *ifh,
+			 struct net_device *dev);
+	int (*fdma_poll)(struct napi_struct *napi, int weight);
+	int (*fdma_resize)(struct lan966x *lan966x);
+};
+
 struct lan966x_port;
-
-struct lan966x_db {
-	u64 dataptr;
-	u64 status;
-};
-
-struct lan966x_rx_dcb {
-	u64 nextptr;
-	u64 info;
-	struct lan966x_db db[FDMA_RX_DCB_MAX_DBS];
-};
-
-struct lan966x_tx_dcb {
-	u64 nextptr;
-	u64 info;
-	struct lan966x_db db[FDMA_TX_DCB_MAX_DBS];
-};
 
 struct lan966x_rx {
 	struct lan966x *lan966x;
 
-	/* Pointer to the array of hardware dcbs. */
-	struct lan966x_rx_dcb *dcbs;
-
-	/* Pointer to the last address in the dcbs. */
-	struct lan966x_rx_dcb *last_entry;
+	struct fdma fdma;
 
 	/* For each DB, there is a page */
 	struct page *page[FDMA_DCB_MAX][FDMA_RX_DCB_MAX_DBS];
-
-	/* Represents the db_index, it can have a value between 0 and
-	 * FDMA_RX_DCB_MAX_DBS, once it reaches the value of FDMA_RX_DCB_MAX_DBS
-	 * it means that the DCB can be reused.
-	 */
-	int db_index;
-
-	/* Represents the index in the dcbs. It has a value between 0 and
-	 * FDMA_DCB_MAX
-	 */
-	int dcb_index;
-
-	/* Represents the dma address to the dcbs array */
-	dma_addr_t dma;
 
 	/* Represents the page order that is used to allocate the pages for the
 	 * RX buffers. This value is calculated based on max MTU of the devices.
@@ -251,8 +252,6 @@ struct lan966x_rx {
 	 * includes the IFH + VLAN tags + frame + skb_shared_info
 	 */
 	u32 max_mtu;
-
-	u8 channel_id;
 
 	struct page_pool *page_pool;
 };
@@ -275,17 +274,10 @@ struct lan966x_tx_dcb_buf {
 struct lan966x_tx {
 	struct lan966x *lan966x;
 
-	/* Pointer to the dcb list */
-	struct lan966x_tx_dcb *dcbs;
-	u16 last_in_use;
-
-	/* Represents the DMA address to the first entry of the dcb entries. */
-	dma_addr_t dma;
+	struct fdma fdma;
 
 	/* Array of dcbs that are given to the HW */
 	struct lan966x_tx_dcb_buf *dcbs_buf;
-
-	u8 channel_id;
 
 	bool activated;
 };
@@ -306,6 +298,7 @@ struct lan966x_phc {
 
 struct lan966x_skb_cb {
 	u8 rew_op;
+	u8 pdu_type;
 	u16 ts_id;
 	unsigned long jiffies;
 };
@@ -317,16 +310,25 @@ struct lan966x_skb_cb {
 struct lan966x {
 	struct device *dev;
 
+	/* Device used for DMA; the PCIe endpoint when enumerated over PCIe. */
+	struct device *dma_dev;
+
+	const struct lan966x_fdma_ops *ops;
+
 	u8 num_phys_ports;
 	struct lan966x_port **ports;
 
 	void __iomem *regs[NUM_TARGETS];
 
+#if IS_ENABLED(CONFIG_MCHP_LAN966X_PCI)
+	struct fdma_pci_atu atu;
+#endif
+
 	int shared_queue_sz;
 
 	u8 base_mac[ETH_ALEN];
 
-	spinlock_t tx_lock; /* lock for frame transmition */
+	spinlock_t tx_lock; /* lock for frame transmission */
 
 	struct net_device *bridge;
 	u16 bridge_mask;
@@ -342,8 +344,8 @@ struct lan966x {
 	const struct lan966x_stat_layout *stats_layout;
 	u32 num_stats;
 
-	/* workqueue for reading stats */
-	struct mutex stats_lock;
+	/* lock for reading stats */
+	spinlock_t stats_lock;
 	u64 *stats;
 	struct delayed_work stats_work;
 	struct workqueue_struct *stats_queue;
@@ -495,7 +497,7 @@ int lan966x_stats_init(struct lan966x *lan966x);
 
 void lan966x_port_config_down(struct lan966x_port *port);
 void lan966x_port_config_up(struct lan966x_port *port);
-void lan966x_port_status_get(struct lan966x_port *port,
+void lan966x_port_status_get(struct lan966x_port *port, unsigned int neg_mode,
 			     struct phylink_link_state *state);
 int lan966x_port_pcs_set(struct lan966x_port *port,
 			 struct lan966x_port_config *config);
@@ -544,6 +546,7 @@ void lan966x_vlan_port_apply(struct lan966x_port *port);
 bool lan966x_vlan_cpu_member_cpu_vlan_mask(struct lan966x *lan966x, u16 vid);
 void lan966x_vlan_port_set_vlan_aware(struct lan966x_port *port,
 				      bool vlan_aware);
+void lan966x_vlan_port_rew_host(struct lan966x_port *port);
 int lan966x_vlan_port_set_vid(struct lan966x_port *port,
 			      u16 vid,
 			      bool pvid,
@@ -607,6 +610,26 @@ int lan966x_fdma_init(struct lan966x *lan966x);
 void lan966x_fdma_deinit(struct lan966x *lan966x);
 irqreturn_t lan966x_fdma_irq_handler(int irq, void *args);
 int lan966x_fdma_reload_page_pool(struct lan966x *lan966x);
+int lan966x_fdma_napi_poll(struct napi_struct *napi, int weight);
+void lan966x_fdma_llp_configure(struct lan966x *lan966x, u64 addr,
+				u8 channel_id);
+void lan966x_fdma_rx_start(struct lan966x_rx *rx);
+void lan966x_fdma_rx_disable(struct lan966x_rx *rx);
+void lan966x_fdma_rx_reload(struct lan966x_rx *rx);
+void lan966x_fdma_tx_start(struct lan966x_tx *tx);
+void lan966x_fdma_tx_disable(struct lan966x_tx *tx);
+void lan966x_fdma_wakeup_netdev(struct lan966x *lan966x);
+int lan966x_fdma_get_max_frame(struct lan966x *lan966x);
+int lan966x_qsys_sw_status(struct lan966x *lan966x);
+
+extern const struct lan966x_fdma_ops lan966x_fdma_pci_ops;
+
+/* dma_dev differs from dev only on the PCIe path. */
+static inline bool lan966x_is_pci(struct lan966x *lan966x)
+{
+	return IS_ENABLED(CONFIG_MCHP_LAN966X_PCI) &&
+	       lan966x->dma_dev != lan966x->dev;
+}
 
 int lan966x_lag_port_join(struct lan966x_port *port,
 			  struct net_device *brport_dev,

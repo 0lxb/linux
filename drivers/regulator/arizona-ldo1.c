@@ -300,7 +300,7 @@ static int arizona_ldo1_probe(struct platform_device *pdev)
 	bool external_dcvdd;
 	int ret;
 
-	ldo1 = devm_kzalloc(&pdev->dev, sizeof(*ldo1), GFP_KERNEL);
+	ldo1 = devm_kzalloc_obj(&pdev->dev, *ldo1);
 	if (!ldo1)
 		return -ENOMEM;
 
@@ -354,7 +354,7 @@ static int madera_ldo1_probe(struct platform_device *pdev)
 	bool external_dcvdd;
 	int ret;
 
-	ldo1 = devm_kzalloc(&pdev->dev, sizeof(*ldo1), GFP_KERNEL);
+	ldo1 = devm_kzalloc_obj(&pdev->dev, *ldo1);
 	if (!ldo1)
 		return -ENOMEM;
 
@@ -375,18 +375,18 @@ static int madera_ldo1_probe(struct platform_device *pdev)
 
 static struct platform_driver arizona_ldo1_driver = {
 	.probe = arizona_ldo1_probe,
-	.remove_new = arizona_ldo1_remove,
-	.driver		= {
-		.name	= "arizona-ldo1",
+	.remove = arizona_ldo1_remove,
+	.driver = {
+		.name = "arizona-ldo1",
 		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 };
 
 static struct platform_driver madera_ldo1_driver = {
 	.probe = madera_ldo1_probe,
-	.remove_new = arizona_ldo1_remove,
-	.driver		= {
-		.name	= "madera-ldo1",
+	.remove = arizona_ldo1_remove,
+	.driver = {
+		.name = "madera-ldo1",
 		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 };

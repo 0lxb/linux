@@ -50,16 +50,16 @@ struct xfs_btree_cur *xfs_inobt_init_cursor(struct xfs_perag *pag,
 		struct xfs_trans *tp, struct xfs_buf *agbp);
 struct xfs_btree_cur *xfs_finobt_init_cursor(struct xfs_perag *pag,
 		struct xfs_trans *tp, struct xfs_buf *agbp);
-extern int xfs_inobt_maxrecs(struct xfs_mount *, int, int);
+unsigned int xfs_inobt_maxrecs(struct xfs_mount *mp, unsigned int blocklen,
+		bool leaf);
 
 /* ir_holemask to inode allocation bitmap conversion */
 uint64_t xfs_inobt_irec_to_allocmask(const struct xfs_inobt_rec_incore *irec);
 
 #if defined(DEBUG) || defined(XFS_WARN)
-int xfs_inobt_rec_check_count(struct xfs_mount *,
-			      struct xfs_inobt_rec_incore *);
+int xfs_inobt_rec_check_count(struct xfs_inobt_rec_incore *);
 #else
-#define xfs_inobt_rec_check_count(mp, rec)	0
+#define xfs_inobt_rec_check_count(rec)	0
 #endif	/* DEBUG */
 
 int xfs_finobt_calc_reserves(struct xfs_perag *perag, struct xfs_trans *tp,

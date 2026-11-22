@@ -2,11 +2,10 @@
 /*
  * Intel PCH pinctrl/GPIO driver
  *
- * Copyright (C) 2021-2023, Intel Corporation
+ * Copyright (C) 2021-2023 Intel Corporation
  * Author: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
@@ -90,7 +89,6 @@ static int intel_platform_pinctrl_prepare_community(struct device *dev,
 						    struct intel_community *community,
 						    struct intel_platform_pins *pins)
 {
-	struct fwnode_handle *child;
 	struct intel_padgroup *gpps;
 	unsigned int group;
 	size_t ngpps;
@@ -126,12 +124,12 @@ static int intel_platform_pinctrl_prepare_community(struct device *dev,
 	if (!ngpps)
 		return -ENODEV;
 
-	gpps = devm_kcalloc(dev, ngpps, sizeof(*gpps), GFP_KERNEL);
+	gpps = devm_kzalloc_objs(dev, *gpps, ngpps);
 	if (!gpps)
 		return -ENOMEM;
 
 	group = 0;
-	device_for_each_child_node(dev, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		struct intel_padgroup *gpp = &gpps[group];
 
 		gpp->reg_num = group;
@@ -159,8 +157,8 @@ static int intel_platform_pinctrl_prepare_soc_data(struct device *dev,
 	int ret;
 
 	/* Version 1.0 of the specification assumes only a single community per device node */
-	ncommunities = 1,
-	communities = devm_kcalloc(dev, ncommunities, sizeof(*communities), GFP_KERNEL);
+	ncommunities = 1;
+	communities = devm_kzalloc_objs(dev, *communities, ncommunities);
 	if (!communities)
 		return -ENOMEM;
 
@@ -192,7 +190,7 @@ static int intel_platform_pinctrl_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -222,4 +220,4 @@ module_platform_driver(intel_platform_pinctrl_driver);
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("Intel PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(PINCTRL_INTEL);
+MODULE_IMPORT_NS("PINCTRL_INTEL");

@@ -299,9 +299,8 @@ static int nixge_hw_dma_bd_init(struct net_device *ndev)
 	if (!priv->tx_bd_v)
 		goto out;
 
-	priv->tx_skb = devm_kcalloc(ndev->dev.parent,
-				    TX_BD_NUM, sizeof(*priv->tx_skb),
-				    GFP_KERNEL);
+	priv->tx_skb = devm_kzalloc_objs(ndev->dev.parent, *priv->tx_skb,
+					 TX_BD_NUM);
 	if (!priv->tx_skb)
 		goto out;
 
@@ -946,7 +945,7 @@ static int nixge_change_mtu(struct net_device *ndev, int new_mtu)
 	     NIXGE_MAX_JUMBO_FRAME_SIZE)
 		return -EINVAL;
 
-	ndev->mtu = new_mtu;
+	WRITE_ONCE(ndev->mtu, new_mtu);
 
 	return 0;
 }
@@ -1415,7 +1414,7 @@ static void nixge_remove(struct platform_device *pdev)
 
 static struct platform_driver nixge_driver = {
 	.probe		= nixge_probe,
-	.remove_new	= nixge_remove,
+	.remove		= nixge_remove,
 	.driver		= {
 		.name		= "nixge",
 		.of_match_table	= nixge_dt_ids,

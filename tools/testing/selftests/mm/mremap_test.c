@@ -5,14 +5,18 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/userfaultfd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <syscall.h>
 #include <time.h>
 #include <stdbool.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 
 #define EXPECT_SUCCESS 0
 #define EXPECT_FAILURE 1
@@ -22,7 +26,10 @@
 #define VALIDATION_DEFAULT_THRESHOLD 4	/* 4MB */
 #define VALIDATION_NO_THRESHOLD 0	/* Verify the entire region */
 
+#ifndef MIN
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+#endif
 #define SIZE_MB(m) ((size_t)m * (1024 * 1024))
 #define SIZE_KB(k) ((size_t)k * 1024)
 
@@ -31,7 +38,7 @@ struct config {
 	unsigned long long dest_alignment;
 	unsigned long long region_size;
 	int overlapping;
-	int dest_preamble_size;
+	unsigned int dest_preamble_size;
 };
 
 struct test {
@@ -104,18 +111,17 @@ static unsigned long long get_mmap_min_addr(void)
 		return addr;
 
 	fp = fopen("/proc/sys/vm/mmap_min_addr", "r");
-	if (fp == NULL) {
-		ksft_print_msg("Failed to open /proc/sys/vm/mmap_min_addr: %s\n",
-			strerror(errno));
-		exit(KSFT_SKIP);
-	}
+	if (!fp)
+		ksft_exit_skip("Failed to open /proc/sys/vm/mmap_min_addr: %s\n",
+			       strerror(errno));
 
 	n_matched = fscanf(fp, "%llu", &addr);
 	if (n_matched != 1) {
-		ksft_print_msg("Failed to read /proc/sys/vm/mmap_min_addr: %s\n",
-			strerror(errno));
+		int err = errno;
+
 		fclose(fp);
-		exit(KSFT_SKIP);
+		ksft_exit_skip("Failed to read /proc/sys/vm/mmap_min_addr: %s\n",
+			       strerror(err));
 	}
 
 	fclose(fp);
@@ -126,27 +132,40 @@ static unsigned long long get_mmap_min_addr(void)
  * Using /proc/self/maps, assert that the specified address range is contained
  * within a single mapping.
  */
-static bool is_range_mapped(FILE *maps_fp, void *start, void *end)
+static bool is_range_mapped(FILE *maps_fp, unsigned long start,
+			    unsigned long end)
 {
 	char *line = NULL;
 	size_t len = 0;
 	bool success = false;
+	unsigned long first_val, second_val;
 
 	rewind(maps_fp);
 
 	while (getline(&line, &len, maps_fp) != -1) {
-		char *first = strtok(line, "- ");
-		void *first_val = (void *)strtol(first, NULL, 16);
-		char *second = strtok(NULL, "- ");
-		void *second_val = (void *) strtol(second, NULL, 16);
+		if (sscanf(line, "%lx-%lx", &first_val, &second_val) != 2) {
+			ksft_exit_fail_msg("cannot parse /proc/self/maps\n");
+			break;
+		}
 
 		if (first_val <= start && second_val >= end) {
 			success = true;
+			fflush(maps_fp);
 			break;
 		}
 	}
 
+	free(line);
 	return success;
+}
+
+/* Check if [ptr, ptr + size) mapped in /proc/self/maps. */
+static bool is_ptr_mapped(FILE *maps_fp, void *ptr, unsigned long size)
+{
+	unsigned long start = (unsigned long)ptr;
+	unsigned long end = start + size;
+
+	return is_range_mapped(maps_fp, start, end);
 }
 
 /*
@@ -233,7 +252,8 @@ static void mremap_expand_merge(FILE *maps_fp, unsigned long page_size)
 		goto out;
 	}
 
-	success = is_range_mapped(maps_fp, start, start + 3 * page_size);
+	success = is_range_mapped(maps_fp, (unsigned long)start,
+				  (unsigned long)(start + 3 * page_size));
 	munmap(start, 3 * page_size);
 
 out:
@@ -272,7 +292,8 @@ static void mremap_expand_merge_offset(FILE *maps_fp, unsigned long page_size)
 		goto out;
 	}
 
-	success = is_range_mapped(maps_fp, start, start + 3 * page_size);
+	success = is_range_mapped(maps_fp, (unsigned long)start,
+				  (unsigned long)(start + 3 * page_size));
 	munmap(start, 3 * page_size);
 
 out:
@@ -296,11 +317,11 @@ out:
  *
  * |DDDDddddSSSSssss|
  */
-static void mremap_move_within_range(char pattern_seed)
+static void mremap_move_within_range(unsigned int pattern_seed, char *rand_addr)
 {
 	char *test_name = "mremap mremap move within range";
 	void *src, *dest;
-	int i, success = 1;
+	unsigned int i, success = 1;
 
 	size_t size = SIZE_MB(20);
 	void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
@@ -316,10 +337,7 @@ static void mremap_move_within_range(char pattern_seed)
 	src = (void *)((unsigned long)src & ~(SIZE_MB(2) - 1));
 
 	/* Set byte pattern for source block. */
-	srand(pattern_seed);
-	for (i = 0; i < SIZE_MB(2); i++) {
-		((char *)src)[i] = (char) rand();
-	}
+	memcpy(src, rand_addr, SIZE_MB(2));
 
 	dest = src - SIZE_MB(2);
 
@@ -355,13 +373,607 @@ out:
 		ksft_test_result_fail("%s\n", test_name);
 }
 
+static bool is_multiple_vma_range_ok(unsigned int pattern_seed,
+				     char *ptr, unsigned long page_size)
+{
+	int i;
+
+	srand(pattern_seed);
+	for (i = 0; i <= 10; i += 2) {
+		int j;
+		char *buf = &ptr[i * page_size];
+		size_t size = i == 4 ? 2 * page_size : page_size;
+
+		for (j = 0; j < size; j++) {
+			char chr = rand();
+
+			if (chr != buf[j]) {
+				ksft_print_msg("page %d offset %d corrupted, expected %d got %d\n",
+					       i, j, chr, buf[j]);
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+static void mremap_move_multiple_vmas(unsigned int pattern_seed,
+				      unsigned long page_size,
+				      bool dont_unmap)
+{
+	int mremap_flags = MREMAP_FIXED | MREMAP_MAYMOVE;
+	char *test_name = "mremap move multiple vmas";
+	const size_t size = 11 * page_size;
+	bool success = true;
+	char *ptr, *tgt_ptr;
+	int i;
+
+	if (dont_unmap)
+		mremap_flags |= MREMAP_DONTUNMAP;
+
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+
+	tgt_ptr = mmap(NULL, 2 * size, PROT_READ | PROT_WRITE,
+		       MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (tgt_ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+	if (munmap(tgt_ptr, 2 * size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap so we end up with:
+	 *
+	 *  0   2   4 5 6   8   10 offset in buffer
+	 * |*| |*| |*****| |*| |*|
+	 * |*| |*| |*****| |*| |*|
+	 *  0   1   2 3 4   5   6  pattern offset
+	 */
+	for (i = 1; i < 10; i += 2) {
+		if (i == 5)
+			continue;
+
+		if (munmap(&ptr[i * page_size], page_size)) {
+			perror("munmap");
+			success = false;
+			goto out_unmap;
+		}
+	}
+
+	srand(pattern_seed);
+
+	/* Set up random patterns. */
+	for (i = 0; i <= 10; i += 2) {
+		int j;
+		size_t size = i == 4 ? 2 * page_size : page_size;
+		char *buf = &ptr[i * page_size];
+
+		for (j = 0; j < size; j++)
+			buf[j] = rand();
+	}
+
+	/* First, just move the whole thing. */
+	if (mremap(ptr, size, size, mremap_flags, tgt_ptr) == MAP_FAILED) {
+		perror("mremap");
+		success = false;
+		goto out_unmap;
+	}
+	/* Check move was ok. */
+	if (!is_multiple_vma_range_ok(pattern_seed, tgt_ptr, page_size)) {
+		success = false;
+		goto out_unmap;
+	}
+
+	/* Move next to itself. */
+	if (mremap(tgt_ptr, size, size, mremap_flags,
+		   &tgt_ptr[size]) == MAP_FAILED) {
+		perror("mremap");
+		success = false;
+		goto out_unmap;
+	}
+	/* Check that the move is ok. */
+	if (!is_multiple_vma_range_ok(pattern_seed, &tgt_ptr[size], page_size)) {
+		success = false;
+		goto out_unmap;
+	}
+
+	/* Map a range to overwrite. */
+	if (mmap(tgt_ptr, size, PROT_NONE,
+		 MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED) {
+		perror("mmap tgt");
+		success = false;
+		goto out_unmap;
+	}
+	/* Move and overwrite. */
+	if (mremap(&tgt_ptr[size], size, size,
+		   mremap_flags, tgt_ptr) == MAP_FAILED) {
+		perror("mremap");
+		success = false;
+		goto out_unmap;
+	}
+	/* Check that the move is ok. */
+	if (!is_multiple_vma_range_ok(pattern_seed, tgt_ptr, page_size)) {
+		success = false;
+		goto out_unmap;
+	}
+
+out_unmap:
+	if (munmap(tgt_ptr, 2 * size))
+		perror("munmap tgt");
+	if (munmap(ptr, size))
+		perror("munmap src");
+
+out:
+	if (success)
+		ksft_test_result_pass("%s%s\n", test_name,
+				      dont_unmap ? " [dontunnmap]" : "");
+	else
+		ksft_test_result_fail("%s%s\n", test_name,
+				      dont_unmap ? " [dontunnmap]" : "");
+}
+
+static void mremap_shrink_multiple_vmas(unsigned long page_size,
+					bool inplace)
+{
+	char *test_name = "mremap shrink multiple vmas";
+	const size_t size = 10 * page_size;
+	bool success = true;
+	char *ptr, *tgt_ptr;
+	void *res;
+	int i;
+
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+
+	tgt_ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		       MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (tgt_ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+	if (munmap(tgt_ptr, size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap so we end up with:
+	 *
+	 *  0   2   4   6   8   10 offset in buffer
+	 * |*| |*| |*| |*| |*| |*|
+	 * |*| |*| |*| |*| |*| |*|
+	 */
+	for (i = 1; i < 10; i += 2) {
+		if (munmap(&ptr[i * page_size], page_size)) {
+			perror("munmap");
+			success = false;
+			goto out_unmap;
+		}
+	}
+
+	/*
+	 * Shrink in-place across multiple VMAs and gaps so we end up with:
+	 *
+	 *  0
+	 * |*|
+	 * |*|
+	 */
+	if (inplace)
+		res = mremap(ptr, size, page_size, 0);
+	else
+		res = mremap(ptr, size, page_size, MREMAP_MAYMOVE | MREMAP_FIXED,
+			     tgt_ptr);
+
+	if (res == MAP_FAILED) {
+		perror("mremap");
+		success = false;
+		goto out_unmap;
+	}
+
+out_unmap:
+	if (munmap(tgt_ptr, size))
+		perror("munmap tgt");
+	if (munmap(ptr, size))
+		perror("munmap src");
+out:
+	if (success)
+		ksft_test_result_pass("%s%s\n", test_name,
+				      inplace ? " [inplace]" : "");
+	else
+		ksft_test_result_fail("%s%s\n", test_name,
+				      inplace ? " [inplace]" : "");
+}
+
+static void mremap_move_multiple_vmas_split(unsigned int pattern_seed,
+					    unsigned long page_size,
+					    bool dont_unmap)
+{
+	char *test_name = "mremap move multiple vmas split";
+	int mremap_flags = MREMAP_FIXED | MREMAP_MAYMOVE;
+	const size_t size = 10 * page_size;
+	bool success = true;
+	char *ptr, *tgt_ptr;
+	int i;
+
+	if (dont_unmap)
+		mremap_flags |= MREMAP_DONTUNMAP;
+
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+
+	tgt_ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		       MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (tgt_ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out;
+	}
+	if (munmap(tgt_ptr, size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap so we end up with:
+	 *
+	 *  0 1 2 3 4 5 6 7 8 9 10 offset in buffer
+	 * |**********| |*******|
+	 * |**********| |*******|
+	 *  0 1 2 3 4   5 6 7 8 9  pattern offset
+	 */
+	if (munmap(&ptr[5 * page_size], page_size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/* Set up random patterns. */
+	srand(pattern_seed);
+	for (i = 0; i < 10; i++) {
+		int j;
+		char *buf = &ptr[i * page_size];
+
+		if (i == 5)
+			continue;
+
+		for (j = 0; j < page_size; j++)
+			buf[j] = rand();
+	}
+
+	/*
+	 * Move the below:
+	 *
+	 *      <------------->
+	 *  0 1 2 3 4 5 6 7 8 9 10 offset in buffer
+	 * |**********| |*******|
+	 * |**********| |*******|
+	 *  0 1 2 3 4   5 6 7 8 9  pattern offset
+	 *
+	 * Into:
+	 *
+	 * 0 1 2 3 4 5 6 7 offset in buffer
+	 * |*****| |*****|
+	 * |*****| |*****|
+	 * 2 3 4   5 6 7   pattern offset
+	 */
+	if (mremap(&ptr[2 * page_size], size - 3 * page_size, size - 3 * page_size,
+		   mremap_flags, tgt_ptr) == MAP_FAILED) {
+		perror("mremap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/* Offset into random pattern. */
+	srand(pattern_seed);
+	for (i = 0; i < 2 * page_size; i++)
+		rand();
+
+	/* Check pattern. */
+	for (i = 0; i < 7; i++) {
+		int j;
+		char *buf = &tgt_ptr[i * page_size];
+
+		if (i == 3)
+			continue;
+
+		for (j = 0; j < page_size; j++) {
+			char chr = rand();
+
+			if (chr != buf[j]) {
+				ksft_print_msg("page %d offset %d corrupted, expected %d got %d\n",
+					       i, j, chr, buf[j]);
+				goto out_unmap;
+			}
+		}
+	}
+
+out_unmap:
+	if (munmap(tgt_ptr, size))
+		perror("munmap tgt");
+	if (munmap(ptr, size))
+		perror("munmap src");
+out:
+	if (success)
+		ksft_test_result_pass("%s%s\n", test_name,
+				      dont_unmap ? " [dontunnmap]" : "");
+	else
+		ksft_test_result_fail("%s%s\n", test_name,
+				      dont_unmap ? " [dontunnmap]" : "");
+}
+
+#ifdef __NR_userfaultfd
+static void mremap_move_multi_invalid_vmas(FILE *maps_fp,
+		unsigned long page_size)
+{
+	char *test_name = "mremap move multiple invalid vmas";
+	const size_t size = 10 * page_size;
+	bool success = true;
+	char *ptr, *tgt_ptr;
+	int uffd, err, i;
+	void *res;
+	struct uffdio_api api = {
+		.api = UFFD_API,
+		.features = UFFD_EVENT_PAGEFAULT,
+	};
+
+	uffd = syscall(__NR_userfaultfd, O_NONBLOCK);
+	if (uffd == -1) {
+		err = errno;
+		perror("userfaultfd");
+		if (err == EPERM) {
+			ksft_test_result_skip("%s - missing uffd", test_name);
+			return;
+		}
+		success = false;
+		goto out;
+	}
+	if (ioctl(uffd, UFFDIO_API, &api)) {
+		perror("ioctl UFFDIO_API");
+		success = false;
+		goto out_close_uffd;
+	}
+
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out_close_uffd;
+	}
+
+	tgt_ptr = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (tgt_ptr == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out_close_uffd;
+	}
+	if (munmap(tgt_ptr, size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap so we end up with:
+	 *
+	 *  0   2   4   6   8   10 offset in buffer
+	 * |*| |*| |*| |*| |*|
+	 * |*| |*| |*| |*| |*|
+	 *
+	 * Additionally, register each with UFFD.
+	 */
+	for (i = 0; i < 10; i += 2) {
+		void *unmap_ptr = &ptr[(i + 1) * page_size];
+		unsigned long start = (unsigned long)&ptr[i * page_size];
+		struct uffdio_register reg = {
+			.range = {
+				.start = start,
+				.len = page_size,
+			},
+			.mode = UFFDIO_REGISTER_MODE_MISSING,
+		};
+
+		if (ioctl(uffd, UFFDIO_REGISTER, &reg) == -1) {
+			perror("ioctl UFFDIO_REGISTER");
+			success = false;
+			goto out_unmap;
+		}
+		if (munmap(unmap_ptr, page_size)) {
+			perror("munmap");
+			success = false;
+			goto out_unmap;
+		}
+	}
+
+	/*
+	 * Now try to move the entire range which is invalid for multi VMA move.
+	 *
+	 * This will fail, and no VMA should be moved, as we check this ahead of
+	 * time.
+	 */
+	res = mremap(ptr, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, tgt_ptr);
+	err = errno;
+	if (res != MAP_FAILED) {
+		fprintf(stderr, "mremap() succeeded for multi VMA uffd armed\n");
+		success = false;
+		goto out_unmap;
+	}
+	if (err != EFAULT) {
+		errno = err;
+		perror("mremap() unexpected error");
+		success = false;
+		goto out_unmap;
+	}
+	if (is_ptr_mapped(maps_fp, tgt_ptr, page_size)) {
+		fprintf(stderr,
+			"Invalid uffd-armed VMA at start of multi range moved\n");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Now try to move a single VMA, this should succeed as not multi VMA
+	 * move.
+	 */
+	res = mremap(ptr, page_size, page_size,
+		     MREMAP_MAYMOVE | MREMAP_FIXED, tgt_ptr);
+	if (res == MAP_FAILED) {
+		perror("mremap single invalid-multi VMA");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap the VMA, and remap a non-uffd registered (therefore, multi VMA
+	 * move valid) VMA at the start of ptr range.
+	 */
+	if (munmap(tgt_ptr, page_size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+	res = mmap(ptr, page_size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+	if (res == MAP_FAILED) {
+		perror("mmap");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Now try to move the entire range, we should succeed in moving the
+	 * first VMA, but no others, and report a failure.
+	 */
+	res = mremap(ptr, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, tgt_ptr);
+	err = errno;
+	if (res != MAP_FAILED) {
+		fprintf(stderr, "mremap() succeeded for multi VMA uffd armed\n");
+		success = false;
+		goto out_unmap;
+	}
+	if (err != EFAULT) {
+		errno = err;
+		perror("mremap() unexpected error");
+		success = false;
+		goto out_unmap;
+	}
+	if (!is_ptr_mapped(maps_fp, tgt_ptr, page_size)) {
+		fprintf(stderr, "Valid VMA not moved\n");
+		success = false;
+		goto out_unmap;
+	}
+
+	/*
+	 * Unmap the VMA, and map valid VMA at start of ptr range, and replace
+	 * all existing multi-move invalid VMAs, except the last, with valid
+	 * multi-move VMAs.
+	 */
+	if (munmap(tgt_ptr, page_size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+	if (munmap(ptr, size - 2 * page_size)) {
+		perror("munmap");
+		success = false;
+		goto out_unmap;
+	}
+	for (i = 0; i < 8; i += 2) {
+		res = mmap(&ptr[i * page_size], page_size,
+			   PROT_READ | PROT_WRITE,
+			   MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+		if (res == MAP_FAILED) {
+			perror("mmap");
+			success = false;
+			goto out_unmap;
+		}
+	}
+
+	/*
+	 * Now try to move the entire range, we should succeed in moving all but
+	 * the last VMA, and report a failure.
+	 */
+	res = mremap(ptr, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, tgt_ptr);
+	err = errno;
+	if (res != MAP_FAILED) {
+		fprintf(stderr, "mremap() succeeded for multi VMA uffd armed\n");
+		success = false;
+		goto out_unmap;
+	}
+	if (err != EFAULT) {
+		errno = err;
+		perror("mremap() unexpected error");
+		success = false;
+		goto out_unmap;
+	}
+
+	for (i = 0; i < 10; i += 2) {
+		bool is_mapped = is_ptr_mapped(maps_fp,
+				&tgt_ptr[i * page_size], page_size);
+
+		if (i < 8 && !is_mapped) {
+			fprintf(stderr, "Valid VMA not moved at %d\n", i);
+			success = false;
+			goto out_unmap;
+		} else if (i == 8 && is_mapped) {
+			fprintf(stderr, "Invalid VMA moved at %d\n", i);
+			success = false;
+			goto out_unmap;
+		}
+	}
+
+out_unmap:
+	if (munmap(tgt_ptr, size))
+		perror("munmap tgt");
+	if (munmap(ptr, size))
+		perror("munmap src");
+out_close_uffd:
+	close(uffd);
+out:
+	if (success)
+		ksft_test_result_pass("%s\n", test_name);
+	else
+		ksft_test_result_fail("%s\n", test_name);
+}
+#else
+static void mremap_move_multi_invalid_vmas(FILE *maps_fp, unsigned long page_size)
+{
+	char *test_name = "mremap move multiple invalid vmas";
+
+	ksft_test_result_skip("%s - missing uffd", test_name);
+}
+#endif /* __NR_userfaultfd */
+
 /* Returns the time taken for the remap on success else returns -1. */
 static long long remap_region(struct config c, unsigned int threshold_mb,
-			      char pattern_seed)
+			      char *rand_addr)
 {
-	void *addr, *src_addr, *dest_addr, *dest_preamble_addr;
-	int d;
-	unsigned long long t;
+	void *addr, *tmp_addr, *src_addr, *dest_addr, *dest_preamble_addr = NULL;
 	struct timespec t_start = {0, 0}, t_end = {0, 0};
 	long long  start_ns, end_ns, align_mask, ret, offset;
 	unsigned long long threshold;
@@ -378,9 +990,7 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
 	}
 
 	/* Set byte pattern for source block. */
-	srand(pattern_seed);
-	for (t = 0; t < threshold; t++)
-		memset((char *) src_addr + t, (char) rand(), 1);
+	memcpy(src_addr, rand_addr, threshold);
 
 	/* Mask to zero out lower bits of address for alignment */
 	align_mask = ~(c.dest_alignment - 1);
@@ -396,10 +1006,13 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
 	if (!((unsigned long long) addr & c.dest_alignment))
 		addr = (void *) ((unsigned long long) addr | c.dest_alignment);
 
-	/* Don't destroy existing mappings unless expected to overlap */
-	while (!is_remap_region_valid(addr, c.region_size) && !c.overlapping) {
+	/* Don't destroy existing mappings unless expected to overlap. */
+	while (!is_remap_region_valid(addr - c.dest_preamble_size,
+				      c.dest_preamble_size + c.region_size) &&
+	       !c.overlapping) {
 		/* Check for unsigned overflow */
-		if (addr + c.dest_alignment < addr) {
+		tmp_addr = addr + c.dest_alignment;
+		if (tmp_addr < addr) {
 			ksft_print_msg("Couldn't find a valid region to remap to\n");
 			ret = -1;
 			goto clean_up_src;
@@ -420,9 +1033,7 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
 		}
 
 		/* Set byte pattern for the dest preamble block. */
-		srand(pattern_seed);
-		for (d = 0; d < c.dest_preamble_size; d++)
-			memset((char *) dest_preamble_addr + d, (char) rand(), 1);
+		memcpy(dest_preamble_addr, rand_addr, c.dest_preamble_size);
 	}
 
 	clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -437,35 +1048,18 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
 	}
 
 	/* Verify byte pattern after remapping */
-	srand(pattern_seed);
-	for (t = 0; t < threshold; t++) {
-		char c = (char) rand();
-
-		if (((char *) dest_addr)[t] != c) {
-			ksft_print_msg("Data after remap doesn't match at offset %llu\n",
-				       t);
-			ksft_print_msg("Expected: %#x\t Got: %#x\n", c & 0xff,
-					((char *) dest_addr)[t] & 0xff);
-			ret = -1;
-			goto clean_up_dest;
-		}
+	if (memcmp(dest_addr, rand_addr, threshold)) {
+		ksft_print_msg("Data after remap doesn't match\n");
+		ret = -1;
+		goto clean_up_dest;
 	}
 
 	/* Verify the dest preamble byte pattern after remapping */
-	if (c.dest_preamble_size) {
-		srand(pattern_seed);
-		for (d = 0; d < c.dest_preamble_size; d++) {
-			char c = (char) rand();
-
-			if (((char *) dest_preamble_addr)[d] != c) {
-				ksft_print_msg("Preamble data after remap doesn't match at offset %d\n",
-					       d);
-				ksft_print_msg("Expected: %#x\t Got: %#x\n", c & 0xff,
-					       ((char *) dest_preamble_addr)[d] & 0xff);
-				ret = -1;
-				goto clean_up_dest;
-			}
-		}
+	if (c.dest_preamble_size &&
+	    memcmp(dest_preamble_addr, rand_addr, c.dest_preamble_size)) {
+		ksft_print_msg("Preamble data after remap doesn't match\n");
+		ret = -1;
+		goto clean_up_dest;
 	}
 
 	start_ns = t_start.tv_sec * NS_PER_SEC + t_start.tv_nsec;
@@ -494,11 +1088,12 @@ out:
  * the beginning of the mapping just because the aligned
  * down address landed on a mapping that maybe does not exist.
  */
-static void mremap_move_1mb_from_start(char pattern_seed)
+static void mremap_move_1mb_from_start(unsigned int pattern_seed,
+				       char *rand_addr)
 {
 	char *test_name = "mremap move 1mb from start at 1MB+256KB aligned src";
 	void *src = NULL, *dest = NULL;
-	int i, success = 1;
+	unsigned int i, success = 1;
 
 	/* Config to reuse get_source_mapping() to do an aligned mmap. */
 	struct config c = {
@@ -520,10 +1115,7 @@ static void mremap_move_1mb_from_start(char pattern_seed)
 	}
 
 	/* Set byte pattern for source block. */
-	srand(pattern_seed);
-	for (i = 0; i < SIZE_MB(2); i++) {
-		((char *)src)[i] = (char) rand();
-	}
+	memcpy(src, rand_addr, SIZE_MB(2));
 
 	/*
 	 * Unmap the beginning of dest so that the aligned address
@@ -568,16 +1160,17 @@ out:
 
 static void run_mremap_test_case(struct test test_case, int *failures,
 				 unsigned int threshold_mb,
-				 unsigned int pattern_seed)
+				 char *rand_addr)
 {
 	long long remap_time = remap_region(test_case.config, threshold_mb,
-					    pattern_seed);
+					    rand_addr);
 
 	if (remap_time < 0) {
-		if (test_case.expect_failure)
-			ksft_test_result_xfail("%s\n\tExpected mremap failure\n",
-					      test_case.name);
-		else {
+		if (test_case.expect_failure) {
+			ksft_print_msg("%s: expected mremap failure\n",
+				       test_case.name);
+			ksft_test_result_xfail("%s\n", test_case.name);
+		} else {
 			ksft_test_result_fail("%s\n", test_case.name);
 			*failures += 1;
 		}
@@ -587,11 +1180,13 @@ static void run_mremap_test_case(struct test test_case, int *failures,
 		 * was faulted in.
 		 */
 		if (threshold_mb == VALIDATION_NO_THRESHOLD ||
-		    test_case.config.region_size <= threshold_mb * _1MB)
-			ksft_test_result_pass("%s\n\tmremap time: %12lldns\n",
-					      test_case.name, remap_time);
-		else
+		    test_case.config.region_size <= threshold_mb * _1MB) {
+			ksft_print_msg("%s: mremap time: %12lldns\n",
+				       test_case.name, remap_time);
 			ksft_test_result_pass("%s\n", test_case.name);
+		} else {
+			ksft_test_result_pass("%s\n", test_case.name);
+		}
 	}
 }
 
@@ -640,24 +1235,63 @@ static int parse_args(int argc, char **argv, unsigned int *threshold_mb,
 int main(int argc, char **argv)
 {
 	int failures = 0;
-	int i, run_perf_tests;
+	unsigned int i;
+	int run_perf_tests;
 	unsigned int threshold_mb = VALIDATION_DEFAULT_THRESHOLD;
+
+	/* hard-coded test configs */
+	size_t max_test_variable_region_size = _2GB;
+	size_t max_test_constant_region_size = _2MB;
+	size_t dest_preamble_size = 10 * _4MB;
+
 	unsigned int pattern_seed;
+	char *rand_addr;
+	size_t rand_size;
 	int num_expand_tests = 2;
-	int num_misc_tests = 2;
+	int num_misc_tests = 9;
 	struct test test_cases[MAX_TEST] = {};
 	struct test perf_test_cases[MAX_PERF_TEST];
 	int page_size;
 	time_t t;
 	FILE *maps_fp;
 
+	ksft_print_header();
+
+	get_mmap_min_addr();
+
 	pattern_seed = (unsigned int) time(&t);
 
 	if (parse_args(argc, argv, &threshold_mb, &pattern_seed) < 0)
 		exit(EXIT_FAILURE);
 
-	ksft_print_msg("Test configs:\n\tthreshold_mb=%u\n\tpattern_seed=%u\n\n",
-		       threshold_mb, pattern_seed);
+	ksft_print_msg("Test configs:\n");
+	ksft_print_msg("threshold_mb=%u\n", threshold_mb);
+	ksft_print_msg("pattern_seed=%u\n", pattern_seed);
+
+	/*
+	 * set preallocated random array according to test configs; see the
+	 * functions for the logic of setting the size
+	 */
+	if (!threshold_mb)
+		rand_size = MAX(max_test_variable_region_size,
+				max_test_constant_region_size);
+	else
+		rand_size = MAX(MIN(threshold_mb * _1MB,
+				    max_test_variable_region_size),
+				max_test_constant_region_size);
+	rand_size = MAX(dest_preamble_size, rand_size);
+
+	rand_addr = (char *)mmap(NULL, rand_size, PROT_READ | PROT_WRITE,
+				 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (rand_addr == MAP_FAILED) {
+		perror("mmap");
+		ksft_exit_fail_msg("cannot mmap rand_addr\n");
+	}
+
+	/* fill stream of random bytes */
+	srand(pattern_seed);
+	for (unsigned long i = 0; i < rand_size; ++i)
+		rand_addr[i] = (char) rand();
 
 	page_size = sysconf(_SC_PAGESIZE);
 
@@ -730,30 +1364,40 @@ int main(int argc, char **argv)
 
 	for (i = 0; i < ARRAY_SIZE(test_cases); i++)
 		run_mremap_test_case(test_cases[i], &failures, threshold_mb,
-				     pattern_seed);
+				     rand_addr);
 
 	maps_fp = fopen("/proc/self/maps", "r");
 
 	if (maps_fp == NULL) {
-		ksft_print_msg("Failed to read /proc/self/maps: %s\n", strerror(errno));
-		exit(KSFT_FAIL);
+		munmap(rand_addr, rand_size);
+		ksft_exit_fail_msg("Failed to read /proc/self/maps: %s\n", strerror(errno));
 	}
 
 	mremap_expand_merge(maps_fp, page_size);
 	mremap_expand_merge_offset(maps_fp, page_size);
 
-	fclose(maps_fp);
+	mremap_move_within_range(pattern_seed, rand_addr);
+	mremap_move_1mb_from_start(pattern_seed, rand_addr);
+	mremap_shrink_multiple_vmas(page_size, /* inplace= */true);
+	mremap_shrink_multiple_vmas(page_size, /* inplace= */false);
+	mremap_move_multiple_vmas(pattern_seed, page_size, /* dontunmap= */ false);
+	mremap_move_multiple_vmas(pattern_seed, page_size, /* dontunmap= */ true);
+	mremap_move_multiple_vmas_split(pattern_seed, page_size, /* dontunmap= */ false);
+	mremap_move_multiple_vmas_split(pattern_seed, page_size, /* dontunmap= */ true);
+	mremap_move_multi_invalid_vmas(maps_fp, page_size);
 
-	mremap_move_within_range(pattern_seed);
-	mremap_move_1mb_from_start(pattern_seed);
+	fclose(maps_fp);
 
 	if (run_perf_tests) {
 		ksft_print_msg("\n%s\n",
 		 "mremap HAVE_MOVE_PMD/PUD optimization time comparison for 1GB region:");
 		for (i = 0; i < ARRAY_SIZE(perf_test_cases); i++)
 			run_mremap_test_case(perf_test_cases[i], &failures,
-					     threshold_mb, pattern_seed);
+					     threshold_mb,
+					     rand_addr);
 	}
+
+	munmap(rand_addr, rand_size);
 
 	if (failures > 0)
 		ksft_exit_fail();

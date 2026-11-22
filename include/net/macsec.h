@@ -9,6 +9,7 @@
 
 #include <linux/u64_stats_sync.h>
 #include <linux/if_vlan.h>
+#include <linux/workqueue.h>
 #include <uapi/linux/if_link.h>
 #include <uapi/linux/if_macsec.h>
 
@@ -38,8 +39,8 @@ struct metadata_dst;
 
 typedef union salt {
 	struct {
-		u32 ssci;
-		u64 pn;
+		ssci_t ssci;
+		__be64 pn;
 	} __packed;
 	u8 bytes[MACSEC_SALT_LEN];
 } __packed salt_t;
@@ -123,6 +124,7 @@ struct macsec_dev_stats {
  * @key: key structure
  * @ssci: short secure channel identifier
  * @stats: per-SA stats
+ * @destroy_work: deferred work to free the SA in process context after RCU grace period
  */
 struct macsec_rx_sa {
 	struct macsec_key key;
@@ -136,7 +138,7 @@ struct macsec_rx_sa {
 	bool active;
 	struct macsec_rx_sa_stats __percpu *stats;
 	struct macsec_rx_sc *sc;
-	struct rcu_head rcu;
+	struct rcu_work destroy_work;
 };
 
 struct pcpu_rx_sc_stats {
@@ -174,6 +176,7 @@ struct macsec_rx_sc {
  * @key: key structure
  * @ssci: short secure channel identifier
  * @stats: per-SA stats
+ * @destroy_work: deferred work to free the SA in process context after RCU grace period
  */
 struct macsec_tx_sa {
 	struct macsec_key key;
@@ -186,7 +189,7 @@ struct macsec_tx_sa {
 	refcount_t refcnt;
 	bool active;
 	struct macsec_tx_sa_stats __percpu *stats;
-	struct rcu_head rcu;
+	struct rcu_work destroy_work;
 };
 
 /**
@@ -321,6 +324,7 @@ struct macsec_context {
  *	for the TX tag
  * @needed_tailroom: number of bytes reserved at the end of the sk_buff for the
  *	TX tag
+ * @rx_uses_md_dst: whether MACsec device offload supports sk_buff md_dst
  */
 struct macsec_ops {
 	/* Device wide */
@@ -352,6 +356,7 @@ struct macsec_ops {
 				 struct sk_buff *skb);
 	unsigned int needed_headroom;
 	unsigned int needed_tailroom;
+	bool rx_uses_md_dst;
 };
 
 void macsec_pn_wrapped(struct macsec_secy *secy, struct macsec_tx_sa *tx_sa);

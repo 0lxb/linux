@@ -14,6 +14,7 @@ extern int debug_peo_args;
 extern bool quiet, dump_trace;
 extern int debug_ordered_events;
 extern int debug_data_convert;
+extern int debug_type_profile;
 
 #ifndef pr_fmt
 #define pr_fmt(fmt) fmt
@@ -32,10 +33,9 @@ extern int debug_data_convert;
 })
 #define pr_info(fmt, ...) \
 	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
-#define pr_debug(fmt, ...) \
-	eprintf(1, verbose, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debugN(n, fmt, ...) \
-	eprintf(n, verbose, pr_fmt(fmt), ##__VA_ARGS__)
+	(unlikely(verbose >= (n)) ? eprintf(n, verbose, pr_fmt(fmt), ##__VA_ARGS__) : 0)
+#define pr_debug(fmt, ...) pr_debugN(1, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug2(fmt, ...) pr_debugN(2, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug3(fmt, ...) pr_debugN(3, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug4(fmt, ...) pr_debugN(4, pr_fmt(fmt), ##__VA_ARGS__)
@@ -84,6 +84,7 @@ void debug_set_display_time(bool set);
 void perf_debug_setup(void);
 int perf_quiet_option(void);
 
+void __dump_stack(FILE *file, void **stackdump, size_t stackdump_size);
 void dump_stack(void);
 void sighandler_dump_stack(int sig);
 

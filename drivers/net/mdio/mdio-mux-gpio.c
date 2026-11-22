@@ -30,8 +30,7 @@ static int mdio_mux_gpio_switch_fn(int current_child, int desired_child,
 
 	values[0] = desired_child;
 
-	gpiod_set_array_value_cansleep(s->gpios->ndescs, s->gpios->desc,
-				       s->gpios->info, values);
+	gpiod_multi_set_value_cansleep(s->gpios, values);
 
 	return 0;
 }
@@ -46,7 +45,7 @@ static int mdio_mux_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(gpios))
 		return PTR_ERR(gpios);
 
-	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
+	s = devm_kzalloc_obj(&pdev->dev, *s);
 	if (!s)
 		return -ENOMEM;
 
@@ -86,7 +85,7 @@ static struct platform_driver mdio_mux_gpio_driver = {
 		.of_match_table = mdio_mux_gpio_match,
 	},
 	.probe		= mdio_mux_gpio_probe,
-	.remove_new	= mdio_mux_gpio_remove,
+	.remove		= mdio_mux_gpio_remove,
 };
 
 module_platform_driver(mdio_mux_gpio_driver);

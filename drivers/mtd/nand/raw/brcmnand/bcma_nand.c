@@ -101,7 +101,7 @@ static int brcmnand_bcma_nand_probe(struct platform_device *pdev)
 	struct bcma_nflash *nflash = dev_get_platdata(&pdev->dev);
 	struct brcmnand_bcma_soc *soc;
 
-	soc = devm_kzalloc(&pdev->dev, sizeof(*soc), GFP_KERNEL);
+	soc = devm_kzalloc_obj(&pdev->dev, *soc);
 	if (!soc)
 		return -ENOMEM;
 
@@ -119,7 +119,7 @@ static int brcmnand_bcma_nand_probe(struct platform_device *pdev)
 
 static struct platform_driver brcmnand_bcma_nand_driver = {
 	.probe			= brcmnand_bcma_nand_probe,
-	.remove_new		= brcmnand_remove,
+	.remove			= brcmnand_remove,
 	.driver = {
 		.name		= "bcma_brcmnand",
 		.pm		= &brcmnand_pm_ops,

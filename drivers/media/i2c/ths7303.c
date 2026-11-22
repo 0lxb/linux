@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ths7303/53- THS7303/53 Video Amplifier driver
  *
@@ -7,18 +8,9 @@
  * Author: Chaithrika U S <chaithrika@ti.com>
  *
  * Contributors:
- *     Hans Verkuil <hans.verkuil@cisco.com>
+ *     Hans Verkuil <hverkuil@kernel.org>
  *     Lad, Prabhakar <prabhakar.lad@ti.com>
  *     Martin Bugge <marbugge@cisco.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed .as is. WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/i2c.h>
@@ -193,8 +185,8 @@ static int ths7303_s_stream(struct v4l2_subdev *sd, int enable)
 }
 
 /* for setting filter for HD output */
-static int ths7303_s_dv_timings(struct v4l2_subdev *sd,
-			       struct v4l2_dv_timings *dv_timings)
+static int ths7303_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+				struct v4l2_dv_timings *dv_timings)
 {
 	struct ths7303_state *state = to_state(sd);
 
@@ -210,7 +202,6 @@ static int ths7303_s_dv_timings(struct v4l2_subdev *sd,
 static const struct v4l2_subdev_video_ops ths7303_video_ops = {
 	.s_stream	= ths7303_s_stream,
 	.s_std_output	= ths7303_s_std_output,
-	.s_dv_timings   = ths7303_s_dv_timings,
 };
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -317,9 +308,14 @@ static const struct v4l2_subdev_core_ops ths7303_core_ops = {
 #endif
 };
 
+static const struct v4l2_subdev_pad_ops ths7303_pad_ops = {
+	.s_dv_timings = ths7303_s_dv_timings,
+};
+
 static const struct v4l2_subdev_ops ths7303_ops = {
 	.core	= &ths7303_core_ops,
 	.video	= &ths7303_video_ops,
+	.pad	= &ths7303_pad_ops,
 };
 
 static int ths7303_probe(struct i2c_client *client)
@@ -339,8 +335,7 @@ static int ths7303_probe(struct i2c_client *client)
 	v4l_info(client, "chip found @ 0x%x (%s)\n",
 			client->addr << 1, client->adapter->name);
 
-	state = devm_kzalloc(&client->dev, sizeof(struct ths7303_state),
-			     GFP_KERNEL);
+	state = devm_kzalloc_obj(&client->dev, struct ths7303_state);
 	if (!state)
 		return -ENOMEM;
 
@@ -365,9 +360,9 @@ static void ths7303_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ths7303_id[] = {
-	{"ths7303", 0},
-	{"ths7353", 0},
-	{},
+	{ .name = "ths7303" },
+	{ .name = "ths7353" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, ths7303_id);

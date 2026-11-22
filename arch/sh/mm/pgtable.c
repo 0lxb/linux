@@ -2,12 +2,14 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
+#include <asm/pgalloc.h>
+
 static struct kmem_cache *pgd_cachep;
 #if PAGETABLE_LEVELS > 2
 static struct kmem_cache *pmd_cachep;
 #endif
 
-void pgd_ctor(void *x)
+static void pgd_ctor(void *x)
 {
 	pgd_t *pgd = x;
 
@@ -53,5 +55,25 @@ pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
 void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 {
 	kmem_cache_free(pmd_cachep, pmd);
+}
+
+static void __tlb_remove_table_slab(void *table)
+{
+	kmem_cache_free(pmd_cachep, table);
+}
+
+static void __tlb_remove_table_pgtable(void *table)
+{
+	pagetable_dtor_free(table);
+}
+
+void __tlb_remove_table(void *table)
+{
+	const unsigned long addr = (unsigned long)table;
+
+	if (addr & 1)
+		__tlb_remove_table_slab((void *)(addr & ~1UL));
+	else
+		__tlb_remove_table_pgtable(table);
 }
 #endif /* PAGETABLE_LEVELS > 2 */

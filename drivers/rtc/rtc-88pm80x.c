@@ -251,7 +251,7 @@ static int pm80x_rtc_probe(struct platform_device *pdev)
 	}
 
 	if (!pdata) {
-		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+		pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 		if (!pdata) {
 			dev_err(&pdev->dev, "failed to allocate memory\n");
 			return -ENOMEM;
@@ -259,7 +259,7 @@ static int pm80x_rtc_probe(struct platform_device *pdev)
 	}
 
 	info =
-	    devm_kzalloc(&pdev->dev, sizeof(struct pm80x_rtc_info), GFP_KERNEL);
+	    devm_kzalloc_obj(&pdev->dev, struct pm80x_rtc_info);
 	if (!info)
 		return -ENOMEM;
 	info->irq = platform_get_irq(pdev, 0);
@@ -308,7 +308,7 @@ static int pm80x_rtc_probe(struct platform_device *pdev)
 	/* remember whether this power up is caused by PMIC RTC or not */
 	info->rtc_dev->dev.platform_data = &pdata->rtc_wakeup;
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	return 0;
 out_rtc:
@@ -329,7 +329,7 @@ static struct platform_driver pm80x_rtc_driver = {
 		   .pm = &pm80x_rtc_pm_ops,
 		   },
 	.probe = pm80x_rtc_probe,
-	.remove_new = pm80x_rtc_remove,
+	.remove = pm80x_rtc_remove,
 };
 
 module_platform_driver(pm80x_rtc_driver);

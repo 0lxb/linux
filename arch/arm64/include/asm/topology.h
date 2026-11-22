@@ -5,6 +5,7 @@
 #include <linux/cpumask.h>
 
 #ifdef CONFIG_NUMA
+#include <asm/numa.h>
 
 struct pci_bus;
 int pcibus_to_node(struct pci_bus *bus);
@@ -25,19 +26,18 @@ void update_freq_counters_refs(void);
 #define arch_scale_freq_invariant topology_scale_freq_invariant
 #define arch_scale_freq_ref topology_get_freq_ref
 
-#ifdef CONFIG_ACPI_CPPC_LIB
-#define arch_init_invariance_cppc topology_init_cpu_capacity_cppc
-#endif
-
 /* Replace task scheduler's default cpu-invariant accounting */
 #define arch_scale_cpu_capacity topology_get_cpu_scale
 
 /* Enable topology flag updates */
 #define arch_update_cpu_topology topology_update_cpu_topology
 
-/* Replace task scheduler's default thermal pressure API */
-#define arch_scale_thermal_pressure topology_get_thermal_pressure
-#define arch_update_thermal_pressure	topology_update_thermal_pressure
+/* Replace task scheduler's default HW pressure API */
+#define arch_scale_hw_pressure topology_get_hw_pressure
+#define arch_update_hw_pressure	topology_update_hw_pressure
+
+#undef arch_cpu_is_threaded
+#define arch_cpu_is_threaded() (read_cpuid_mpidr() & MPIDR_MT_BITMASK)
 
 #include <asm-generic/topology.h>
 

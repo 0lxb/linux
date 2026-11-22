@@ -379,11 +379,21 @@ static int img_i2s_in_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
+static const u64 img_i2s_in_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
+	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_IF;
+
 static const struct snd_soc_dai_ops img_i2s_in_dai_ops = {
 	.probe		= img_i2s_in_dai_probe,
 	.trigger	= img_i2s_in_trigger,
 	.hw_params	= img_i2s_in_hw_params,
-	.set_fmt	= img_i2s_in_set_fmt
+	.set_fmt	= img_i2s_in_set_fmt,
+	.auto_selectable_formats	= &img_i2s_in_selectable_formats,
+	.num_auto_selectable_formats	= 1,
 };
 
 static const struct snd_soc_component_driver img_i2s_in_component = {
@@ -395,7 +405,7 @@ static int img_i2s_in_dma_prepare_slave_config(struct snd_pcm_substream *st,
 	struct snd_pcm_hw_params *params, struct dma_slave_config *sc)
 {
 	unsigned int i2s_channels = params_channels(params) / 2;
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(st);
 	struct snd_dmaengine_dai_dma_data *dma_data;
 	int ret;
 
@@ -426,7 +436,7 @@ static int img_i2s_in_probe(struct platform_device *pdev)
 	unsigned int max_i2s_chan_pow_2;
 	struct device *dev = &pdev->dev;
 
-	i2s = devm_kzalloc(dev, sizeof(*i2s), GFP_KERNEL);
+	i2s = devm_kzalloc_obj(dev, *i2s);
 	if (!i2s)
 		return -ENOMEM;
 
@@ -505,8 +515,8 @@ static int img_i2s_in_probe(struct platform_device *pdev)
 
 	pm_runtime_put(&pdev->dev);
 
-	i2s->suspend_ch_ctl = devm_kcalloc(dev,
-		i2s->max_i2s_chan, sizeof(*i2s->suspend_ch_ctl), GFP_KERNEL);
+	i2s->suspend_ch_ctl = devm_kzalloc_objs(dev, *i2s->suspend_ch_ctl,
+						i2s->max_i2s_chan);
 	if (!i2s->suspend_ch_ctl) {
 		ret = -ENOMEM;
 		goto err_suspend;
@@ -539,7 +549,6 @@ static void img_i2s_in_dev_remove(struct platform_device *pdev)
 		img_i2s_in_runtime_suspend(&pdev->dev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int img_i2s_in_suspend(struct device *dev)
 {
 	struct img_i2s_in *i2s = dev_get_drvdata(dev);
@@ -586,7 +595,6 @@ static int img_i2s_in_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct of_device_id img_i2s_in_of_match[] = {
 	{ .compatible = "img,i2s-in" },
@@ -595,19 +603,18 @@ static const struct of_device_id img_i2s_in_of_match[] = {
 MODULE_DEVICE_TABLE(of, img_i2s_in_of_match);
 
 static const struct dev_pm_ops img_i2s_in_pm_ops = {
-	SET_RUNTIME_PM_OPS(img_i2s_in_runtime_suspend,
-			   img_i2s_in_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(img_i2s_in_suspend, img_i2s_in_resume)
+	RUNTIME_PM_OPS(img_i2s_in_runtime_suspend, img_i2s_in_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(img_i2s_in_suspend, img_i2s_in_resume)
 };
 
 static struct platform_driver img_i2s_in_driver = {
 	.driver = {
 		.name = "img-i2s-in",
 		.of_match_table = img_i2s_in_of_match,
-		.pm = &img_i2s_in_pm_ops
+		.pm = pm_ptr(&img_i2s_in_pm_ops)
 	},
 	.probe = img_i2s_in_probe,
-	.remove_new = img_i2s_in_dev_remove
+	.remove = img_i2s_in_dev_remove
 };
 module_platform_driver(img_i2s_in_driver);
 

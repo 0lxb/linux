@@ -5,7 +5,9 @@
 #include <errno.h>
 #include <linux/compiler.h>
 
-#ifdef HAVE_DWARF_SUPPORT
+struct dso;
+
+#ifdef HAVE_LIBDW_SUPPORT
 
 #include "dwarf-aux.h"
 
@@ -19,19 +21,26 @@ struct debuginfo {
 };
 
 /* This also tries to open distro debuginfo */
-struct debuginfo *debuginfo__new(const char *path);
+struct debuginfo *debuginfo__from_path(const char *path);
+/* Create a debuginfo using information in DSO */
+struct debuginfo *debuginfo__new(struct dso *dso);
 void debuginfo__delete(struct debuginfo *dbg);
 
 int debuginfo__get_text_offset(struct debuginfo *dbg, Dwarf_Addr *offs,
 			       bool adjust_offset);
 
-#else /* HAVE_DWARF_SUPPORT */
+#else /* HAVE_LIBDW_SUPPORT */
 
 /* dummy debug information structure */
 struct debuginfo {
 };
 
-static inline struct debuginfo *debuginfo__new(const char *path __maybe_unused)
+static inline struct debuginfo *debuginfo__from_path(const char *path __maybe_unused)
+{
+	return NULL;
+}
+
+static inline struct debuginfo *debuginfo__new(struct dso *dso __maybe_unused)
 {
 	return NULL;
 }
@@ -40,6 +49,8 @@ static inline void debuginfo__delete(struct debuginfo *dbg __maybe_unused)
 {
 }
 
+typedef void Dwarf_Addr;
+
 static inline int debuginfo__get_text_offset(struct debuginfo *dbg __maybe_unused,
 					     Dwarf_Addr *offs __maybe_unused,
 					     bool adjust_offset __maybe_unused)
@@ -47,7 +58,7 @@ static inline int debuginfo__get_text_offset(struct debuginfo *dbg __maybe_unuse
 	return -EINVAL;
 }
 
-#endif /* HAVE_DWARF_SUPPORT */
+#endif /* HAVE_LIBDW_SUPPORT */
 
 #ifdef HAVE_DEBUGINFOD_SUPPORT
 int get_source_from_debuginfod(const char *raw_path, const char *sbuild_id,

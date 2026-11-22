@@ -76,9 +76,8 @@ static int hns_ppe_common_get_cfg(struct dsaf_device *dsaf_dev, int comm_index)
 	else
 		ppe_num = HNS_PPE_DEBUG_NW_ENGINE_NUM;
 
-	ppe_common = devm_kzalloc(dsaf_dev->dev,
-				  struct_size(ppe_common, ppe_cb, ppe_num),
-				  GFP_KERNEL);
+	ppe_common = devm_kzalloc_flex(dsaf_dev->dev, *ppe_common, ppe_cb,
+				       ppe_num);
 	if (!ppe_common)
 		return -ENOMEM;
 
@@ -139,7 +138,7 @@ static void hns_ppe_set_vlan_strip(struct hns_ppe_cb *ppe_cb, int en)
 }
 
 /**
- * hns_ppe_checksum_hw - set ppe checksum caculate
+ * hns_ppe_checksum_hw - set ppe checksum calculate
  * @ppe_cb: ppe device
  * @value: value
  */
@@ -457,24 +456,23 @@ int hns_ppe_get_regs_count(void)
  * @stringset: string set type
  * @data: output string
  */
-void hns_ppe_get_strings(struct hns_ppe_cb *ppe_cb, int stringset, u8 *data)
+void hns_ppe_get_strings(struct hns_ppe_cb *ppe_cb, int stringset, u8 **data)
 {
 	int index = ppe_cb->index;
-	u8 *buff = data;
 
-	ethtool_sprintf(&buff, "ppe%d_rx_sw_pkt", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_pkt_ok", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_drop_pkt_no_bd", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_alloc_buf_fail", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_alloc_buf_wait", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_pkt_drop_no_buf", index);
-	ethtool_sprintf(&buff, "ppe%d_rx_pkt_err_fifo_full", index);
+	ethtool_sprintf(data, "ppe%d_rx_sw_pkt", index);
+	ethtool_sprintf(data, "ppe%d_rx_pkt_ok", index);
+	ethtool_sprintf(data, "ppe%d_rx_drop_pkt_no_bd", index);
+	ethtool_sprintf(data, "ppe%d_rx_alloc_buf_fail", index);
+	ethtool_sprintf(data, "ppe%d_rx_alloc_buf_wait", index);
+	ethtool_sprintf(data, "ppe%d_rx_pkt_drop_no_buf", index);
+	ethtool_sprintf(data, "ppe%d_rx_pkt_err_fifo_full", index);
 
-	ethtool_sprintf(&buff, "ppe%d_tx_bd", index);
-	ethtool_sprintf(&buff, "ppe%d_tx_pkt", index);
-	ethtool_sprintf(&buff, "ppe%d_tx_pkt_ok", index);
-	ethtool_sprintf(&buff, "ppe%d_tx_pkt_err_fifo_empty", index);
-	ethtool_sprintf(&buff, "ppe%d_tx_pkt_err_csum_fail", index);
+	ethtool_sprintf(data, "ppe%d_tx_bd", index);
+	ethtool_sprintf(data, "ppe%d_tx_pkt", index);
+	ethtool_sprintf(data, "ppe%d_tx_pkt_ok", index);
+	ethtool_sprintf(data, "ppe%d_tx_pkt_err_fifo_empty", index);
+	ethtool_sprintf(data, "ppe%d_tx_pkt_err_csum_fail", index);
 }
 
 void hns_ppe_get_stats(struct hns_ppe_cb *ppe_cb, u64 *data)

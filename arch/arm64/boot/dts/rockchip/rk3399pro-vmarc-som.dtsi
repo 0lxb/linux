@@ -18,7 +18,7 @@
 		mmc1 = &sdmmc;
 	};
 
-	vcc3v3_pcie: vcc-pcie-regulator {
+	vcc3v3_pcie: regulator-vcc-pcie {
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpio4 RK_PD4 GPIO_ACTIVE_HIGH>;
@@ -78,7 +78,7 @@
 		clock-output-names = "rk808-clkout1", "rk808-clkout2";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pmic_int_l>;
-		rockchip,system-power-controller;
+		system-power-controller;
 		wakeup-source;
 
 		vcc1-supply = <&vcc5v0_sys>;
@@ -296,6 +296,8 @@
 
 &i2c2 {
 	clock-frequency = <400000>;
+	i2c-scl-falling-time-ns = <15>;
+	i2c-scl-rising-time-ns = <450>;
 	status = "okay";
 
 	hym8563: rtc@51 {

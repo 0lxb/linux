@@ -12,72 +12,7 @@
 
 #include <linux/ctype.h>
 #include <linux/kernel.h>
-#include <traceevent/event-parse.h>
-
-static int get_common_field(struct scripting_context *context,
-			    int *offset, int *size, const char *type)
-{
-	struct tep_handle *pevent = context->pevent;
-	struct tep_event *event;
-	struct tep_format_field *field;
-
-	if (!*size) {
-
-		event = tep_get_first_event(pevent);
-		if (!event)
-			return 0;
-
-		field = tep_find_common_field(event, type);
-		if (!field)
-			return 0;
-		*offset = field->offset;
-		*size = field->size;
-	}
-
-	return tep_read_number(pevent, context->event_data + *offset, *size);
-}
-
-int common_lock_depth(struct scripting_context *context)
-{
-	static int offset;
-	static int size;
-	int ret;
-
-	ret = get_common_field(context, &size, &offset,
-			       "common_lock_depth");
-	if (ret < 0)
-		return -1;
-
-	return ret;
-}
-
-int common_flags(struct scripting_context *context)
-{
-	static int offset;
-	static int size;
-	int ret;
-
-	ret = get_common_field(context, &size, &offset,
-			       "common_flags");
-	if (ret < 0)
-		return -1;
-
-	return ret;
-}
-
-int common_pc(struct scripting_context *context)
-{
-	static int offset;
-	static int size;
-	int ret;
-
-	ret = get_common_field(context, &size, &offset,
-			       "common_preempt_count");
-	if (ret < 0)
-		return -1;
-
-	return ret;
-}
+#include <event-parse.h>
 
 unsigned long long
 raw_field_value(struct tep_event *event, const char *name, void *data)
@@ -99,7 +34,7 @@ unsigned long long read_size(struct tep_event *event, void *ptr, int size)
 	return tep_read_number(event->tep, ptr, size);
 }
 
-void event_format__fprintf(struct tep_event *event,
+void event_format__fprintf(const struct tep_event *event,
 			   int cpu, void *data, int size, FILE *fp)
 {
 	struct tep_record record;
@@ -114,12 +49,6 @@ void event_format__fprintf(struct tep_event *event,
 	tep_print_event(event->tep, &s, &record, "%s", TEP_PRINT_INFO);
 	trace_seq_do_fprintf(&s, fp);
 	trace_seq_destroy(&s);
-}
-
-void event_format__print(struct tep_event *event,
-			 int cpu, void *data, int size)
-{
-	return event_format__fprintf(event, cpu, data, size, stdout);
 }
 
 /*

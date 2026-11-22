@@ -13,6 +13,7 @@
 #include <linux/cc_platform.h>
 #include <linux/mem_encrypt.h>
 #include <linux/virtio_anchor.h>
+#include <linux/iommu-dma.h>
 
 #include <asm/sev.h>
 
@@ -30,7 +31,7 @@ bool force_dma_unencrypted(struct device *dev)
 	 * device does not support DMA to addresses that include the
 	 * encryption mask.
 	 */
-	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
+	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT) && !use_dma_iommu(dev)) {
 		u64 dma_enc_mask = DMA_BIT_MASK(__ffs64(sme_me_mask));
 		u64 dma_dev_mask = min_not_zero(dev->coherent_dma_mask,
 						dev->bus_dma_limit);
@@ -94,6 +95,8 @@ void __init mem_encrypt_init(void)
 	/* Call into SWIOTLB to update the SWIOTLB DMA buffers */
 	swiotlb_update_mem_attributes();
 
+	snp_secure_tsc_prepare();
+
 	print_mem_encrypt_feature_info();
 }
 
@@ -101,6 +104,13 @@ void __init mem_encrypt_setup_arch(void)
 {
 	phys_addr_t total_mem = memblock_phys_mem_size();
 	unsigned long size;
+
+	/*
+	 * Do RMP table fixups after the e820 tables have been setup by
+	 * e820__memory_setup().
+	 */
+	if (cc_platform_has(CC_ATTR_HOST_SEV_SNP))
+		snp_fixup_e820_tables();
 
 	if (!cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
 		return;

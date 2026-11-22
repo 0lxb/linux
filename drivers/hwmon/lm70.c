@@ -6,9 +6,9 @@
  * Copyright (C) 2006 Kaiwan N Billimoria <kaiwan@designergraphix.com>
  *
  * The LM70 communicates with a host processor via an SPI/Microwire Bus
- * interface. The complete datasheet is available at National's website
+ * interface. The complete datasheet is available at TI's website
  * here:
- * http://www.national.com/pf/LM/LM70.html
+ * https://www.ti.com/product/LM70
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -21,7 +21,6 @@
 #include <linux/sysfs.h>
 #include <linux/hwmon.h>
 #include <linux/mutex.h>
-#include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
@@ -97,21 +96,21 @@ static ssize_t temp1_input_show(struct device *dev,
 	 */
 	switch (p_lm70->chip) {
 	case LM70_CHIP_LM70:
-		val = ((int)raw / 32) * 250;
+		val = ((int)raw >> 5) * 250;
 		break;
 
 	case LM70_CHIP_TMP121:
 	case LM70_CHIP_TMP122:
 	case LM70_CHIP_LM74:
-		val = ((int)raw / 8) * 625 / 10;
+		val = ((int)raw >> 3) * 625 / 10;
 		break;
 
 	case LM70_CHIP_LM71:
-		val = ((int)raw / 4) * 3125 / 100;
+		val = ((int)raw >> 2) * 3125 / 100;
 		break;
 
 	case LM70_CHIP_TMP125:
-		val = (sign_extend32(raw, 14) / 32) * 250;
+		val = (sign_extend32(raw, 14) >> 5) * 250;
 		break;
 	}
 
@@ -169,11 +168,7 @@ static int lm70_probe(struct spi_device *spi)
 	struct lm70 *p_lm70;
 	int chip;
 
-	if (dev_fwnode(&spi->dev))
-		chip = (int)(uintptr_t)device_get_match_data(&spi->dev);
-	else
-		chip = spi_get_device_id(spi)->driver_data;
-
+	chip = (kernel_ulong_t)spi_get_device_match_data(spi);
 
 	/* signaling is SPI_MODE_0 */
 	if ((spi->mode & SPI_MODE_X_MASK) != SPI_MODE_0)
@@ -181,7 +176,7 @@ static int lm70_probe(struct spi_device *spi)
 
 	/* NOTE:  we assume 8-bit words, and convert to 16 bits manually */
 
-	p_lm70 = devm_kzalloc(&spi->dev, sizeof(*p_lm70), GFP_KERNEL);
+	p_lm70 = devm_kzalloc_obj(&spi->dev, *p_lm70);
 	if (!p_lm70)
 		return -ENOMEM;
 

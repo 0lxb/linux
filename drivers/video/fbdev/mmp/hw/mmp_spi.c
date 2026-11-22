@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * linux/drivers/video/mmp/hw/mmp_spi.c
- * using the spi in LCD controler for commands send
+ * using the spi in LCD controller for commands send
  *
  * Copyright (C) 2012 Marvell Technology Group Ltd.
  * Authors:  Guoqing Li <ligq@marvell.com>
@@ -140,9 +140,9 @@ int lcd_spi_register(struct mmphw_ctrl *ctrl)
 	void **p_regbase;
 	int err;
 
-	ctlr = spi_alloc_master(ctrl->dev, sizeof(void *));
+	ctlr = spi_alloc_host(ctrl->dev, sizeof(void *));
 	if (!ctlr) {
-		dev_err(ctrl->dev, "unable to allocate SPI master\n");
+		dev_err(ctrl->dev, "unable to allocate SPI host\n");
 		return -ENOMEM;
 	}
 	p_regbase = spi_controller_get_devdata(ctlr);
@@ -156,7 +156,7 @@ int lcd_spi_register(struct mmphw_ctrl *ctrl)
 
 	err = spi_register_controller(ctlr);
 	if (err < 0) {
-		dev_err(ctrl->dev, "unable to register SPI master\n");
+		dev_err(ctrl->dev, "unable to register SPI host\n");
 		spi_controller_put(ctlr);
 		return err;
 	}

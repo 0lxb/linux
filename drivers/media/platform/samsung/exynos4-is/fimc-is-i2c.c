@@ -41,7 +41,7 @@ static int fimc_is_i2c_probe(struct platform_device *pdev)
 	struct i2c_adapter *i2c_adap;
 	int ret;
 
-	isp_i2c = devm_kzalloc(&pdev->dev, sizeof(*isp_i2c), GFP_KERNEL);
+	isp_i2c = devm_kzalloc_obj(&pdev->dev, *isp_i2c);
 	if (!isp_i2c)
 		return -ENOMEM;
 
@@ -131,13 +131,13 @@ static const struct dev_pm_ops fimc_is_i2c_pm_ops = {
 };
 
 static const struct of_device_id fimc_is_i2c_of_match[] = {
-	{ .compatible = FIMC_IS_I2C_COMPATIBLE },
+	{ .compatible = "samsung,exynos4212-i2c-isp" },
 	{ },
 };
 
 static struct platform_driver fimc_is_i2c_driver = {
 	.probe		= fimc_is_i2c_probe,
-	.remove_new	= fimc_is_i2c_remove,
+	.remove		= fimc_is_i2c_remove,
 	.driver = {
 		.of_match_table = fimc_is_i2c_of_match,
 		.name		= "fimc-isp-i2c",

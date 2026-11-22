@@ -20,12 +20,14 @@
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/mdio-bitbang.h>
-#include <linux/mdio-gpio.h>
 #include <linux/module.h>
 #include <linux/of_mdio.h>
-#include <linux/platform_data/mdio-gpio.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+
+#define MDIO_GPIO_MDC	0
+#define MDIO_GPIO_MDIO	1
+#define MDIO_GPIO_MDO	2
 
 struct mdio_gpio_info {
 	struct mdiobb_ctrl ctrl;
@@ -110,7 +112,6 @@ static struct mii_bus *mdio_gpio_bus_init(struct device *dev,
 					  struct mdio_gpio_info *bitbang,
 					  int bus_id)
 {
-	struct mdio_gpio_platform_data *pdata = dev_get_platdata(dev);
 	struct mii_bus *new_bus;
 
 	bitbang->ctrl.ops = &mdio_gpio_ops;
@@ -127,13 +128,7 @@ static struct mii_bus *mdio_gpio_bus_init(struct device *dev,
 	else
 		strscpy(new_bus->id, "gpio", sizeof(new_bus->id));
 
-	if (pdata) {
-		new_bus->phy_mask = pdata->phy_mask;
-		new_bus->phy_ignore_ta_mask = pdata->phy_ignore_ta_mask;
-	}
-
-	if (dev->of_node &&
-	    of_device_is_compatible(dev->of_node, "microchip,mdio-smi0")) {
+	if (device_is_compatible(dev, "microchip,mdio-smi0")) {
 		bitbang->ctrl.op_c22_read = 0;
 		bitbang->ctrl.op_c22_write = 0;
 		bitbang->ctrl.override_op_c22 = 1;
@@ -165,7 +160,7 @@ static int mdio_gpio_probe(struct platform_device *pdev)
 	struct mii_bus *new_bus;
 	int ret, bus_id;
 
-	bitbang = devm_kzalloc(&pdev->dev, sizeof(*bitbang), GFP_KERNEL);
+	bitbang = devm_kzalloc_obj(&pdev->dev, *bitbang);
 	if (!bitbang)
 		return -ENOMEM;
 
@@ -208,7 +203,7 @@ MODULE_DEVICE_TABLE(of, mdio_gpio_of_match);
 
 static struct platform_driver mdio_gpio_driver = {
 	.probe = mdio_gpio_probe,
-	.remove_new = mdio_gpio_remove,
+	.remove = mdio_gpio_remove,
 	.driver		= {
 		.name	= "mdio-gpio",
 		.of_match_table = mdio_gpio_of_match,

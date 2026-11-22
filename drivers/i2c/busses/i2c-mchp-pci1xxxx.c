@@ -1048,7 +1048,7 @@ static u32 pci1xxxx_i2c_get_funcs(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm pci1xxxx_i2c_algo = {
-	.master_xfer = pci1xxxx_i2c_xfer,
+	.xfer = pci1xxxx_i2c_xfer,
 	.functionality = pci1xxxx_i2c_get_funcs,
 };
 
@@ -1133,7 +1133,7 @@ static int pci1xxxx_i2c_probe_pci(struct pci_dev *pdev,
 	struct pci1xxxx_i2c *i2c;
 	int ret;
 
-	i2c = devm_kzalloc(dev, sizeof(*i2c), GFP_KERNEL);
+	i2c = devm_kzalloc_obj(dev, *i2c);
 	if (!i2c)
 		return -ENOMEM;
 

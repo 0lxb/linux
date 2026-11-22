@@ -43,11 +43,9 @@ static char *cmdline __initdata;
 
 int numa_cpu_lookup_table[NR_CPUS];
 cpumask_var_t node_to_cpumask_map[MAX_NUMNODES];
-struct pglist_data *node_data[MAX_NUMNODES];
 
 EXPORT_SYMBOL(numa_cpu_lookup_table);
 EXPORT_SYMBOL(node_to_cpumask_map);
-EXPORT_SYMBOL(node_data);
 
 static int primary_domain_index;
 static int n_mem_addr_cells, n_mem_size_cells;
@@ -434,7 +432,7 @@ static void __init initialize_form2_numa_distance_lookup_table(void)
 
 static int __init find_primary_domain_index(void)
 {
-	int index;
+	int index = -1;
 	struct device_node *root;
 
 	/*
@@ -504,12 +502,9 @@ static int __init find_primary_domain_index(void)
 		distance_ref_points_depth = MAX_DISTANCE_REF_POINTS;
 	}
 
-	of_node_put(root);
-	return index;
-
 err:
 	of_node_put(root);
-	return -1;
+	return index;
 }
 
 static void __init get_n_mem_cells(int *n_addr_cells, int *n_size_cells)
@@ -894,12 +889,32 @@ static int __init numa_setup_drmem_lmb(struct drmem_lmb *lmb,
 	return 0;
 }
 
+/*
+ * If hierarchy extends beyond primary_domain_index + 1, then next
+ * level corresponds to coregroup.
+ */
+static int detect_and_enable_coregroup(const __be32 *associativity, int index)
+{
+	if (!associativity || index == -1)
+		goto out;
+
+	index = of_read_number(associativity, 1);
+
+	if (index > primary_domain_index + 1) {
+		coregroup_enabled = 1;
+		return index;
+	}
+out:
+	coregroup_enabled = 0;
+	return -1;
+}
+
 static int __init parse_numa_properties(void)
 {
-	struct device_node *memory;
-	int default_nid = 0;
-	unsigned long i;
+	struct device_node *memory, *pci;
+	int default_nid = 0, index = 0;
 	const __be32 *associativity;
+	unsigned long i;
 
 	if (numa_enabled == 0) {
 		pr_warn("disabled by user\n");
@@ -932,7 +947,6 @@ static int __init parse_numa_properties(void)
 	 */
 	for_each_present_cpu(i) {
 		__be32 vphn_assoc[VPHN_ASSOC_BUFSIZE];
-		struct device_node *cpu;
 		int nid = NUMA_NO_NODE;
 
 		memset(vphn_assoc, 0, VPHN_ASSOC_BUFSIZE * sizeof(__be32));
@@ -940,7 +954,9 @@ static int __init parse_numa_properties(void)
 		if (__vphn_get_associativity(i, vphn_assoc) == 0) {
 			nid = associativity_to_nid(vphn_assoc);
 			initialize_form1_numa_distance(vphn_assoc);
+			index = detect_and_enable_coregroup(vphn_assoc, index);
 		} else {
+			struct device_node *cpu;
 
 			/*
 			 * Don't fall back to default_nid yet -- we will plug
@@ -953,6 +969,7 @@ static int __init parse_numa_properties(void)
 			associativity = of_get_associativity(cpu);
 			if (associativity) {
 				nid = associativity_to_nid(associativity);
+				index = detect_and_enable_coregroup(associativity, index);
 				initialize_form1_numa_distance(associativity);
 			}
 			of_node_put(cpu);
@@ -1008,6 +1025,18 @@ new_range:
 
 		if (--ranges)
 			goto new_range;
+	}
+
+	for_each_node_by_name(pci, "pci") {
+		int nid = NUMA_NO_NODE;
+
+		associativity = of_get_associativity(pci);
+		if (associativity) {
+			nid = associativity_to_nid(associativity);
+			initialize_form1_numa_distance(associativity);
+		}
+		if (likely(nid >= 0) && !node_online(nid))
+			node_set_online(nid);
 	}
 
 	/*
@@ -1083,27 +1112,9 @@ void __init dump_numa_cpu_topology(void)
 static void __init setup_node_data(int nid, u64 start_pfn, u64 end_pfn)
 {
 	u64 spanned_pages = end_pfn - start_pfn;
-	const size_t nd_size = roundup(sizeof(pg_data_t), SMP_CACHE_BYTES);
-	u64 nd_pa;
-	void *nd;
-	int tnid;
 
-	nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, nid);
-	if (!nd_pa)
-		panic("Cannot allocate %zu bytes for node %d data\n",
-		      nd_size, nid);
+	alloc_node_data(nid);
 
-	nd = __va(nd_pa);
-
-	/* report and initialize */
-	pr_info("  NODE_DATA [mem %#010Lx-%#010Lx]\n",
-		nd_pa, nd_pa + nd_size - 1);
-	tnid = early_pfn_to_nid(nd_pa >> PAGE_SHIFT);
-	if (tnid != nid)
-		pr_info("    NODE_DATA(%d) on node %d\n", nid, tnid);
-
-	node_data[nid] = nd;
-	memset(NODE_DATA(nid), 0, sizeof(pg_data_t));
 	NODE_DATA(nid)->node_id = nid;
 	NODE_DATA(nid)->node_start_pfn = start_pfn;
 	NODE_DATA(nid)->node_spanned_pages = spanned_pages;
@@ -1220,8 +1231,6 @@ void __init initmem_init(void)
 		get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
 		setup_node_data(nid, start_pfn, end_pfn);
 	}
-
-	sparse_init();
 
 	/*
 	 * We need the numa_cpu_lookup_table to be accurate for all CPUs,
@@ -1344,7 +1353,7 @@ int hot_add_scn_to_nid(unsigned long scn_addr)
 	return nid;
 }
 
-static u64 hot_add_drconf_memory_max(void)
+u64 hot_add_drconf_memory_max(void)
 {
 	struct device_node *memory = NULL;
 	struct device_node *dn = NULL;
@@ -1441,9 +1450,26 @@ void find_and_update_cpu_nid(int cpu)
 	pr_debug("%s:%d cpu %d nid %d\n", __func__, __LINE__, cpu, new_nid);
 }
 
+static int topology_update_init(void)
+{
+	topology_inited = 1;
+	return 0;
+}
+device_initcall(topology_update_init);
+
+#else
+static long vphn_get_associativity(unsigned long cpu,
+					__be32 *associativity)
+{
+	return -1;
+}
+#endif /* CONFIG_PPC_SPLPAR */
+
 int cpu_to_coregroup_id(int cpu)
 {
-	__be32 associativity[VPHN_ASSOC_BUFSIZE] = {0};
+	int coregroup_id = cpu_to_core_id(cpu);
+	struct device_node *cpunode = NULL;
+	const __be32 *associativity;
 	int index;
 
 	if (cpu < 0 || cpu > nr_cpu_ids)
@@ -1452,24 +1478,31 @@ int cpu_to_coregroup_id(int cpu)
 	if (!coregroup_enabled)
 		goto out;
 
-	if (!firmware_has_feature(FW_FEATURE_VPHN))
-		goto out;
+	if (firmware_has_feature(FW_FEATURE_VPHN)) {
+		__be32 tmp[VPHN_ASSOC_BUFSIZE] = {0};
 
-	if (vphn_get_associativity(cpu, associativity))
+		if (vphn_get_associativity(cpu, tmp))
+			goto out;
+
+		associativity = tmp;
+
+	} else {
+		cpunode = of_get_cpu_node(cpu, NULL);
+		if (!cpunode)
+			goto out;
+
+		associativity = of_get_associativity(cpunode);
+	}
+	if (!associativity)
 		goto out;
 
 	index = of_read_number(associativity, 1);
 	if (index > primary_domain_index + 1)
-		return of_read_number(&associativity[index - 1], 1);
+		coregroup_id = of_read_number(&associativity[index - 1], 1);
 
 out:
-	return cpu_to_core_id(cpu);
-}
+	if (cpunode)
+		of_node_put(cpunode);
 
-static int topology_update_init(void)
-{
-	topology_inited = 1;
-	return 0;
+	return coregroup_id;
 }
-device_initcall(topology_update_init);
-#endif /* CONFIG_PPC_SPLPAR */

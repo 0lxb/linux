@@ -122,10 +122,6 @@ static u32 get_bw_boundary(enum usb_device_speed speed)
 * each HS root port is treated as a single bandwidth domain,
 * but each SS root port is treated as two bandwidth domains, one for IN eps,
 * one for OUT eps.
-* @real_port value is defined as follow according to xHCI spec:
-* 1 for SSport0, ..., N+1 for SSportN, N+2 for HSport0, N+3 for HSport1, etc
-* so the bandwidth domain array is organized as follow for simplification:
-* SSport0-OUT, SSport0-IN, ..., SSportX-OUT, SSportX-IN, HSport0, ..., HSportY
 */
 static struct mu3h_sch_bw_info *
 get_bw_info(struct xhci_hcd_mtk *mtk, struct usb_device *udev,
@@ -136,19 +132,19 @@ get_bw_info(struct xhci_hcd_mtk *mtk, struct usb_device *udev,
 	int bw_index;
 
 	virt_dev = xhci->devs[udev->slot_id];
-	if (!virt_dev->real_port) {
-		WARN_ONCE(1, "%s invalid real_port\n", dev_name(&udev->dev));
+	if (!virt_dev->rhub_port) {
+		WARN_ONCE(1, "%s invalid rhub port\n", dev_name(&udev->dev));
 		return NULL;
 	}
 
 	if (udev->speed >= USB_SPEED_SUPER) {
 		if (usb_endpoint_dir_out(&ep->desc))
-			bw_index = (virt_dev->real_port - 1) * 2;
+			bw_index = (virt_dev->rhub_port->hw_portnum) * 2;
 		else
-			bw_index = (virt_dev->real_port - 1) * 2 + 1;
+			bw_index = (virt_dev->rhub_port->hw_portnum) * 2 + 1;
 	} else {
 		/* add one more for each SS port */
-		bw_index = virt_dev->real_port + xhci->usb3_rhub.num_ports - 1;
+		bw_index = virt_dev->rhub_port->hw_portnum + xhci->usb3_rhub.num_ports;
 	}
 
 	return &mtk->sch_array[bw_index];
@@ -183,8 +179,7 @@ static struct mu3h_sch_tt *find_tt(struct usb_device *udev)
 	if (utt->multi) {
 		tt_index = utt->hcpriv;
 		if (!tt_index) {	/* Create the index array */
-			tt_index = kcalloc(utt->hub->maxchild,
-					sizeof(*tt_index), GFP_KERNEL);
+			tt_index = kzalloc_objs(*tt_index, utt->hub->maxchild);
 			if (!tt_index)
 				return ERR_PTR(-ENOMEM);
 			utt->hcpriv = tt_index;
@@ -197,7 +192,7 @@ static struct mu3h_sch_tt *find_tt(struct usb_device *udev)
 
 	tt = *ptt;
 	if (!tt) {	/* Create the mu3h_sch_tt */
-		tt = kzalloc(sizeof(*tt), GFP_KERNEL);
+		tt = kzalloc_obj(*tt);
 		if (!tt) {
 			if (allocated_index) {
 				utt->hcpriv = NULL;
@@ -268,7 +263,7 @@ create_sch_ep(struct xhci_hcd_mtk *mtk, struct usb_device *udev,
 	else
 		len = 1;
 
-	sch_ep = kzalloc(struct_size(sch_ep, bw_budget_table, len), GFP_KERNEL);
+	sch_ep = kzalloc_flex(*sch_ep, bw_budget_table, len);
 	if (!sch_ep)
 		return ERR_PTR(-ENOMEM);
 
@@ -895,7 +890,7 @@ int xhci_mtk_sch_init(struct xhci_hcd_mtk *mtk)
 	/* ss IN and OUT are separated */
 	num_usb_bus = xhci->usb3_rhub.num_ports * 2 + xhci->usb2_rhub.num_ports;
 
-	sch_array = kcalloc(num_usb_bus, sizeof(*sch_array), GFP_KERNEL);
+	sch_array = kzalloc_objs(*sch_array, num_usb_bus);
 	if (sch_array == NULL)
 		return -ENOMEM;
 

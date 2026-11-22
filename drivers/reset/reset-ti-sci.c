@@ -190,7 +190,7 @@ static int ti_sci_reset_of_xlate(struct reset_controller_dev *rcdev,
 	if (WARN_ON(reset_spec->args_count != rcdev->of_reset_n_cells))
 		return -EINVAL;
 
-	control = devm_kzalloc(data->dev, sizeof(*control), GFP_KERNEL);
+	control = devm_kzalloc_obj(data->dev, *control);
 	if (!control)
 		return -ENOMEM;
 
@@ -214,7 +214,7 @@ static int ti_sci_reset_probe(struct platform_device *pdev)
 	if (!pdev->dev.of_node)
 		return -ENODEV;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -235,15 +235,13 @@ static int ti_sci_reset_probe(struct platform_device *pdev)
 	return reset_controller_register(&data->rcdev);
 }
 
-static int ti_sci_reset_remove(struct platform_device *pdev)
+static void ti_sci_reset_remove(struct platform_device *pdev)
 {
 	struct ti_sci_reset_data *data = platform_get_drvdata(pdev);
 
 	reset_controller_unregister(&data->rcdev);
 
 	idr_destroy(&data->idr);
-
-	return 0;
 }
 
 static struct platform_driver ti_sci_reset_driver = {

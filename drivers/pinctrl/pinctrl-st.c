@@ -374,11 +374,6 @@ static struct st_pio_control *st_get_pio_control(
 }
 
 /* Low level functions.. */
-static inline int st_gpio_bank(int gpio)
-{
-	return gpio/ST_GPIO_PINS_PER_BANK;
-}
-
 static inline int st_gpio_pin(int gpio)
 {
 	return gpio%ST_GPIO_PINS_PER_BANK;
@@ -711,10 +706,12 @@ static int st_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return !!(readl(bank->base + REG_PIO_PIN) & BIT(offset));
 }
 
-static void st_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+static int st_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct st_gpio_bank *bank = gpiochip_get_data(chip);
 	__st_gpio_set(bank, offset, value);
+
+	return 0;
 }
 
 static int st_gpio_direction_output(struct gpio_chip *chip,
@@ -822,7 +819,7 @@ static int st_pctl_dt_node_to_map(struct pinctrl_dev *pctldev,
 	}
 
 	map_num = grp->npins + 1;
-	new_map = devm_kcalloc(dev, map_num, sizeof(*new_map), GFP_KERNEL);
+	new_map = devm_kzalloc_objs(dev, *new_map, map_num);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -990,6 +987,7 @@ static int st_pinconf_get(struct pinctrl_dev *pctldev,
 
 static void st_pinconf_dbg_show(struct pinctrl_dev *pctldev,
 				   struct seq_file *s, unsigned pin_id)
+	__must_hold(&pctldev->mutex)
 {
 	struct st_pio_control *pc;
 	unsigned long config;
@@ -1150,7 +1148,7 @@ static void st_parse_syscfgs(struct st_pinctrl *info, int bank,
 	pc->pu = st_pc_get_value(dev, regmap, bank/4, data->pu, lsb, msb);
 	pc->od = st_pc_get_value(dev, regmap, bank/4, data->od, lsb, msb);
 
-	/* retime avaiable for all pins by default */
+	/* retime available for all pins by default */
 	pc->rt_pin_mask = 0xff;
 	of_property_read_u32(np, "st,retime-pin-mask", &pc->rt_pin_mask);
 	st_pctl_dt_setup_retime(info, bank, pc);
@@ -1195,10 +1193,10 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 	struct property *pp;
 	struct device *dev = info->dev;
 	struct st_pinconf *conf;
-	struct device_node *pins;
+	struct device_node *pins __free(device_node) = NULL;
 	phandle bank;
 	unsigned int offset;
-	int i = 0, npins = 0, nr_props, ret = 0;
+	int i = 0, npins = 0, nr_props;
 
 	pins = of_get_child_by_name(np, "st,pins");
 	if (!pins)
@@ -1213,20 +1211,17 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 			npins++;
 		} else {
 			pr_warn("Invalid st,pins in %pOFn node\n", np);
-			ret = -EINVAL;
-			goto out_put_node;
+			return -EINVAL;
 		}
 	}
 
 	grp->npins = npins;
 	grp->name = np->name;
-	grp->pins = devm_kcalloc(dev, npins, sizeof(*grp->pins), GFP_KERNEL);
-	grp->pin_conf = devm_kcalloc(dev, npins, sizeof(*grp->pin_conf), GFP_KERNEL);
+	grp->pins = devm_kzalloc_objs(dev, *grp->pins, npins);
+	grp->pin_conf = devm_kzalloc_objs(dev, *grp->pin_conf, npins);
 
-	if (!grp->pins || !grp->pin_conf) {
-		ret = -ENOMEM;
-		goto out_put_node;
-	}
+	if (!grp->pins || !grp->pin_conf)
+		return -ENOMEM;
 
 	/* <bank offset mux direction rt_type rt_delay rt_clk> */
 	for_each_property_of_node(pins, pp) {
@@ -1260,17 +1255,13 @@ static int st_pctl_dt_parse_groups(struct device_node *np,
 		i++;
 	}
 
-out_put_node:
-	of_node_put(pins);
-
-	return ret;
+	return 0;
 }
 
 static int st_pctl_parse_functions(struct device_node *np,
 			struct st_pinctrl *info, u32 index, int *grp_index)
 {
 	struct device *dev = info->dev;
-	struct device_node *child;
 	struct st_pmx_func *func;
 	struct st_pctl_group *grp;
 	int ret, i;
@@ -1280,20 +1271,18 @@ static int st_pctl_parse_functions(struct device_node *np,
 	func->ngroups = of_get_child_count(np);
 	if (func->ngroups == 0)
 		return dev_err_probe(dev, -EINVAL, "No groups defined\n");
-	func->groups = devm_kcalloc(dev, func->ngroups, sizeof(*func->groups), GFP_KERNEL);
+	func->groups = devm_kzalloc_objs(dev, *func->groups, func->ngroups);
 	if (!func->groups)
 		return -ENOMEM;
 
 	i = 0;
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		func->groups[i] = child->name;
 		grp = &info->groups[*grp_index];
 		*grp_index += 1;
 		ret = st_pctl_dt_parse_groups(child, grp, info, i++);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return ret;
-		}
 	}
 	dev_info(dev, "Function[%d\t name:%s,\tgroups:%d]\n", index, func->name, func->ngroups);
 
@@ -1567,8 +1556,7 @@ static int st_gpiolib_register_bank(struct st_pinctrl *info,
 		gpio_irq_chip_set_chip(girq, &st_gpio_irqchip);
 		girq->parent_handler = st_gpio_irq_handler;
 		girq->num_parents = 1;
-		girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
-					     GFP_KERNEL);
+		girq->parents = devm_kzalloc_objs(dev, *girq->parents, 1);
 		if (!girq->parents)
 			return -ENOMEM;
 		girq->parents[0] = gpio_irq;
@@ -1601,7 +1589,6 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 	int i = 0, j = 0, k = 0, bank;
 	struct pinctrl_pin_desc *pdesc;
 	struct device_node *np = dev->of_node;
-	struct device_node *child;
 	int grp_index = 0;
 	int irq = 0;
 
@@ -1613,11 +1600,12 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 	dev_info(dev, "nfunctions = %d\n", info->nfunctions);
 	dev_info(dev, "ngroups = %d\n", info->ngroups);
 
-	info->functions = devm_kcalloc(dev, info->nfunctions, sizeof(*info->functions), GFP_KERNEL);
+	info->functions = devm_kzalloc_objs(dev, *info->functions,
+					    info->nfunctions);
 
-	info->groups = devm_kcalloc(dev, info->ngroups, sizeof(*info->groups), GFP_KERNEL);
+	info->groups = devm_kzalloc_objs(dev, *info->groups, info->ngroups);
 
-	info->banks = devm_kcalloc(dev, info->nbanks, sizeof(*info->banks), GFP_KERNEL);
+	info->banks = devm_kzalloc_objs(dev, *info->banks, info->nbanks);
 
 	if (!info->functions || !info->groups || !info->banks)
 		return -ENOMEM;
@@ -1639,32 +1627,28 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 	}
 
 	pctl_desc->npins = info->nbanks * ST_GPIO_PINS_PER_BANK;
-	pdesc =	devm_kcalloc(dev, pctl_desc->npins, sizeof(*pdesc), GFP_KERNEL);
+	pdesc =	devm_kzalloc_objs(dev, *pdesc, pctl_desc->npins);
 	if (!pdesc)
 		return -ENOMEM;
 
 	pctl_desc->pins = pdesc;
 
 	bank = 0;
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		if (of_property_read_bool(child, "gpio-controller")) {
 			const char *bank_name = NULL;
 			char **pin_names;
 
 			ret = st_gpiolib_register_bank(info, bank, child);
-			if (ret) {
-				of_node_put(child);
+			if (ret)
 				return ret;
-			}
 
 			k = info->banks[bank].range.pin_base;
 			bank_name = info->banks[bank].range.name;
 
 			pin_names = devm_kasprintf_strarray(dev, bank_name, ST_GPIO_PINS_PER_BANK);
-			if (IS_ERR(pin_names)) {
-				of_node_put(child);
+			if (IS_ERR(pin_names))
 				return PTR_ERR(pin_names);
-			}
 
 			for (j = 0; j < ST_GPIO_PINS_PER_BANK; j++, k++) {
 				pdesc->number = k;
@@ -1678,7 +1662,6 @@ static int st_pctl_probe_dt(struct platform_device *pdev,
 							i++, &grp_index);
 			if (ret) {
 				dev_err(dev, "No functions found.\n");
-				of_node_put(child);
 				return ret;
 			}
 		}
@@ -1699,11 +1682,11 @@ static int st_pctl_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	pctl_desc = devm_kzalloc(dev, sizeof(*pctl_desc), GFP_KERNEL);
+	pctl_desc = devm_kzalloc_obj(dev, *pctl_desc);
 	if (!pctl_desc)
 		return -ENOMEM;
 
-	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(dev, *info);
 	if (!info)
 		return -ENOMEM;
 

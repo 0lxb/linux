@@ -4,6 +4,8 @@
 #define nvkm_instmem(p) container_of((p), struct nvkm_instmem, subdev)
 #include <subdev/instmem.h>
 
+struct io_mapping;
+
 struct nvkm_instmem_func {
 	void *(*dtor)(struct nvkm_instmem *);
 	int (*oneinit)(struct nvkm_instmem *);
@@ -16,10 +18,18 @@ struct nvkm_instmem_func {
 			  bool zero, struct nvkm_memory **);
 	int (*memory_wrap)(struct nvkm_instmem *, struct nvkm_memory *, struct nvkm_memory **);
 	bool zero;
+	void (*set_bar0_window_addr)(struct nvkm_device *, u64 addr);
 };
 
 int nv50_instmem_new_(const struct nvkm_instmem_func *, struct nvkm_device *,
 		      enum nvkm_subdev_type, int, struct nvkm_instmem **);
+void nv50_instmem_fini(struct nvkm_instmem *);
+int nv50_instobj_new(struct nvkm_instmem *, u32 size, u32 align, bool zero,
+		     struct nvkm_memory **);
+int nv50_instobj_wrap(struct nvkm_instmem *, struct nvkm_memory *vram,
+		      struct nvkm_memory **bar2);
+void *nv50_instmem_dtor(struct nvkm_instmem *base);
+struct io_mapping *nv50_instmem_bar2_iomap(struct nvkm_instmem *base);
 
 void nvkm_instmem_ctor(const struct nvkm_instmem_func *, struct nvkm_device *,
 		       enum nvkm_subdev_type, int, struct nvkm_instmem *);

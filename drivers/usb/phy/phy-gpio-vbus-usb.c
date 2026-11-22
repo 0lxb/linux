@@ -236,13 +236,11 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 	int err, irq;
 	unsigned long irqflags;
 
-	gpio_vbus = devm_kzalloc(&pdev->dev, sizeof(struct gpio_vbus_data),
-				 GFP_KERNEL);
+	gpio_vbus = devm_kzalloc_obj(&pdev->dev, struct gpio_vbus_data);
 	if (!gpio_vbus)
 		return -ENOMEM;
 
-	gpio_vbus->phy.otg = devm_kzalloc(&pdev->dev, sizeof(struct usb_otg),
-					  GFP_KERNEL);
+	gpio_vbus->phy.otg = devm_kzalloc_obj(&pdev->dev, struct usb_otg);
 	if (!gpio_vbus->phy.otg)
 		return -ENOMEM;
 
@@ -297,11 +295,8 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 
 	err = devm_request_irq(&pdev->dev, irq, gpio_vbus_irq, irqflags,
 			       "vbus_detect", pdev);
-	if (err) {
-		dev_err(&pdev->dev, "can't request irq %i, err: %d\n",
-			irq, err);
+	if (err)
 		return err;
-	}
 
 	INIT_DELAYED_WORK(&gpio_vbus->work, gpio_vbus_work);
 
@@ -374,6 +369,7 @@ static const struct of_device_id gpio_vbus_of_match[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, gpio_vbus_of_match);
 
 static struct platform_driver gpio_vbus_driver = {
 	.driver = {
@@ -384,7 +380,7 @@ static struct platform_driver gpio_vbus_driver = {
 		.of_match_table = gpio_vbus_of_match,
 	},
 	.probe		= gpio_vbus_probe,
-	.remove_new	= gpio_vbus_remove,
+	.remove		= gpio_vbus_remove,
 };
 
 module_platform_driver(gpio_vbus_driver);

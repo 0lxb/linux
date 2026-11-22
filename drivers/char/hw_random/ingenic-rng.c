@@ -85,7 +85,7 @@ static int ingenic_rng_probe(struct platform_device *pdev)
 	struct ingenic_rng *priv;
 	int ret;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -132,7 +132,7 @@ MODULE_DEVICE_TABLE(of, ingenic_rng_of_match);
 
 static struct platform_driver ingenic_rng_driver = {
 	.probe		= ingenic_rng_probe,
-	.remove_new	= ingenic_rng_remove,
+	.remove		= ingenic_rng_remove,
 	.driver		= {
 		.name	= "ingenic-rng",
 		.of_match_table = ingenic_rng_of_match,

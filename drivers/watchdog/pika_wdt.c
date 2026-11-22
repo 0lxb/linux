@@ -25,6 +25,7 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/stringify.h>
 
 #define DRV_NAME "PIKA-WDT"
 
@@ -39,12 +40,12 @@
 static int heartbeat = WDT_HEARTBEAT;
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat, "Watchdog heartbeats in seconds. "
-	"(default = " __MODULE_STRING(WDT_HEARTBEAT) ")");
+	"(default = " __stringify(WDT_HEARTBEAT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
-	"(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+	"(default=" __stringify(WATCHDOG_NOWAYOUT) ")");
 
 static struct {
 	void __iomem *fpga;
@@ -129,7 +130,7 @@ static int pikawdt_release(struct inode *inode, struct file *file)
 {
 	/* stop internal ping */
 	if (!pikawdt_private.expect_close)
-		del_timer(&pikawdt_private.timer);
+		timer_delete(&pikawdt_private.timer);
 
 	clear_bit(0, &pikawdt_private.open);
 	pikawdt_private.expect_close = 0;
@@ -209,7 +210,6 @@ static long pikawdt_ioctl(struct file *file,
 
 static const struct file_operations pikawdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.open		= pikawdt_open,
 	.release	= pikawdt_release,
 	.write		= pikawdt_write,

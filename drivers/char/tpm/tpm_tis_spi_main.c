@@ -37,6 +37,7 @@
 #include "tpm_tis_spi.h"
 
 #define MAX_SPI_FRAMESIZE 64
+#define SPI_HDRSIZE 4
 
 /*
  * TCG SPI flow control is documented in section 6.4 of the spec[1]. In short,
@@ -247,7 +248,7 @@ static int tpm_tis_spi_write_bytes(struct tpm_tis_data *data, u32 addr,
 int tpm_tis_spi_init(struct spi_device *spi, struct tpm_tis_spi_phy *phy,
 		     int irq, const struct tpm_tis_phy_ops *phy_ops)
 {
-	phy->iobuf = devm_kmalloc(&spi->dev, MAX_SPI_FRAMESIZE, GFP_KERNEL);
+	phy->iobuf = devm_kmalloc(&spi->dev, SPI_HDRSIZE + MAX_SPI_FRAMESIZE, GFP_KERNEL);
 	if (!phy->iobuf)
 		return -ENOMEM;
 
@@ -266,8 +267,7 @@ static int tpm_tis_spi_probe(struct spi_device *dev)
 	struct tpm_tis_spi_phy *phy;
 	int irq;
 
-	phy = devm_kzalloc(&dev->dev, sizeof(struct tpm_tis_spi_phy),
-			   GFP_KERNEL);
+	phy = devm_kzalloc_obj(&dev->dev, struct tpm_tis_spi_phy);
 	if (!phy)
 		return -ENOMEM;
 
@@ -306,7 +306,7 @@ static int tpm_tis_spi_driver_probe(struct spi_device *spi)
 	return probe_func(spi);
 }
 
-static SIMPLE_DEV_PM_OPS(tpm_tis_pm, tpm_pm_suspend, tpm_tis_spi_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tpm_tis_pm, tpm_pm_suspend, tpm_tis_spi_resume);
 
 static void tpm_tis_spi_remove(struct spi_device *dev)
 {
@@ -317,6 +317,7 @@ static void tpm_tis_spi_remove(struct spi_device *dev)
 }
 
 static const struct spi_device_id tpm_tis_spi_id[] = {
+	{ "attpm20p", (unsigned long)tpm_tis_spi_probe },
 	{ "st33htpm-spi", (unsigned long)tpm_tis_spi_probe },
 	{ "slb9670", (unsigned long)tpm_tis_spi_probe },
 	{ "tpm_tis_spi", (unsigned long)tpm_tis_spi_probe },
@@ -345,7 +346,7 @@ MODULE_DEVICE_TABLE(acpi, acpi_tis_spi_match);
 static struct spi_driver tpm_tis_spi_driver = {
 	.driver = {
 		.name = "tpm_tis_spi",
-		.pm = &tpm_tis_pm,
+		.pm = pm_sleep_ptr(&tpm_tis_pm),
 		.of_match_table = of_match_ptr(of_tis_spi_match),
 		.acpi_match_table = ACPI_PTR(acpi_tis_spi_match),
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

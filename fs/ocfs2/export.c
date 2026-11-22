@@ -37,6 +37,7 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	struct inode *inode;
 	struct ocfs2_super *osb = OCFS2_SB(sb);
 	u64 blkno = handle->ih_blkno;
+	unsigned int nofs_flag = 0;
 	int status, set;
 	struct dentry *result;
 
@@ -59,7 +60,7 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	 * This will synchronize us against ocfs2_delete_inode() on
 	 * all nodes
 	 */
-	status = ocfs2_nfs_sync_lock(osb, 1);
+	status = ocfs2_nfs_sync_lock(osb, 1, &nofs_flag);
 	if (status < 0) {
 		mlog(ML_ERROR, "getting nfs sync lock(EX) failed %d\n", status);
 		goto check_err;
@@ -74,8 +75,9 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 			 * nice
 			 */
 			status = -ESTALE;
-		} else
+		} else if (status != -ESTALE) {
 			mlog(ML_ERROR, "test inode bit failed %d\n", status);
+		}
 		goto unlock_nfs_sync;
 	}
 
@@ -89,7 +91,7 @@ static struct dentry *ocfs2_get_dentry(struct super_block *sb,
 	inode = ocfs2_iget(osb, blkno, 0, 0);
 
 unlock_nfs_sync:
-	ocfs2_nfs_sync_unlock(osb, 1);
+	ocfs2_nfs_sync_unlock(osb, 1, nofs_flag);
 
 check_err:
 	if (status < 0) {
@@ -132,12 +134,13 @@ static struct dentry *ocfs2_get_parent(struct dentry *child)
 	u64 blkno;
 	struct dentry *parent;
 	struct inode *dir = d_inode(child);
+	unsigned int nofs_flag = 0;
 	int set;
 
 	trace_ocfs2_get_parent(child, child->d_name.len, child->d_name.name,
 			       (unsigned long long)OCFS2_I(dir)->ip_blkno);
 
-	status = ocfs2_nfs_sync_lock(OCFS2_SB(dir->i_sb), 1);
+	status = ocfs2_nfs_sync_lock(OCFS2_SB(dir->i_sb), 1, &nofs_flag);
 	if (status < 0) {
 		mlog(ML_ERROR, "getting nfs sync lock(EX) failed %d\n", status);
 		parent = ERR_PTR(status);
@@ -162,8 +165,9 @@ static struct dentry *ocfs2_get_parent(struct dentry *child)
 	if (status < 0) {
 		if (status == -EINVAL) {
 			status = -ESTALE;
-		} else
+		} else if (status != -ESTALE) {
 			mlog(ML_ERROR, "test inode bit failed %d\n", status);
+		}
 		parent = ERR_PTR(status);
 		goto bail_unlock;
 	}
@@ -181,7 +185,7 @@ bail_unlock:
 	ocfs2_inode_unlock(dir, 0);
 
 unlock_nfs_sync:
-	ocfs2_nfs_sync_unlock(OCFS2_SB(dir->i_sb), 1);
+	ocfs2_nfs_sync_unlock(OCFS2_SB(dir->i_sb), 1, nofs_flag);
 
 bail:
 	trace_ocfs2_get_parent_end(parent);
@@ -255,9 +259,9 @@ static struct dentry *ocfs2_fh_to_dentry(struct super_block *sb,
 	if (fh_len < 3 || fh_type > 2)
 		return NULL;
 
-	handle.ih_blkno = (u64)le32_to_cpu(fid->raw[0]) << 32;
-	handle.ih_blkno |= (u64)le32_to_cpu(fid->raw[1]);
-	handle.ih_generation = le32_to_cpu(fid->raw[2]);
+	handle.ih_blkno = (u64)le32_to_cpu((__force __le32)fid->raw[0]) << 32;
+	handle.ih_blkno |= (u64)le32_to_cpu((__force __le32)fid->raw[1]);
+	handle.ih_generation = le32_to_cpu((__force __le32)fid->raw[2]);
 	return ocfs2_get_dentry(sb, &handle);
 }
 
@@ -269,9 +273,9 @@ static struct dentry *ocfs2_fh_to_parent(struct super_block *sb,
 	if (fh_type != 2 || fh_len < 6)
 		return NULL;
 
-	parent.ih_blkno = (u64)le32_to_cpu(fid->raw[3]) << 32;
-	parent.ih_blkno |= (u64)le32_to_cpu(fid->raw[4]);
-	parent.ih_generation = le32_to_cpu(fid->raw[5]);
+	parent.ih_blkno = (u64)le32_to_cpu((__force __le32)fid->raw[3]) << 32;
+	parent.ih_blkno |= (u64)le32_to_cpu((__force __le32)fid->raw[4]);
+	parent.ih_generation = le32_to_cpu((__force __le32)fid->raw[5]);
 	return ocfs2_get_dentry(sb, &parent);
 }
 
@@ -280,5 +284,4 @@ const struct export_operations ocfs2_export_ops = {
 	.fh_to_dentry	= ocfs2_fh_to_dentry,
 	.fh_to_parent	= ocfs2_fh_to_parent,
 	.get_parent	= ocfs2_get_parent,
-	.flags		= EXPORT_OP_ASYNC_LOCK,
 };

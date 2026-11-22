@@ -6,6 +6,8 @@
 
 #include <linux/nospec.h>
 
+#include <drm/drm_print.h>
+
 #include "i915_drv.h"
 #include "i915_perf.h"
 #include "i915_query.h"
@@ -105,7 +107,7 @@ static int query_geometry_subslices(struct drm_i915_private *i915,
 	struct intel_engine_cs *engine;
 	struct i915_engine_class_instance classinstance;
 
-	if (GRAPHICS_VER_FULL(i915) < IP_VER(12, 50))
+	if (GRAPHICS_VER_FULL(i915) < IP_VER(12, 55))
 		return -ENODEV;
 
 	classinstance = *((struct i915_engine_class_instance *)&query_item->flags);
@@ -401,8 +403,10 @@ static int query_perf_config_list(struct drm_i915_private *i915,
 		ids = krealloc(oa_config_ids,
 			       n_configs * sizeof(*oa_config_ids),
 			       GFP_KERNEL);
-		if (!ids)
+		if (!ids) {
+			kfree(oa_config_ids);
 			return -ENOMEM;
+		}
 
 		alloc = fetch_and_zero(&n_configs);
 

@@ -390,6 +390,7 @@ struct hp_wmi_info {
  */
 struct hp_wmi_sensors {
 	struct wmi_device *wdev;
+	struct hwmon_chip_info chip_info;
 	struct hp_wmi_info **info_map[hwmon_max];
 	u8 channel_count[hwmon_max];
 	bool has_intrusion;
@@ -526,14 +527,12 @@ static int check_wobj(const union acpi_object *wobj,
 	for (prop = 0; prop <= last_prop; prop++) {
 		type = elements[prop].type;
 		valid_type = property_map[prop];
-		if (type != valid_type) {
-			if (type == ACPI_TYPE_BUFFER &&
-			    valid_type == ACPI_TYPE_STRING &&
-			    is_raw_wmi_string(elements[prop].buffer.pointer,
-					      elements[prop].buffer.length))
-				continue;
+		if (type == ACPI_TYPE_BUFFER &&
+		    is_raw_wmi_string(elements[prop].buffer.pointer,
+				      elements[prop].buffer.length))
+			type = ACPI_TYPE_STRING;
+		if (type != valid_type)
 			return -EINVAL;
-		}
 	}
 
 	return 0;
@@ -579,6 +578,7 @@ static int check_numeric_sensor_wobj(const union acpi_object *wobj,
 	int prop = HP_WMI_PROPERTY_NAME;
 	acpi_object_type valid_type;
 	union acpi_object *elements;
+	union acpi_object *element;
 	u32 elem_count;
 	int last_prop;
 	bool is_new;
@@ -602,12 +602,19 @@ static int check_numeric_sensor_wobj(const union acpi_object *wobj,
 	    elem_count > HP_WMI_MAX_PROPERTIES)
 		return -EINVAL;
 
-	type = elements[HP_WMI_PROPERTY_SIZE].type;
+	element = &elements[HP_WMI_PROPERTY_SIZE];
+	type = element->type;
 	switch (type) {
 	case ACPI_TYPE_INTEGER:
 		is_new = true;
 		last_prop = HP_WMI_PROPERTY_RATE_UNITS;
 		break;
+
+	case ACPI_TYPE_BUFFER:
+		if (!is_raw_wmi_string(element->buffer.pointer,
+				       element->buffer.length))
+			return -EINVAL;
+		fallthrough;
 
 	case ACPI_TYPE_STRING:
 		is_new = false;
@@ -631,6 +638,10 @@ static int check_numeric_sensor_wobj(const union acpi_object *wobj,
 	for (i = 0; i < elem_count && prop <= last_prop; i++, prop++) {
 		type = elements[i].type;
 		valid_type = hp_wmi_property_map[prop];
+		if (type == ACPI_TYPE_BUFFER &&
+		    is_raw_wmi_string(elements[i].buffer.pointer,
+				      elements[i].buffer.length))
+			type = ACPI_TYPE_STRING;
 		if (type != valid_type)
 			return -EINVAL;
 
@@ -651,6 +662,10 @@ static int check_numeric_sensor_wobj(const union acpi_object *wobj,
 			/* PossibleStates[0] has already been type-checked. */
 			for (j = 0; i + 1 < elem_count && j + 1 < count; j++) {
 				type = elements[++i].type;
+				if (type == ACPI_TYPE_BUFFER &&
+				    is_raw_wmi_string(elements[i].buffer.pointer,
+						      elements[i].buffer.length))
+					type = ACPI_TYPE_STRING;
 				if (type != valid_type)
 					return -EINVAL;
 			}
@@ -724,15 +739,21 @@ static long scale_numeric_sensor(const struct hp_wmi_numeric_sensor *nsensor)
 
 	val = current_reading;
 
-	for (; unit_modifier < target_modifier; unit_modifier++)
+	for (; val && unit_modifier < target_modifier; unit_modifier++)
 		val = DIV_ROUND_CLOSEST(val, 10);
 
-	for (; unit_modifier > target_modifier; unit_modifier--) {
-		if (val > LONG_MAX / 10) {
-			val = LONG_MAX;
-			break;
+	if (val) {
+		for (; unit_modifier > target_modifier; unit_modifier--) {
+			if (val > LONG_MAX / 10) {
+				val = LONG_MAX;
+				break;
+			}
+			if (val < LONG_MIN / 10) {
+				val = LONG_MIN;
+				break;
+			}
+			val *= 10;
 		}
-		val *= 10;
 	}
 
 	if (sensor_type == HP_WMI_TYPE_TEMPERATURE) {
@@ -828,8 +849,7 @@ populate_numeric_sensor_from_wobj(struct device *dev,
 	if (err)
 		return err;
 
-	possible_states = devm_kcalloc(dev, size, sizeof(*possible_states),
-				       GFP_KERNEL);
+	possible_states = devm_kzalloc_objs(dev, *possible_states, size);
 	if (!possible_states)
 		return -ENOMEM;
 
@@ -1197,7 +1217,7 @@ static int hp_wmi_update_info(struct hp_wmi_sensors *state,
 	if (time_after(jiffies, info->last_updated + HZ)) {
 		mutex_lock(&state->lock);
 
-		wobj = hp_wmi_get_wobj(HP_WMI_NUMERIC_SENSOR_GUID, instance);
+		wobj = wmidev_block_query(state->wdev, instance);
 		if (!wobj) {
 			ret = -EIO;
 			goto out_unlock;
@@ -1247,7 +1267,9 @@ static int fungible_show(struct seq_file *seqf, enum hp_wmi_property prop)
 		break;
 
 	case HP_WMI_PROPERTY_CURRENT_STATE:
+		mutex_lock(&state->lock);
 		seq_printf(seqf, "%s\n", nsensor->current_state);
+		mutex_unlock(&state->lock);
 		break;
 
 	case HP_WMI_PROPERTY_UNIT_MODIFIER:
@@ -1457,8 +1479,10 @@ static int hp_wmi_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 
 	if ((type == hwmon_temp && attr == hwmon_temp_alarm) ||
 	    (type == hwmon_fan  && attr == hwmon_fan_alarm)) {
+		mutex_lock(&state->lock);
 		*out_val = info->alarm ? 1 : 0;
 		info->alarm = false;
+		mutex_unlock(&state->lock);
 
 		return 0;
 	}
@@ -1513,11 +1537,6 @@ static const struct hwmon_ops hp_wmi_hwmon_ops = {
 	.read	     = hp_wmi_hwmon_read,
 	.read_string = hp_wmi_hwmon_read_string,
 	.write	     = hp_wmi_hwmon_write,
-};
-
-static struct hwmon_chip_info hp_wmi_chip_info = {
-	.ops         = &hp_wmi_hwmon_ops,
-	.info        = NULL,
 };
 
 static struct hp_wmi_info *match_fan_event(struct hp_wmi_sensors *state,
@@ -1597,15 +1616,13 @@ static void hp_wmi_devm_notify_remove(void *ignored)
 }
 
 /* hp_wmi_notify - WMI event notification handler */
-static void hp_wmi_notify(u32 value, void *context)
+static void hp_wmi_notify(union acpi_object *wobj, void *context)
 {
 	struct hp_wmi_info *temp_info[HP_WMI_MAX_INSTANCES] = {};
-	struct acpi_buffer out = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct hp_wmi_sensors *state = context;
 	struct device *dev = &state->wdev->dev;
 	struct hp_wmi_event event = {};
 	struct hp_wmi_info *fan_info;
-	union acpi_object *wobj;
 	acpi_status err;
 	int event_type;
 	u8 count;
@@ -1630,18 +1647,15 @@ static void hp_wmi_notify(u32 value, void *context)
 	 * HPBIOS_BIOSEvent instance.
 	 */
 
+	if (!wobj)
+		return;
+
 	mutex_lock(&state->lock);
-
-	err = wmi_get_event_data(value, &out);
-	if (ACPI_FAILURE(err))
-		goto out_unlock;
-
-	wobj = out.pointer;
 
 	err = populate_event_from_wobj(dev, &event, wobj);
 	if (err) {
 		dev_warn(dev, "Bad event data (ACPI type %d)\n", wobj->type);
-		goto out_free_wobj;
+		goto out_free;
 	}
 
 	event_type = classify_event(event.name, event.category);
@@ -1666,13 +1680,10 @@ static void hp_wmi_notify(u32 value, void *context)
 		break;
 	}
 
-out_free_wobj:
-	kfree(wobj);
-
+out_free:
 	devm_kfree(dev, event.name);
 	devm_kfree(dev, event.description);
 
-out_unlock:
 	mutex_unlock(&state->lock);
 }
 
@@ -1696,7 +1707,7 @@ static int init_platform_events(struct device *dev,
 		return 0;
 	}
 
-	pevents_arr = devm_kcalloc(dev, count, sizeof(*pevents), GFP_KERNEL);
+	pevents_arr = devm_kzalloc_objs(dev, *pevents, count);
 	if (!pevents_arr)
 		return -ENOMEM;
 
@@ -1748,12 +1759,12 @@ static int init_numeric_sensors(struct hp_wmi_sensors *state,
 	if (!icount)
 		return -ENODATA;
 
-	info_arr = devm_kcalloc(dev, icount, sizeof(*info), GFP_KERNEL);
+	info_arr = devm_kzalloc_objs(dev, *info, icount);
 	if (!info_arr)
 		return -ENOMEM;
 
 	for (i = 0, info = info_arr; i < icount; i++, info++) {
-		wobj = hp_wmi_get_wobj(HP_WMI_NUMERIC_SENSOR_GUID, i);
+		wobj = wmidev_block_query(state->wdev, i);
 		if (!wobj)
 			return -EIO;
 
@@ -1795,9 +1806,8 @@ static int init_numeric_sensors(struct hp_wmi_sensors *state,
 		c = channel_index[type]++;
 
 		if (!info_map[type]) {
-			info_map[type] = devm_kcalloc(dev, channel_count[type],
-						      sizeof(*info_map),
-						      GFP_KERNEL);
+			info_map[type] = devm_kzalloc_objs(dev, *info_map[type],
+							   channel_count[type]);
 			if (!info_map[type])
 				return -ENOMEM;
 		}
@@ -1944,25 +1954,24 @@ static int make_chip_info(struct hp_wmi_sensors *state, bool has_events)
 		if (channel_count[type])
 			type_count++;
 
-	channel_info = devm_kcalloc(dev, type_count,
-				    sizeof(*channel_info), GFP_KERNEL);
+	channel_info = devm_kzalloc_objs(dev, *channel_info, type_count);
 	if (!channel_info)
 		return -ENOMEM;
 
-	ptr_channel_info = devm_kcalloc(dev, type_count + 1,
-					sizeof(*ptr_channel_info), GFP_KERNEL);
+	ptr_channel_info = devm_kzalloc_objs(dev, *ptr_channel_info,
+					     type_count + 1);
 	if (!ptr_channel_info)
 		return -ENOMEM;
 
-	hp_wmi_chip_info.info = ptr_channel_info;
+	state->chip_info.ops = &hp_wmi_hwmon_ops;
+	state->chip_info.info = ptr_channel_info;
 
 	for (type = hwmon_chip; type < hwmon_max; type++) {
 		count = channel_count[type];
 		if (!count)
 			continue;
 
-		config = devm_kcalloc(dev, count + 1,
-				      sizeof(*config), GFP_KERNEL);
+		config = devm_kzalloc_objs(dev, *config, count + 1);
 		if (!config)
 			return -ENOMEM;
 
@@ -2045,7 +2054,7 @@ static int hp_wmi_sensors_init(struct hp_wmi_sensors *state)
 		return err;
 
 	hwdev = devm_hwmon_device_register_with_info(dev, "hp_wmi_sensors",
-						     state, &hp_wmi_chip_info,
+						     state, &state->chip_info,
 						     NULL);
 	return PTR_ERR_OR_ZERO(hwdev);
 }
@@ -2055,7 +2064,7 @@ static int hp_wmi_sensors_probe(struct wmi_device *wdev, const void *context)
 	struct device *dev = &wdev->dev;
 	struct hp_wmi_sensors *state;
 
-	state = devm_kzalloc(dev, sizeof(*state), GFP_KERNEL);
+	state = devm_kzalloc_obj(dev, *state);
 	if (!state)
 		return -ENOMEM;
 

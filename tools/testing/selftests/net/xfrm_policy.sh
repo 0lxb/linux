@@ -242,7 +242,7 @@ check_exceptions()
 		echo "PASS: ping to .254 bypassed ipsec tunnel ($logpostfix)"
 	fi
 
-	# ping to .253 should use use ipsec due to direct policy exception.
+	# ping to .253 should use ipsec due to direct policy exception.
 	check_xfrm 1 253
 	if [ $? -ne 0 ]; then
 		echo "FAIL: expected ping to .253 to use ipsec tunnel ($logpostfix)"
@@ -293,7 +293,7 @@ check_random_order()
 	local ns=$1
 	local log=$2
 
-	for i in $(seq 100); do
+	for i in $(seq 50); do
 		ip -net $ns xfrm policy flush
 		for j in $(seq 0 16 255 | sort -R); do
 			ip -net $ns xfrm policy add dst $j.0.0.0/24 dir out priority 10 action allow
@@ -306,7 +306,7 @@ check_random_order()
 		done
 	done
 
-	for i in $(seq 100); do
+	for i in $(seq 50); do
 		ip -net $ns xfrm policy flush
 		for j in $(seq 0 16 255 | sort -R); do
 			local addr=$(printf "e000:0000:%02x00::/56" $j)

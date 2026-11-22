@@ -10,7 +10,6 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -25,7 +24,7 @@
 
 #include "tegra20_spdif.h"
 
-static __maybe_unused int tegra20_spdif_runtime_suspend(struct device *dev)
+static int tegra20_spdif_runtime_suspend(struct device *dev)
 {
 	struct tegra20_spdif *spdif = dev_get_drvdata(dev);
 
@@ -36,7 +35,7 @@ static __maybe_unused int tegra20_spdif_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static __maybe_unused int tegra20_spdif_runtime_resume(struct device *dev)
+static int tegra20_spdif_runtime_resume(struct device *dev)
 {
 	struct tegra20_spdif *spdif = dev_get_drvdata(dev);
 	int ret;
@@ -347,8 +346,7 @@ static int tegra20_spdif_platform_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int ret;
 
-	spdif = devm_kzalloc(&pdev->dev, sizeof(struct tegra20_spdif),
-			     GFP_KERNEL);
+	spdif = devm_kzalloc_obj(&pdev->dev, struct tegra20_spdif);
 	if (!spdif)
 		return -ENOMEM;
 
@@ -403,10 +401,9 @@ static int tegra20_spdif_platform_probe(struct platform_device *pdev)
 }
 
 static const struct dev_pm_ops tegra20_spdif_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra20_spdif_runtime_suspend,
-			   tegra20_spdif_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra20_spdif_runtime_suspend,
+		       tegra20_spdif_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static const struct of_device_id tegra20_spdif_of_match[] = {
@@ -418,7 +415,7 @@ MODULE_DEVICE_TABLE(of, tegra20_spdif_of_match);
 static struct platform_driver tegra20_spdif_driver = {
 	.driver = {
 		.name = "tegra20-spdif",
-		.pm = &tegra20_spdif_pm_ops,
+		.pm = pm_ptr(&tegra20_spdif_pm_ops),
 		.of_match_table = tegra20_spdif_of_match,
 	},
 	.probe = tegra20_spdif_platform_probe,

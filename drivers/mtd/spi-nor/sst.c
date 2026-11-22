@@ -21,16 +21,17 @@ static int sst26vf_nor_lock(struct spi_nor *nor, loff_t ofs, u64 len)
 static int sst26vf_nor_unlock(struct spi_nor *nor, loff_t ofs, u64 len)
 {
 	int ret;
+	u8 cr;
 
 	/* We only support unlocking the entire flash array. */
 	if (ofs != 0 || len != nor->params->size)
 		return -EINVAL;
 
-	ret = spi_nor_read_cr(nor, nor->bouncebuf);
+	ret = spi_nor_read_sr2(nor, &cr);
 	if (ret)
 		return ret;
 
-	if (!(nor->bouncebuf[0] & SST26VF_CR_BPNV)) {
+	if (!(cr & SST26VF_CR_BPNV)) {
 		dev_dbg(nor->dev, "Any block has been permanently locked\n");
 		return -EINVAL;
 	}
@@ -151,14 +152,12 @@ static const struct flash_info sst_nor_parts[] = {
 		.id = SNOR_ID(0xbf, 0x26, 0x42),
 		.name = "sst26vf032b",
 		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE,
-		.fixups = &sst26vf_nor_fixups,
 	}, {
 		.id = SNOR_ID(0xbf, 0x26, 0x43),
 		.name = "sst26vf064b",
 		.size = SZ_8M,
 		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_SWP_IS_VOLATILE,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
-		.fixups = &sst26vf_nor_fixups,
 	}, {
 		.id = SNOR_ID(0xbf, 0x26, 0x51),
 		.name = "sst26wf016b",
@@ -166,6 +165,21 @@ static const struct flash_info sst_nor_parts[] = {
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
 	}
 };
+
+static int sst_nor_write_data(struct spi_nor *nor, loff_t to, size_t len,
+			      const u_char *buf)
+{
+	u8 op = (len == 1) ? SPINOR_OP_BP : SPINOR_OP_AAI_WP;
+	int ret;
+
+	nor->program_opcode = op;
+	ret = spi_nor_write_data(nor, to, len, buf);
+	if (ret < 0)
+		return ret;
+	WARN(ret != len, "While writing %zu byte written %i bytes\n", len, ret);
+
+	return spi_nor_wait_till_ready(nor);
+}
 
 static int sst_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 			 size_t *retlen, const u_char *buf)
@@ -188,33 +202,35 @@ static int sst_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	/* Start write from odd address. */
 	if (to % 2) {
-		nor->program_opcode = SPINOR_OP_BP;
+		bool needs_write_enable = (len > 1);
 
 		/* write one byte. */
-		ret = spi_nor_write_data(nor, to, 1, buf);
+		ret = sst_nor_write_data(nor, to, 1, buf);
 		if (ret < 0)
-			goto out;
-		WARN(ret != 1, "While writing 1 byte written %i bytes\n", ret);
-		ret = spi_nor_wait_till_ready(nor);
-		if (ret)
 			goto out;
 
 		to++;
 		actual++;
+
+		/*
+		 * Byte program clears the write enable latch. If more
+		 * data needs to be written using the AAI sequence,
+		 * re-enable writes.
+		 */
+		if (needs_write_enable) {
+			ret = spi_nor_write_enable(nor);
+			if (ret)
+				goto out;
+		}
 	}
 
 	/* Write out most of the data here. */
 	for (; actual < len - 1; actual += 2) {
-		nor->program_opcode = SPINOR_OP_AAI_WP;
-
 		/* write two bytes. */
-		ret = spi_nor_write_data(nor, to, 2, buf + actual);
+		ret = sst_nor_write_data(nor, to, 2, buf + actual);
 		if (ret < 0)
 			goto out;
-		WARN(ret != 2, "While writing 2 bytes written %i bytes\n", ret);
-		ret = spi_nor_wait_till_ready(nor);
-		if (ret)
-			goto out;
+
 		to += 2;
 		nor->sst_write_second = true;
 	}
@@ -234,13 +250,8 @@ static int sst_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 		if (ret)
 			goto out;
 
-		nor->program_opcode = SPINOR_OP_BP;
-		ret = spi_nor_write_data(nor, to, 1, buf + actual);
+		ret = sst_nor_write_data(nor, to, 1, buf + actual);
 		if (ret < 0)
-			goto out;
-		WARN(ret != 1, "While writing 1 byte written %i bytes\n", ret);
-		ret = spi_nor_wait_till_ready(nor);
-		if (ret)
 			goto out;
 
 		actual += 1;
@@ -265,9 +276,16 @@ static const struct spi_nor_fixups sst_nor_fixups = {
 	.late_init = sst_nor_late_init,
 };
 
+static const struct spi_nor_fixup sst_fixups[] = {
+	{ .fixups = &sst_nor_fixups },
+	{ .id = SNOR_ID(0xbf, 0x26, 0x42), .fixups = &sst26vf_nor_fixups },
+	{ .id = SNOR_ID(0xbf, 0x26, 0x43), .fixups = &sst26vf_nor_fixups },
+};
+
 const struct spi_nor_manufacturer spi_nor_sst = {
 	.name = "sst",
 	.parts = sst_nor_parts,
 	.nparts = ARRAY_SIZE(sst_nor_parts),
-	.fixups = &sst_nor_fixups,
+	.fixups = sst_fixups,
+	.nfixups = ARRAY_SIZE(sst_fixups),
 };

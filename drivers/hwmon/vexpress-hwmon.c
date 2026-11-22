@@ -72,7 +72,7 @@ static umode_t vexpress_hwmon_attr_is_visible(struct kobject *kobj,
 				struct device_attribute, attr);
 
 	if (dev_attr->show == vexpress_hwmon_label_show &&
-			!of_get_property(dev->of_node, "label", NULL))
+			!of_property_present(dev->of_node, "label"))
 		return 0;
 
 	return attr->mode;
@@ -209,7 +209,7 @@ static int vexpress_hwmon_probe(struct platform_device *pdev)
 	struct vexpress_hwmon_data *data;
 	const struct vexpress_hwmon_type *type;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, *data);
 	if (!data)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, data);

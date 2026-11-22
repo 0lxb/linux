@@ -17,6 +17,8 @@
 
 /* Registers */
 #define RPMX_CMRX_CFG			0x00
+#define RPMX_CMR_GLOBAL_CFG		0x08
+#define RPM_NIX0_RESET			BIT_ULL(3)
 #define RPMX_RX_TS_PREPEND              BIT_ULL(22)
 #define RPMX_TX_PTP_1S_SUPPORT          BIT_ULL(17)
 #define RPMX_CMRX_RX_ID_MAP		0x80
@@ -58,6 +60,7 @@
 #define RPMX_MTI_STAT_RX_STAT_PAGES_COUNTERX 0x12000
 #define RPMX_MTI_STAT_TX_STAT_PAGES_COUNTERX 0x13000
 #define RPMX_MTI_STAT_DATA_HI_CDC            0x10038
+#define RPMX_CMRX_RX_STAT2		     0x4010
 
 #define RPM_LMAC_FWI			0xa
 #define RPM_TX_EN			BIT_ULL(0)
@@ -84,14 +87,18 @@
 /* FEC stats */
 #define RPMX_MTI_STAT_STATN_CONTROL			0x10018
 #define RPMX_MTI_STAT_DATA_HI_CDC			0x10038
-#define RPMX_RSFEC_RX_CAPTURE				BIT_ULL(27)
+#define RPMX_RSFEC_RX_CAPTURE				BIT_ULL(28)
+#define RPMX_CMD_CLEAR_RX				BIT_ULL(30)
+#define RPMX_CMD_CLEAR_TX				BIT_ULL(31)
+#define RPMX_MTI_RSFEC_STAT_STATN_CONTROL               0x40018
+#define RPMX_MTI_RSFEC_STAT_FAST_DATA_HI_CDC            0x40000
 #define RPMX_MTI_RSFEC_STAT_COUNTER_CAPTURE_2		0x40050
 #define RPMX_MTI_RSFEC_STAT_COUNTER_CAPTURE_3		0x40058
-#define RPMX_MTI_FCFECX_VL0_CCW_LO			0x38618
-#define RPMX_MTI_FCFECX_VL0_NCCW_LO			0x38620
-#define RPMX_MTI_FCFECX_VL1_CCW_LO			0x38628
-#define RPMX_MTI_FCFECX_VL1_NCCW_LO			0x38630
-#define RPMX_MTI_FCFECX_CW_HI				0x38638
+#define RPMX_MTI_FCFECX_VL0_CCW_LO(a)			(0x38618 + ((a) * 0x40))
+#define RPMX_MTI_FCFECX_VL0_NCCW_LO(a)			(0x38620 + ((a) * 0x40))
+#define RPMX_MTI_FCFECX_VL1_CCW_LO(a)			(0x38628 + ((a) * 0x40))
+#define RPMX_MTI_FCFECX_VL1_NCCW_LO(a)			(0x38630 + ((a) * 0x40))
+#define RPMX_MTI_FCFECX_CW_HI(a)			(0x38638 + ((a) * 0x40))
 
 /* CN10KB CSR Declaration */
 #define  RPM2_CMRX_SW_INT				0x1b0
@@ -123,6 +130,7 @@ int rpm_lmac_enadis_pause_frm(void *rpmd, int lmac_id, u8 tx_pause,
 			      u8 rx_pause);
 int rpm_get_tx_stats(void *rpmd, int lmac_id, int idx, u64 *tx_stat);
 int rpm_get_rx_stats(void *rpmd, int lmac_id, int idx, u64 *rx_stat);
+u64 rpm_get_dmacflt_dropped_pktcnt(void *rpmd, int lmac_id);
 void rpm_lmac_ptp_config(void *rpmd, int lmac_id, bool enable);
 int rpm_lmac_rx_tx_enable(void *rpmd, int lmac_id, bool enable);
 int rpm_lmac_tx_enable(void *rpmd, int lmac_id, bool enable);
@@ -134,4 +142,7 @@ int rpm2_get_nr_lmacs(void *rpmd);
 bool is_dev_rpm2(void *rpmd);
 int rpm_get_fec_stats(void *cgxd, int lmac_id, struct cgx_fec_stats_rsp *rsp);
 int rpm_lmac_reset(void *rpmd, int lmac_id, u8 pf_req_flr);
+int rpm_stats_reset(void *rpmd, int lmac_id);
+void rpm_x2p_reset(void *rpmd, bool enable);
+int rpm_enadis_rx(void *rpmd, int lmac_id, bool enable);
 #endif /* RPM_H */

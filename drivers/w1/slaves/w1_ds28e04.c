@@ -112,7 +112,7 @@ static int w1_f1C_read(struct w1_slave *sl, int addr, int len, char *data)
 }
 
 static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
-			   struct bin_attribute *bin_attr, char *buf,
+			   const struct bin_attribute *bin_attr, char *buf,
 			   loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
@@ -123,7 +123,7 @@ static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
 	if (count == 0)
 		return 0;
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 
 	if (w1_enable_crccheck) {
 		min_page = (off >> W1_PAGE_BITS);
@@ -140,7 +140,7 @@ static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
 	}
 
 out_up:
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	return count;
 }
@@ -223,7 +223,7 @@ static int w1_f1C_write(struct w1_slave *sl, int addr, int len, const u8 *data)
 }
 
 static ssize_t eeprom_write(struct file *filp, struct kobject *kobj,
-			    struct bin_attribute *bin_attr, char *buf,
+			    const struct bin_attribute *bin_attr, char *buf,
 			    loff_t off, size_t count)
 
 {
@@ -253,7 +253,7 @@ static ssize_t eeprom_write(struct file *filp, struct kobject *kobj,
 		}
 	}
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 
 	/* Can only write data to one page at a time */
 	idx = 0;
@@ -271,15 +271,15 @@ static ssize_t eeprom_write(struct file *filp, struct kobject *kobj,
 	}
 
 out_up:
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	return count;
 }
 
-static BIN_ATTR_RW(eeprom, W1_EEPROM_SIZE);
+static const BIN_ATTR_RW(eeprom, W1_EEPROM_SIZE);
 
 static ssize_t pio_read(struct file *filp, struct kobject *kobj,
-			struct bin_attribute *bin_attr, char *buf, loff_t off,
+			const struct bin_attribute *bin_attr, char *buf, loff_t off,
 			size_t count)
 
 {
@@ -290,16 +290,16 @@ static ssize_t pio_read(struct file *filp, struct kobject *kobj,
 	if (off != 0 || count != 1 || buf == NULL)
 		return -EINVAL;
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 	ret = w1_f1C_read(sl, W1_1C_REG_LOGIC_STATE, count, buf);
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	return ret;
 }
 
 static ssize_t pio_write(struct file *filp, struct kobject *kobj,
-			 struct bin_attribute *bin_attr, char *buf, loff_t off,
-			 size_t count)
+			 const struct bin_attribute *bin_attr, char *buf,
+			 loff_t off, size_t count)
 
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
@@ -310,11 +310,11 @@ static ssize_t pio_write(struct file *filp, struct kobject *kobj,
 	if (off != 0 || count != 1 || buf == NULL)
 		return -EINVAL;
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 
 	/* Write the PIO data */
 	if (w1_reset_select_slave(sl)) {
-		mutex_unlock(&sl->master->mutex);
+		mutex_unlock(&sl->master->bus_mutex);
 		return -1;
 	}
 
@@ -328,7 +328,7 @@ static ssize_t pio_write(struct file *filp, struct kobject *kobj,
 
 	w1_read_block(sl->master, &ack, sizeof(ack));
 
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	/* check for acknowledgement */
 	if (ack != 0xAA)
@@ -337,7 +337,7 @@ static ssize_t pio_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static BIN_ATTR_RW(pio, 1);
+static const BIN_ATTR_RW(pio, 1);
 
 static ssize_t crccheck_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
@@ -363,7 +363,7 @@ static struct attribute *w1_f1C_attrs[] = {
 	NULL,
 };
 
-static struct bin_attribute *w1_f1C_bin_attrs[] = {
+static const struct bin_attribute *const w1_f1C_bin_attrs[] = {
 	&bin_attr_eeprom,
 	&bin_attr_pio,
 	NULL,
@@ -384,7 +384,7 @@ static int w1_f1C_add_slave(struct w1_slave *sl)
 	struct w1_f1C_data *data = NULL;
 
 	if (w1_enable_crccheck) {
-		data = kzalloc(sizeof(struct w1_f1C_data), GFP_KERNEL);
+		data = kzalloc_obj(struct w1_f1C_data);
 		if (!data)
 			return -ENOMEM;
 		sl->family_data = data;

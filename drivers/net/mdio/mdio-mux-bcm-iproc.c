@@ -214,7 +214,7 @@ static int mdio_mux_iproc_probe(struct platform_device *pdev)
 	struct resource *res;
 	int rc;
 
-	md = devm_kzalloc(&pdev->dev, sizeof(*md), GFP_KERNEL);
+	md = devm_kzalloc_obj(&pdev->dev, *md);
 	if (!md)
 		return -ENOMEM;
 	md->dev = &pdev->dev;
@@ -342,7 +342,7 @@ static struct platform_driver mdiomux_iproc_driver = {
 		.pm		= &mdio_mux_iproc_pm_ops,
 	},
 	.probe		= mdio_mux_iproc_probe,
-	.remove_new	= mdio_mux_iproc_remove,
+	.remove		= mdio_mux_iproc_remove,
 };
 
 module_platform_driver(mdiomux_iproc_driver);

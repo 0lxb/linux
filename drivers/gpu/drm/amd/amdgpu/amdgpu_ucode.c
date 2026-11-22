@@ -28,6 +28,13 @@
 #include "amdgpu.h"
 #include "amdgpu_ucode.h"
 
+#define AMDGPU_UCODE_NAME_MAX		(128)
+
+static const struct kicker_device kicker_device_list[] = {
+	{0x744B, 0x00},
+	{0x7551, 0xC8}
+};
+
 static void amdgpu_ucode_print_common_hdr(const struct common_firmware_header *hdr)
 {
 	DRM_DEBUG("size_bytes: %u\n", le32_to_cpu(hdr->size_bytes));
@@ -159,6 +166,8 @@ void amdgpu_ucode_print_rlc_hdr(const struct common_firmware_header *hdr)
 			container_of(rlc_hdr_v2_2, struct rlc_firmware_header_v2_3, v2_2);
 		const struct rlc_firmware_header_v2_4 *rlc_hdr_v2_4 =
 			container_of(rlc_hdr_v2_3, struct rlc_firmware_header_v2_4, v2_3);
+		const struct rlc_firmware_header_v2_5 *rlc_hdr_v2_5 =
+			container_of(rlc_hdr_v2_2, struct rlc_firmware_header_v2_5, v2_2);
 
 		switch (version_minor) {
 		case 0:
@@ -280,6 +289,26 @@ void amdgpu_ucode_print_rlc_hdr(const struct common_firmware_header *hdr)
 			DRM_DEBUG("se3_tap_delays_ucode_offset_bytes: %u\n",
 				  le32_to_cpu(rlc_hdr_v2_4->se3_tap_delays_ucode_offset_bytes));
 			break;
+		case 5:
+			/* rlc_hdr v2_5 */
+			DRM_DEBUG("rlc_iram_ucode_size_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->v2_2.rlc_iram_ucode_size_bytes));
+			DRM_DEBUG("rlc_iram_ucode_offset_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->v2_2.rlc_iram_ucode_offset_bytes));
+			DRM_DEBUG("rlc_dram_ucode_size_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->v2_2.rlc_dram_ucode_size_bytes));
+			DRM_DEBUG("rlc_dram_ucode_offset_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->v2_2.rlc_dram_ucode_offset_bytes));
+			/* rlc_hdr v2_5 */
+			DRM_DEBUG("rlc_1_iram_ucode_size_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->rlc_1_iram_ucode_size_bytes));
+			DRM_DEBUG("rlc_1_iram_ucode_offset_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->rlc_1_iram_ucode_offset_bytes));
+			DRM_DEBUG("rlc_1_dram_ucode_size_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->rlc_1_dram_ucode_size_bytes));
+			DRM_DEBUG("rlc_1_dram_ucode_offset_bytes: %u\n",
+				  le32_to_cpu(rlc_hdr_v2_5->rlc_1_dram_ucode_offset_bytes));
+			break;
 		default:
 			DRM_ERROR("Unknown RLC v2 ucode: v2.%u\n", version_minor);
 			break;
@@ -323,6 +352,12 @@ void amdgpu_ucode_print_sdma_hdr(const struct common_firmware_header *hdr)
 		DRM_DEBUG("ctl_ucode_offset: %u\n", le32_to_cpu(sdma_hdr->ctl_ucode_offset));
 		DRM_DEBUG("ctl_jt_offset: %u\n", le32_to_cpu(sdma_hdr->ctl_jt_offset));
 		DRM_DEBUG("ctl_jt_size: %u\n", le32_to_cpu(sdma_hdr->ctl_jt_size));
+	} else if (version_major == 3) {
+		const struct sdma_firmware_header_v3_0 *sdma_hdr =
+			container_of(hdr, struct sdma_firmware_header_v3_0, header);
+
+		DRM_DEBUG("ucode_reversion: %u\n",
+			  le32_to_cpu(sdma_hdr->ucode_feature_version));
 	} else {
 		DRM_ERROR("Unknown SDMA ucode version: %u.%u\n",
 			  version_major, version_minor);
@@ -463,6 +498,12 @@ void amdgpu_ucode_print_psp_hdr(const struct common_firmware_header *hdr)
 				DRM_DEBUG("psp_ras_drv_version: %u\n",
 					  le32_to_cpu(desc->fw_version));
 				DRM_DEBUG("psp_ras_drv_size_bytes: %u\n",
+					  le32_to_cpu(desc->size_bytes));
+				break;
+			case PSP_FW_TYPE_PSP_IPKEYMGR_DRV:
+				DRM_DEBUG("psp_ipkeymgr_drv_version: %u\n",
+					  le32_to_cpu(desc->fw_version));
+				DRM_DEBUG("psp_ipkeymgr_drv_size_bytes: %u\n",
 					  le32_to_cpu(desc->size_bytes));
 				break;
 			default:
@@ -618,6 +659,10 @@ const char *amdgpu_ucode_name(enum AMDGPU_UCODE_ID ucode_id)
 		return "RLC_IRAM";
 	case AMDGPU_UCODE_ID_RLC_DRAM:
 		return "RLC_DRAM";
+	case AMDGPU_UCODE_ID_RLC_IRAM_1:
+		return "RLC_IRAM_1";
+	case AMDGPU_UCODE_ID_RLC_DRAM_1:
+		return "RLC_DRAM_1";
 	case AMDGPU_UCODE_ID_RLC_G:
 		return "RLC_G";
 	case AMDGPU_UCODE_ID_RLC_P:
@@ -682,6 +727,42 @@ const char *amdgpu_ucode_name(enum AMDGPU_UCODE_ID ucode_id)
 		return "UMSCH_MM_CMD_BUFFER";
 	case AMDGPU_UCODE_ID_JPEG_RAM:
 		return "JPEG";
+	case AMDGPU_UCODE_ID_SDMA_RS64:
+		return "RS64_SDMA";
+	case AMDGPU_UCODE_ID_CP_RS64_PFP:
+		return "RS64_PFP";
+	case AMDGPU_UCODE_ID_CP_RS64_ME:
+		return "RS64_ME";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC:
+		return "RS64_MEC";
+	case AMDGPU_UCODE_ID_CP_RS64_PFP_P0_STACK:
+		return "RS64_PFP_P0_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_PFP_P1_STACK:
+		return "RS64_PFP_P1_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_ME_P0_STACK:
+		return "RS64_ME_P0_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_ME_P1_STACK:
+		return "RS64_ME_P1_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P0_STACK:
+		return "RS64_MEC_P0_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P1_STACK:
+		return "RS64_MEC_P1_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P2_STACK:
+		return "RS64_MEC_P2_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P3_STACK:
+		return "RS64_MEC_P3_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P4_STACK:
+		return "RS64_MEC_P4_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P5_STACK:
+		return "RS64_MEC_P5_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P6_STACK:
+		return "RS64_MEC_P6_STACK";
+	case AMDGPU_UCODE_ID_CP_RS64_MEC_P7_STACK:
+		return "RS64_MEC_P7_STACK";
+	case AMDGPU_UCODE_ID_ISP:
+		return "ISP";
+	case AMDGPU_UCODE_ID_MP5:
+		return "MP5";
 	default:
 		return "UNKNOWN UCODE";
 	}
@@ -727,12 +808,15 @@ FW_VERSION_ATTR(asd_fw_version, 0444, psp.asd_context.bin_desc.fw_version);
 FW_VERSION_ATTR(ta_ras_fw_version, 0444, psp.ras_context.context.bin_desc.fw_version);
 FW_VERSION_ATTR(ta_xgmi_fw_version, 0444, psp.xgmi_context.context.bin_desc.fw_version);
 FW_VERSION_ATTR(smc_fw_version, 0444, pm.fw_version);
+FW_VERSION_ATTR(mp5_fw_version, 0444, pm.mp5_fw_version);
 FW_VERSION_ATTR(sdma_fw_version, 0444, sdma.instance[0].fw_version);
 FW_VERSION_ATTR(sdma2_fw_version, 0444, sdma.instance[1].fw_version);
 FW_VERSION_ATTR(vcn_fw_version, 0444, vcn.fw_version);
 FW_VERSION_ATTR(dmcu_fw_version, 0444, dm.dmcu_fw_version);
+FW_VERSION_ATTR(dmcub_fw_version, 0444, dm.dmcub_fw_version);
 FW_VERSION_ATTR(mes_fw_version, 0444, mes.sched_version & AMDGPU_MES_VERSION_MASK);
 FW_VERSION_ATTR(mes_kiq_fw_version, 0444, mes.kiq_version & AMDGPU_MES_VERSION_MASK);
+FW_VERSION_ATTR(pldm_fw_version, 0444, firmware.pldm_version);
 
 static struct attribute *fw_attrs[] = {
 	&dev_attr_vce_fw_version.attr, &dev_attr_uvd_fw_version.attr,
@@ -745,8 +829,10 @@ static struct attribute *fw_attrs[] = {
 	&dev_attr_ta_ras_fw_version.attr, &dev_attr_ta_xgmi_fw_version.attr,
 	&dev_attr_smc_fw_version.attr, &dev_attr_sdma_fw_version.attr,
 	&dev_attr_sdma2_fw_version.attr, &dev_attr_vcn_fw_version.attr,
-	&dev_attr_dmcu_fw_version.attr, &dev_attr_imu_fw_version.attr,
-	&dev_attr_mes_fw_version.attr, &dev_attr_mes_kiq_fw_version.attr,
+	&dev_attr_dmcu_fw_version.attr, &dev_attr_dmcub_fw_version.attr,
+	&dev_attr_imu_fw_version.attr, &dev_attr_mes_fw_version.attr,
+	&dev_attr_mes_kiq_fw_version.attr, &dev_attr_pldm_fw_version.attr,
+	&dev_attr_mp5_fw_version.attr,
 	NULL
 };
 
@@ -791,6 +877,7 @@ static int amdgpu_ucode_init_single_fw(struct amdgpu_device *adev,
 	const struct dmcub_firmware_header_v1_0 *dmcub_hdr = NULL;
 	const struct mes_firmware_header_v1_0 *mes_hdr = NULL;
 	const struct sdma_firmware_header_v2_0 *sdma_hdr = NULL;
+	const struct sdma_firmware_header_v3_0 *sdmav3_hdr = NULL;
 	const struct imu_firmware_header_v1_0 *imu_hdr = NULL;
 	const struct vpe_firmware_header_v1_0 *vpe_hdr = NULL;
 	const struct umsch_mm_firmware_header_v1_0 *umsch_mm_hdr = NULL;
@@ -812,6 +899,7 @@ static int amdgpu_ucode_init_single_fw(struct amdgpu_device *adev,
 	dmcub_hdr = (const struct dmcub_firmware_header_v1_0 *)ucode->fw->data;
 	mes_hdr = (const struct mes_firmware_header_v1_0 *)ucode->fw->data;
 	sdma_hdr = (const struct sdma_firmware_header_v2_0 *)ucode->fw->data;
+	sdmav3_hdr = (const struct sdma_firmware_header_v3_0 *)ucode->fw->data;
 	imu_hdr = (const struct imu_firmware_header_v1_0 *)ucode->fw->data;
 	vpe_hdr = (const struct vpe_firmware_header_v1_0 *)ucode->fw->data;
 	umsch_mm_hdr = (const struct umsch_mm_firmware_header_v1_0 *)ucode->fw->data;
@@ -827,6 +915,11 @@ static int amdgpu_ucode_init_single_fw(struct amdgpu_device *adev,
 			ucode->ucode_size = le32_to_cpu(sdma_hdr->ctl_ucode_size_bytes);
 			ucode_addr = (u8 *)ucode->fw->data +
 				le32_to_cpu(sdma_hdr->ctl_ucode_offset);
+			break;
+		case AMDGPU_UCODE_ID_SDMA_RS64:
+			ucode->ucode_size = le32_to_cpu(sdmav3_hdr->ucode_size_bytes);
+			ucode_addr = (u8 *)ucode->fw->data +
+				le32_to_cpu(sdmav3_hdr->header.ucode_array_offset_bytes);
 			break;
 		case AMDGPU_UCODE_ID_CP_MEC1:
 		case AMDGPU_UCODE_ID_CP_MEC2:
@@ -861,6 +954,14 @@ static int amdgpu_ucode_init_single_fw(struct amdgpu_device *adev,
 		case AMDGPU_UCODE_ID_RLC_DRAM:
 			ucode->ucode_size = adev->gfx.rlc.rlc_dram_ucode_size_bytes;
 			ucode_addr = adev->gfx.rlc.rlc_dram_ucode;
+			break;
+		case AMDGPU_UCODE_ID_RLC_IRAM_1:
+			ucode->ucode_size = adev->gfx.rlc.rlc_1_iram_ucode_size_bytes;
+			ucode_addr = adev->gfx.rlc.rlc_1_iram_ucode;
+			break;
+		case AMDGPU_UCODE_ID_RLC_DRAM_1:
+			ucode->ucode_size = adev->gfx.rlc.rlc_1_dram_ucode_size_bytes;
+			ucode_addr = adev->gfx.rlc.rlc_1_dram_ucode;
 			break;
 		case AMDGPU_UCODE_ID_RLC_P:
 			ucode->ucode_size = adev->gfx.rlc.rlcp_ucode_size_bytes;
@@ -1001,6 +1102,26 @@ static int amdgpu_ucode_init_single_fw(struct amdgpu_device *adev,
 			ucode_addr = (u8 *)ucode->fw->data +
 				le32_to_cpu(cpv2_hdr->data_offset_bytes);
 			break;
+		case AMDGPU_UCODE_ID_CP_RS64_MEC_P4_STACK:
+			ucode->ucode_size = le32_to_cpu(cpv2_hdr->data_size_bytes);
+			ucode_addr = (u8 *)ucode->fw->data +
+				le32_to_cpu(cpv2_hdr->data_offset_bytes);
+			break;
+		case AMDGPU_UCODE_ID_CP_RS64_MEC_P5_STACK:
+			ucode->ucode_size = le32_to_cpu(cpv2_hdr->data_size_bytes);
+			ucode_addr = (u8 *)ucode->fw->data +
+				le32_to_cpu(cpv2_hdr->data_offset_bytes);
+			break;
+		case AMDGPU_UCODE_ID_CP_RS64_MEC_P6_STACK:
+			ucode->ucode_size = le32_to_cpu(cpv2_hdr->data_size_bytes);
+			ucode_addr = (u8 *)ucode->fw->data +
+				le32_to_cpu(cpv2_hdr->data_offset_bytes);
+			break;
+		case AMDGPU_UCODE_ID_CP_RS64_MEC_P7_STACK:
+			ucode->ucode_size = le32_to_cpu(cpv2_hdr->data_size_bytes);
+			ucode_addr = (u8 *)ucode->fw->data +
+				le32_to_cpu(cpv2_hdr->data_offset_bytes);
+			break;
 		case AMDGPU_UCODE_ID_VPE_CTX:
 			ucode->ucode_size = le32_to_cpu(vpe_hdr->ctx_ucode_size_bytes);
 			ucode_addr = (u8 *)ucode->fw->data +
@@ -1067,7 +1188,7 @@ int amdgpu_ucode_create_bo(struct amdgpu_device *adev)
 	if ((adev->firmware.load_type != AMDGPU_FW_LOAD_DIRECT) &&
 	    (adev->firmware.load_type != AMDGPU_FW_LOAD_RLC_BACKDOOR_AUTO)) {
 		amdgpu_bo_create_kernel(adev, adev->firmware.fw_size, PAGE_SIZE,
-			(amdgpu_sriov_vf(adev) || adev->debug_use_vram_fw_buf) ?
+			(amdgpu_sriov_vf(adev) || adev->debug_use_vram_fw_buf || adev->gmc.xgmi.connected_to_cpu) ?
 			AMDGPU_GEM_DOMAIN_VRAM : AMDGPU_GEM_DOMAIN_GTT,
 			&adev->firmware.fw_buf,
 			&adev->firmware.fw_buf_mc,
@@ -1110,6 +1231,9 @@ int amdgpu_ucode_init_bo(struct amdgpu_device *adev)
 	} else {
 		adev->firmware.max_ucodes = AMDGPU_UCODE_ID_MAXIMUM;
 	}
+
+	if (amdgpu_virt_xgmi_migrate_enabled(adev) && adev->firmware.fw_buf)
+		adev->firmware.fw_buf_mc = amdgpu_bo_fb_aper_addr(adev->firmware.fw_buf);
 
 	for (i = 0; i < adev->firmware.max_ucodes; i++) {
 		ucode = &adev->firmware.ucode[i];
@@ -1175,6 +1299,7 @@ static const char *amdgpu_ucode_legacy_naming(struct amdgpu_device *adev, int bl
 		case IP_VERSION(11, 0, 13):
 			return "beige_goby";
 		case IP_VERSION(11, 5, 0):
+		case IP_VERSION(11, 5, 2):
 			return "vangogh";
 		case IP_VERSION(12, 0, 1):
 			return "green_sardine";
@@ -1342,6 +1467,19 @@ static const char *amdgpu_ucode_legacy_naming(struct amdgpu_device *adev, int bl
 	return NULL;
 }
 
+bool amdgpu_is_kicker_fw(struct amdgpu_device *adev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(kicker_device_list); i++) {
+		if (adev->pdev->device == kicker_device_list[i].device &&
+		    adev->pdev->revision == kicker_device_list[i].revision)
+			return true;
+	}
+
+	return false;
+}
+
 void amdgpu_ucode_ip_version_decode(struct amdgpu_device *adev, int block_type, char *ucode_prefix, int len)
 {
 	int maj, min, rev;
@@ -1374,8 +1512,12 @@ void amdgpu_ucode_ip_version_decode(struct amdgpu_device *adev, int block_type, 
 	case VPE_HWIP:
 		ip_name = "vpe";
 		break;
+	case ISP_HWIP:
+		ip_name = "isp";
+		break;
 	default:
-		BUG();
+		WARN(1, "invalid HWIP %d\n", block_type);
+		return;
 	}
 
 	maj = IP_VERSION_MAJ(version);
@@ -1385,33 +1527,89 @@ void amdgpu_ucode_ip_version_decode(struct amdgpu_device *adev, int block_type, 
 	snprintf(ucode_prefix, len, "%s_%d_%d_%d", ip_name, maj, min, rev);
 }
 
+/* Add the suffix of the firmware variant before the extension: foo.bin -> foo_l.bin */
+static int amdgpu_ucode_set_suffix(struct amdgpu_device *adev, char *fname)
+{
+	const char *suffix;
+	size_t base;
+
+	switch (adev->firmware.sign_type) {
+	case AMDGPU_FW_SIGN_PREPROD:
+		suffix = "_p.bin";
+		break;
+	case AMDGPU_FW_SIGN_ALT:
+		suffix = "_l.bin";
+		break;
+	case AMDGPU_FW_SIGN_UNKNOWN:
+		drm_warn(adev_to_drm(adev), "Unknown firmware signing\n");
+		return -EINVAL;
+	default:
+		/* Default variant: the name is unchanged */
+		return 0;
+	}
+
+	if (!strends(fname, ".bin"))
+		return -EINVAL;
+
+	base = strlen(fname) - strlen(".bin");
+	if (strscpy(fname + base, suffix, AMDGPU_UCODE_NAME_MAX - base) < 0)
+		return -EOVERFLOW;
+
+	return 0;
+}
+
 /*
  * amdgpu_ucode_request - Fetch and validate amdgpu microcode
  *
  * @adev: amdgpu device
  * @fw: pointer to load firmware to
- * @fw_name: firmware to load
+ * @required: whether the firmware is required
+ * @fmt: firmware name format string
+ * @...: variable arguments
  *
  * This is a helper that will use request_firmware and amdgpu_ucode_validate
  * to load and run basic validation on firmware. If the load fails, remap
  * the error code to -ENODEV, so that early_init functions will fail to load.
  */
 int amdgpu_ucode_request(struct amdgpu_device *adev, const struct firmware **fw,
-			 const char *fw_name)
+			 enum amdgpu_ucode_required required, const char *fmt, ...)
 {
-	int err = request_firmware(fw, fw_name, adev->dev);
+	char fname[AMDGPU_UCODE_NAME_MAX];
+	va_list ap;
+	int r;
 
-	if (err)
-		return -ENODEV;
-
-	err = amdgpu_ucode_validate(*fw);
-	if (err) {
-		dev_dbg(adev->dev, "\"%s\" failed to validate\n", fw_name);
-		release_firmware(*fw);
-		*fw = NULL;
+	va_start(ap, fmt);
+	r = vsnprintf(fname, sizeof(fname), fmt, ap);
+	va_end(ap);
+	if (r == sizeof(fname)) {
+		dev_warn(adev->dev, "amdgpu firmware name buffer overflow\n");
+		return -EOVERFLOW;
 	}
 
-	return err;
+	r = amdgpu_ucode_set_suffix(adev, fname);
+	if (r)
+		return r;
+
+	if (required == AMDGPU_UCODE_REQUIRED)
+		r = request_firmware(fw, fname, adev->dev);
+	else {
+		r = firmware_request_nowarn(fw, fname, adev->dev);
+		if (r)
+			drm_info(&adev->ddev, "Optional firmware \"%s\" was not found\n", fname);
+	}
+	if (r)
+		return -ENODEV;
+
+	r = amdgpu_ucode_validate(*fw);
+	if (r)
+		/*
+		 * The amdgpu_ucode_request() should be paired with amdgpu_ucode_release()
+		 * regardless of success/failure, and the amdgpu_ucode_release() takes care of
+		 * firmware release and need to avoid redundant release FW operation here.
+		 */
+		dev_dbg(adev->dev, "\"%s\" failed to validate\n", fname);
+
+	return r;
 }
 
 /*

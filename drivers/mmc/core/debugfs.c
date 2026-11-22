@@ -315,7 +315,10 @@ static int mmc_caps_set(void *data, u64 val)
 		      MMC_CAP_SD_HIGHSPEED |
 		      MMC_CAP_MMC_HIGHSPEED |
 		      MMC_CAP_UHS |
-		      MMC_CAP_DDR;
+		      MMC_CAP_DDR |
+		      MMC_CAP_4_BIT_DATA |
+		      MMC_CAP_8_BIT_DATA |
+		      MMC_CAP_CMD23;
 
 	if (diff & ~allowed)
 		return -EINVAL;
@@ -327,7 +330,10 @@ static int mmc_caps_set(void *data, u64 val)
 
 static int mmc_caps2_set(void *data, u64 val)
 {
-	u32 allowed = MMC_CAP2_HSX00_1_8V | MMC_CAP2_HSX00_1_2V;
+	u32 allowed = MMC_CAP2_HSX00_1_8V |
+		      MMC_CAP2_HSX00_1_2V |
+		      MMC_CAP2_CQE |
+		      MMC_CAP2_CQE_DCMD;
 	u32 *caps = data;
 	u32 diff = *caps ^ val;
 
@@ -351,11 +357,11 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 	root = debugfs_create_dir(mmc_hostname(host), NULL);
 	host->debugfs_root = root;
 
-	debugfs_create_file("ios", S_IRUSR, root, host, &mmc_ios_fops);
+	debugfs_create_file("ios", 0400, root, host, &mmc_ios_fops);
 	debugfs_create_file("caps", 0600, root, &host->caps, &mmc_caps_fops);
 	debugfs_create_file("caps2", 0600, root, &host->caps2,
 			    &mmc_caps2_fops);
-	debugfs_create_file_unsafe("clock", S_IRUSR | S_IWUSR, root, host,
+	debugfs_create_file_unsafe("clock", 0600, root, host,
 				   &mmc_clock_fops);
 
 	debugfs_create_file_unsafe("err_state", 0600, root, host,
@@ -388,7 +394,8 @@ void mmc_add_card_debugfs(struct mmc_card *card)
 	root = debugfs_create_dir(mmc_card_id(card), host->debugfs_root);
 	card->debugfs_root = root;
 
-	debugfs_create_x32("state", S_IRUSR, root, &card->state);
+	debugfs_create_x32("state", 0400, root, &card->state);
+	debugfs_create_x32("quirks", 0400, root, &card->quirks);
 }
 
 void mmc_remove_card_debugfs(struct mmc_card *card)

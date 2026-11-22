@@ -1,4 +1,4 @@
-perf-kowrk(1)
+perf-kwork(1)
 =============
 
 NAME
@@ -35,7 +35,7 @@ There are several variants of 'perf kwork':
         perf kwork top
         perf kwork top -b
 
-   By default it shows the individual work events such as irq, workqeueu,
+   By default it shows the individual work events such as irq, workqueue,
    including the run time and delay (time between raise and actually entry):
 
       Runtime start      Runtime end        Cpu     Kwork name                 Runtime     Delaytime
@@ -169,8 +169,11 @@ OPTIONS for 'perf kwork timehist'
 --max-stack::
 	Maximum number of functions to display in backtrace, default 5.
 
---symfs=<directory>::
-    Look for files with symbols relative to this directory.
+--symfs=<directory[,layout]>::
+        Look for files with symbols relative to this directory. The optional
+        layout can be 'hierarchy' (default, matches full path) or 'flat'
+        (only matches base name). This is useful when debug files are stored
+        in a flat directory structure.
 
 --time::
 	Only analyze samples within given time window: <start>,<stop>. Times

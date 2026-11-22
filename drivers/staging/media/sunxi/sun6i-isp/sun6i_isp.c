@@ -386,8 +386,7 @@ static int sun6i_isp_resources_setup(struct sun6i_isp_device *isp_dev,
 
 	irq = platform_get_irq(platform_dev, 0);
 	if (irq < 0) {
-		dev_err(dev, "failed to get interrupt\n");
-		ret = -ENXIO;
+		ret = irq;
 		goto error_clock_rate_exclusive;
 	}
 
@@ -429,7 +428,7 @@ static int sun6i_isp_probe(struct platform_device *platform_dev)
 	if (!variant)
 		return -EINVAL;
 
-	isp_dev = devm_kzalloc(dev, sizeof(*isp_dev), GFP_KERNEL);
+	isp_dev = devm_kzalloc_obj(dev, *isp_dev);
 	if (!isp_dev)
 		return -ENOMEM;
 
@@ -537,7 +536,7 @@ MODULE_DEVICE_TABLE(of, sun6i_isp_of_match);
 
 static struct platform_driver sun6i_isp_platform_driver = {
 	.probe	= sun6i_isp_probe,
-	.remove_new = sun6i_isp_remove,
+	.remove = sun6i_isp_remove,
 	.driver	= {
 		.name		= SUN6I_ISP_NAME,
 		.of_match_table	= sun6i_isp_of_match,

@@ -201,7 +201,7 @@ void radeon_atom_backlight_init(struct radeon_encoder *radeon_encoder,
 	 */
 	if ((rdev->pdev->subsystem_vendor == PCI_VENDOR_ID_APPLE) &&
 	    (rdev->pdev->device == 0x6741) &&
-	    !dmi_match(DMI_PRODUCT_NAME, "iMac12,1"))
+	    !(dmi_match(DMI_PRODUCT_NAME, "iMac12,1") || dmi_match(DMI_PRODUCT_NAME, "iMac12,2")))
 		return;
 
 	if (!radeon_encoder->enc_priv)
@@ -218,7 +218,7 @@ void radeon_atom_backlight_init(struct radeon_encoder *radeon_encoder,
 		return;
 	}
 
-	pdata = kmalloc(sizeof(struct radeon_backlight_privdata), GFP_KERNEL);
+	pdata = kmalloc_obj(struct radeon_backlight_privdata);
 	if (!pdata) {
 		DRM_ERROR("Memory allocation failed\n");
 		goto error;
@@ -249,7 +249,7 @@ void radeon_atom_backlight_init(struct radeon_encoder *radeon_encoder,
 	 */
 	if (bd->props.brightness == 0)
 		bd->props.brightness = RADEON_MAX_BL_LEVEL;
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	backlight_update_status(bd);
 
 	DRM_INFO("radeon atom DIG backlight initialized\n");
@@ -701,7 +701,7 @@ atombios_get_encoder_mode(struct drm_encoder *encoder)
 			if (radeon_connector->use_digital &&
 			    (radeon_connector->audio == RADEON_AUDIO_ENABLE))
 				return ATOM_ENCODER_MODE_HDMI;
-			else if (drm_detect_hdmi_monitor(radeon_connector_edid(connector)) &&
+			else if (connector->display_info.is_hdmi &&
 				 (radeon_connector->audio == RADEON_AUDIO_AUTO))
 				return ATOM_ENCODER_MODE_HDMI;
 			else if (radeon_connector->use_digital)
@@ -720,7 +720,7 @@ atombios_get_encoder_mode(struct drm_encoder *encoder)
 		if (radeon_audio != 0) {
 			if (radeon_connector->audio == RADEON_AUDIO_ENABLE)
 				return ATOM_ENCODER_MODE_HDMI;
-			else if (drm_detect_hdmi_monitor(radeon_connector_edid(connector)) &&
+			else if (connector->display_info.is_hdmi &&
 				 (radeon_connector->audio == RADEON_AUDIO_AUTO))
 				return ATOM_ENCODER_MODE_HDMI;
 			else
@@ -737,14 +737,14 @@ atombios_get_encoder_mode(struct drm_encoder *encoder)
 		if ((dig_connector->dp_sink_type == CONNECTOR_OBJECT_ID_DISPLAYPORT) ||
 		    (dig_connector->dp_sink_type == CONNECTOR_OBJECT_ID_eDP)) {
 			if (radeon_audio != 0 &&
-			    drm_detect_monitor_audio(radeon_connector_edid(connector)) &&
+			    connector->display_info.has_audio &&
 			    ASIC_IS_DCE4(rdev) && !ASIC_IS_DCE5(rdev))
 				return ATOM_ENCODER_MODE_DP_AUDIO;
 			return ATOM_ENCODER_MODE_DP;
 		} else if (radeon_audio != 0) {
 			if (radeon_connector->audio == RADEON_AUDIO_ENABLE)
 				return ATOM_ENCODER_MODE_HDMI;
-			else if (drm_detect_hdmi_monitor(radeon_connector_edid(connector)) &&
+			else if (connector->display_info.is_hdmi &&
 				 (radeon_connector->audio == RADEON_AUDIO_AUTO))
 				return ATOM_ENCODER_MODE_HDMI;
 			else
@@ -755,7 +755,7 @@ atombios_get_encoder_mode(struct drm_encoder *encoder)
 		break;
 	case DRM_MODE_CONNECTOR_eDP:
 		if (radeon_audio != 0 &&
-		    drm_detect_monitor_audio(radeon_connector_edid(connector)) &&
+		    connector->display_info.has_audio &&
 		    ASIC_IS_DCE4(rdev) && !ASIC_IS_DCE5(rdev))
 			return ATOM_ENCODER_MODE_DP_AUDIO;
 		return ATOM_ENCODER_MODE_DP;
@@ -1646,6 +1646,38 @@ radeon_atom_encoder_dpms_avivo(struct drm_encoder *encoder, int mode)
 	}
 }
 
+/*
+ * Apple's EFI enables the internal eDP panel power sequencer
+ * (LVTMA_PWRSEQ_CNTL) exactly once, at cold boot, and its minimal ATOM tables
+ * never touch it afterwards.  Any GPU re-initialisation - S3 resume or a GPU
+ * reset - clears PWRSEQ_EN, so the panel comes back dark on the DCE3.2 iMacs
+ * (iMac10,1 / iMac11,2, RV730).  Re-assert PWRSEQ_EN when we find it cleared;
+ * the hardware then runs the DIGON->DE->VARY_BL->BLON power-on sequence itself.
+ * DCE3.2 places the register 0x18 above the R600 offset.
+ *
+ * This is restricted to Apple DCE3.2 parts: the register lives at a different
+ * offset on DCE4+ (which Apple also shipped, e.g. the 2011 MacBook Pro), and
+ * non-Apple boards program the sequencer from their own firmware.  The
+ * read-modify-write only fires when the sequencer is actually disabled, so a
+ * lit panel is never disturbed.
+ *
+ * https://gitlab.freedesktop.org/drm/amd/-/issues/5719
+ */
+static void radeon_atom_apple_edp_pwrseq_restore(struct radeon_device *rdev)
+{
+	u32 pwrseq_cntl = R600_LVTMA_PWRSEQ_CNTL + 0x18;
+
+	if (rdev->pdev->subsystem_vendor != PCI_VENDOR_ID_APPLE)
+		return;
+	if (!ASIC_IS_DCE32(rdev) || ASIC_IS_DCE4(rdev))
+		return;
+
+	if (!(RREG32(pwrseq_cntl) & AVIVO_LVTMA_PWRSEQ_EN))
+		WREG32(pwrseq_cntl, AVIVO_LVTMA_PWRSEQ_EN |
+				    AVIVO_LVTMA_SYNCEN_OVRD |
+				    AVIVO_LVTMA_DIGON);
+}
+
 static void
 radeon_atom_encoder_dpms_dig(struct drm_encoder *encoder, int mode)
 {
@@ -1707,10 +1739,14 @@ radeon_atom_encoder_dpms_dig(struct drm_encoder *encoder, int mode)
 		if (ENCODER_MODE_IS_DP(atombios_get_encoder_mode(encoder)) && connector) {
 			/* DP_SET_POWER_D0 is set in radeon_dp_link_train */
 			radeon_dp_link_train(encoder, connector);
-			if (ASIC_IS_DCE4(rdev))
+			if (ASIC_IS_DCE4(rdev) || dmi_match(DMI_PRODUCT_NAME, "iMac11,1"))
 				atombios_dig_encoder_setup(encoder, ATOM_ENCODER_CMD_DP_VIDEO_ON, 0);
 		}
 		if (radeon_encoder->devices & (ATOM_DEVICE_LCD_SUPPORT)) {
+			/* restore the panel power sequencer on Apple eDP iMacs
+			 * that lose it across resume/reset (see helper above)
+			 */
+			radeon_atom_apple_edp_pwrseq_restore(rdev);
 			if (rdev->mode_info.bl_encoder)
 				atombios_set_backlight_level(radeon_encoder, dig->backlight_level);
 			else
@@ -1832,7 +1868,7 @@ radeon_atom_encoder_dpms(struct drm_encoder *encoder, int mode)
 		return;
 	}
 
-	radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
+	radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
 
 }
 
@@ -2123,17 +2159,20 @@ int radeon_atom_pick_dig_encoder(struct drm_encoder *encoder, int fe_idx)
 	}
 
 	/*
-	 * On DCE32 any encoder can drive any block so usually just use crtc id,
-	 * but Apple thinks different at least on iMac10,1 and iMac11,2, so there use linkb,
-	 * otherwise the internal eDP panel will stay dark.
+	 * Apple routes the internal eDP panel through Link B of the DIG encoder
+	 * instead of Link A on the iMac10,1, iMac11,1 and iMac11,2.
+	 * Use linkb to avoid a dark display.
 	 */
-	if (ASIC_IS_DCE32(rdev)) {
-		if (dmi_match(DMI_PRODUCT_NAME, "iMac10,1") ||
-		    dmi_match(DMI_PRODUCT_NAME, "iMac11,2"))
-			enc_idx = (dig->linkb) ? 1 : 0;
-		else
-			enc_idx = radeon_crtc->crtc_id;
+	if (dmi_match(DMI_PRODUCT_NAME, "iMac10,1") ||
+	    dmi_match(DMI_PRODUCT_NAME, "iMac11,1") ||
+	    dmi_match(DMI_PRODUCT_NAME, "iMac11,2")) {
+		enc_idx = (dig->linkb) ? 1 : 0;
+		goto assigned;
+	}
 
+	/* on DCE32 and encoder can driver any block so just crtc id */
+	if (ASIC_IS_DCE32(rdev)) {
+		enc_idx = radeon_crtc->crtc_id;
 		goto assigned;
 	}
 
@@ -2179,7 +2218,7 @@ assigned:
 void
 radeon_atom_encoder_init(struct radeon_device *rdev)
 {
-	struct drm_device *dev = rdev->ddev;
+	struct drm_device *dev = rdev_to_drm(rdev);
 	struct drm_encoder *encoder;
 
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
@@ -2625,7 +2664,7 @@ radeon_atombios_set_dac_info(struct radeon_encoder *radeon_encoder)
 {
 	struct drm_device *dev = radeon_encoder->base.dev;
 	struct radeon_device *rdev = dev->dev_private;
-	struct radeon_encoder_atom_dac *dac = kzalloc(sizeof(struct radeon_encoder_atom_dac), GFP_KERNEL);
+	struct radeon_encoder_atom_dac *dac = kzalloc_obj(struct radeon_encoder_atom_dac);
 
 	if (!dac)
 		return NULL;
@@ -2638,7 +2677,7 @@ static struct radeon_encoder_atom_dig *
 radeon_atombios_set_dig_info(struct radeon_encoder *radeon_encoder)
 {
 	int encoder_enum = (radeon_encoder->encoder_enum & ENUM_ID_MASK) >> ENUM_ID_SHIFT;
-	struct radeon_encoder_atom_dig *dig = kzalloc(sizeof(struct radeon_encoder_atom_dig), GFP_KERNEL);
+	struct radeon_encoder_atom_dig *dig = kzalloc_obj(struct radeon_encoder_atom_dig);
 
 	if (!dig)
 		return NULL;
@@ -2676,7 +2715,7 @@ radeon_add_atom_encoder(struct drm_device *dev,
 	}
 
 	/* add a new one */
-	radeon_encoder = kzalloc(sizeof(struct radeon_encoder), GFP_KERNEL);
+	radeon_encoder = kzalloc_obj(struct radeon_encoder);
 	if (!radeon_encoder)
 		return;
 

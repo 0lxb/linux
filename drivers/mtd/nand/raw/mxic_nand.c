@@ -492,8 +492,7 @@ static int mxic_nfc_probe(struct platform_device *pdev)
 	int err;
 	int irq;
 
-	nfc = devm_kzalloc(&pdev->dev, sizeof(struct mxic_nand_ctlr),
-			   GFP_KERNEL);
+	nfc = devm_kzalloc_obj(&pdev->dev, struct mxic_nand_ctlr);
 	if (!nfc)
 		return -ENOMEM;
 
@@ -574,7 +573,7 @@ MODULE_DEVICE_TABLE(of, mxic_nfc_of_ids);
 
 static struct platform_driver mxic_nfc_driver = {
 	.probe = mxic_nfc_probe,
-	.remove_new = mxic_nfc_remove,
+	.remove = mxic_nfc_remove,
 	.driver = {
 		.name = "mxic-nfc",
 		.of_match_table = mxic_nfc_of_ids,

@@ -29,10 +29,10 @@
  *
  * Datasheet and Schematic:
  * The LM70 is a temperature sensor chip from National Semiconductor; its
- * datasheet is available at http://www.national.com/pf/LM/LM70.html
+ * datasheet is available at https://www.ti.com/lit/gpn/lm70
  * The schematic for this particular board (the LM70EVAL-LLP) is
  * available (on page 4) here:
- *  http://www.national.com/appinfo/tempsensors/files/LM70LLPEVALmanual.pdf
+ *  https://download.datasheets.com/pdfs/documentation/nat/kit&board/lm70llpevalmanual.pdf
  *
  * Also see Documentation/spi/spi-lm70llp.rst.  The SPI<->parport code here is
  * (heavily) based on spi-butterfly by David Brownell.
@@ -252,7 +252,7 @@ static void spi_lm70llp_attach(struct parport *p)
 	 * We are binding to the generic drivers/hwmon/lm70.c device
 	 * driver.
 	 */
-	strcpy(pp->info.modalias, "lm70");
+	strscpy(pp->info.modalias, "lm70", sizeof(pp->info.modalias));
 	pp->info.max_speed_hz = 6 * 1000 * 1000;
 	pp->info.chip_select = 0;
 	pp->info.mode = SPI_3WIRE | SPI_MODE_0;
@@ -318,7 +318,6 @@ static struct parport_driver spi_lm70llp_drv = {
 	.name =		DRVNAME,
 	.match_port =	spi_lm70llp_attach,
 	.detach =	spi_lm70llp_detach,
-	.devmodel =	true,
 };
 module_parport_driver(spi_lm70llp_drv);
 

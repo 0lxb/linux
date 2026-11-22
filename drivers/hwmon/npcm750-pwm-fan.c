@@ -4,10 +4,10 @@
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
@@ -196,10 +196,9 @@ struct npcm7xx_pwm_fan_data {
 	void __iomem *pwm_base;
 	void __iomem *fan_base;
 	int pwm_modules;
-	unsigned long pwm_clk_freq;
-	unsigned long fan_clk_freq;
 	struct clk *pwm_clk;
 	struct clk *fan_clk;
+	/* serializes CMR/CR updates from hwmon and the cooling devices */
 	struct mutex pwm_lock[NPCM7XX_PWM_MAX_MODULES];
 	spinlock_t fan_lock[NPCM7XX_FAN_MAX_MODULE];
 	int fan_irq[NPCM7XX_FAN_MAX_MODULE];
@@ -220,10 +219,11 @@ static int npcm7xx_pwm_config_set(struct npcm7xx_pwm_fan_data *data,
 	u32 module = (channel / NPCM7XX_PWM_MAX_CHN_NUM_IN_A_MODULE);
 	u32 tmp_buf, ctrl_en_bit, env_bit;
 
+	guard(mutex)(&data->pwm_lock[module]);
+
 	/*
 	 * Config PWM Comparator register for setting duty cycle
 	 */
-	mutex_lock(&data->pwm_lock[module]);
 
 	/* write new CMR value  */
 	iowrite32(val, NPCM7XX_PWM_REG_CMRx(data->pwm_base, module, pwm_ch));
@@ -247,7 +247,6 @@ static int npcm7xx_pwm_config_set(struct npcm7xx_pwm_fan_data *data,
 		env_bit = NPCM7XX_PWM_CTRL_CH3_INV_BIT;
 		break;
 	default:
-		mutex_unlock(&data->pwm_lock[module]);
 		return -ENODEV;
 	}
 
@@ -262,8 +261,6 @@ static int npcm7xx_pwm_config_set(struct npcm7xx_pwm_fan_data *data,
 	}
 
 	iowrite32(tmp_buf, NPCM7XX_PWM_REG_CR(data->pwm_base, module));
-	mutex_unlock(&data->pwm_lock[module]);
-
 	return 0;
 }
 
@@ -333,7 +330,7 @@ static void npcm7xx_fan_polling(struct timer_list *t)
 	struct npcm7xx_pwm_fan_data *data;
 	int i;
 
-	data = from_timer(data, t, fan_timer);
+	data = timer_container_of(data, t, fan_timer);
 
 	/*
 	 * Polling two module per one round,
@@ -364,6 +361,11 @@ static void npcm7xx_fan_polling(struct timer_list *t)
 	data->fan_timer.expires = jiffies +
 		msecs_to_jiffies(NPCM7XX_FAN_POLL_TIMER_200MS);
 	add_timer(&data->fan_timer);
+}
+
+static void npcm7xx_fan_cleanup(void *timer)
+{
+	timer_shutdown_sync(timer);
 }
 
 static inline void npcm7xx_fan_compute(struct npcm7xx_pwm_fan_data *data,
@@ -692,11 +694,12 @@ static u32 npcm7xx_pwm_init(struct npcm7xx_pwm_fan_data *data)
 {
 	int m, ch;
 	u32 prescale_val, output_freq;
+	unsigned long pwm_clk_freq;
 
-	data->pwm_clk_freq = clk_get_rate(data->pwm_clk);
+	pwm_clk_freq = clk_get_rate(data->pwm_clk);
 
 	/* Adjust NPCM7xx PWMs output frequency to ~25Khz */
-	output_freq = data->pwm_clk_freq / PWN_CNT_DEFAULT;
+	output_freq = pwm_clk_freq / PWN_CNT_DEFAULT;
 	prescale_val = DIV_ROUND_CLOSEST(output_freq, PWM_OUTPUT_FREQ_25KHZ);
 
 	/* If prescale_val = 0, then the prescale output clock is stopped */
@@ -845,7 +848,7 @@ static int npcm7xx_create_pwm_cooling(struct device *dev,
 	int ret;
 	struct npcm7xx_cooling_device *cdev;
 
-	cdev = devm_kzalloc(dev, sizeof(*cdev), GFP_KERNEL);
+	cdev = devm_kzalloc_obj(dev, *cdev);
 	if (!cdev)
 		return -ENOMEM;
 
@@ -864,8 +867,10 @@ static int npcm7xx_create_pwm_cooling(struct device *dev,
 	snprintf(cdev->name, THERMAL_NAME_LENGTH, "%pOFn%d", child,
 		 pwm_port);
 
-	cdev->tcdev = devm_thermal_of_cooling_device_register(dev, child,
-				cdev->name, cdev, &npcm7xx_pwm_cool_ops);
+	cdev->tcdev = devm_thermal_of_child_cooling_device_register(dev, child,
+								    cdev->name,
+								    cdev,
+								    &npcm7xx_pwm_cool_ops);
 	if (IS_ERR(cdev->tcdev))
 		return PTR_ERR(cdev->tcdev);
 
@@ -928,18 +933,18 @@ static int npcm7xx_en_pwm_fan(struct device *dev,
 static int npcm7xx_pwm_fan_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np, *child;
+	struct device_node *np;
 	struct npcm7xx_pwm_fan_data *data;
 	struct resource *res;
 	struct device *hwmon;
 	char name[20];
-	int ret, cnt;
 	u32 output_freq;
+	int ret;
 	u32 i;
 
 	np = dev->of_node;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -986,8 +991,11 @@ static int npcm7xx_pwm_fan_probe(struct platform_device *pdev)
 	output_freq = npcm7xx_pwm_init(data);
 	npcm7xx_fan_init(data);
 
-	for (cnt = 0; cnt < data->pwm_modules; cnt++)
-		mutex_init(&data->pwm_lock[cnt]);
+	for (i = 0; i < ARRAY_SIZE(data->pwm_lock); i++) {
+		ret = devm_mutex_init(dev, &data->pwm_lock[i]);
+		if (ret)
+			return ret;
+	}
 
 	for (i = 0; i < NPCM7XX_FAN_MAX_MODULE; i++) {
 		spin_lock_init(&data->fan_lock[i]);
@@ -999,17 +1007,14 @@ static int npcm7xx_pwm_fan_probe(struct platform_device *pdev)
 		sprintf(name, "NPCM7XX-FAN-MD%d", i);
 		ret = devm_request_irq(dev, data->fan_irq[i], npcm7xx_fan_isr,
 				       0, name, (void *)data);
-		if (ret) {
-			dev_err(dev, "register IRQ fan%d failed\n", i);
+		if (ret)
 			return ret;
-		}
 	}
 
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		ret = npcm7xx_en_pwm_fan(dev, child, data);
 		if (ret) {
 			dev_err(dev, "enable pwm and fan failed\n");
-			of_node_put(child);
 			return ret;
 		}
 	}
@@ -1029,6 +1034,12 @@ static int npcm7xx_pwm_fan_probe(struct platform_device *pdev)
 				msecs_to_jiffies(NPCM7XX_FAN_POLL_TIMER_200MS);
 			timer_setup(&data->fan_timer,
 				    npcm7xx_fan_polling, 0);
+			ret = devm_add_action_or_reset(dev,
+						       npcm7xx_fan_cleanup,
+						       &data->fan_timer);
+			if (ret)
+				return ret;
+
 			add_timer(&data->fan_timer);
 			break;
 		}

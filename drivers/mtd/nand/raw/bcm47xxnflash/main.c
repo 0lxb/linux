@@ -26,7 +26,7 @@ static int bcm47xxnflash_probe(struct platform_device *pdev)
 	struct mtd_info *mtd;
 	int err = 0;
 
-	b47n = devm_kzalloc(&pdev->dev, sizeof(*b47n), GFP_KERNEL);
+	b47n = devm_kzalloc_obj(&pdev->dev, *b47n);
 	if (!b47n)
 		return -ENOMEM;
 
@@ -70,7 +70,7 @@ static void bcm47xxnflash_remove(struct platform_device *pdev)
 
 static struct platform_driver bcm47xxnflash_driver = {
 	.probe	= bcm47xxnflash_probe,
-	.remove_new = bcm47xxnflash_remove,
+	.remove = bcm47xxnflash_remove,
 	.driver = {
 		.name = "bcma_nflash",
 	},

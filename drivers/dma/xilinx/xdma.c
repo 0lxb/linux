@@ -20,7 +20,6 @@
  * user interrupt wires that generate interrupts to the host.
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/bitfield.h>
 #include <linux/dmapool.h>
 #include <linux/regmap.h>
@@ -38,7 +37,7 @@ static const struct regmap_config xdma_regmap_config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
-	.max_register = XDMA_REG_SPACE_LEN,
+	.max_register = XDMA_MAX_REG_OFFSET,
 };
 
 /**
@@ -61,6 +60,8 @@ struct xdma_desc_block {
  * @dir: Transferring direction of the channel
  * @cfg: Transferring config of the channel
  * @irq: IRQ assigned to the channel
+ * @last_interrupt: task for comppleting last interrupt
+ * @stop_requested: stop request flag
  */
 struct xdma_chan {
 	struct virt_dma_chan		vchan;
@@ -71,6 +72,8 @@ struct xdma_chan {
 	enum dma_transfer_direction	dir;
 	struct dma_slave_config		cfg;
 	u32				irq;
+	struct completion		last_interrupt;
+	bool				stop_requested;
 };
 
 /**
@@ -273,7 +276,7 @@ xdma_alloc_desc(struct xdma_chan *chan, u32 desc_num, bool cyclic)
 	void *addr;
 	int i, j;
 
-	sw_desc = kzalloc(sizeof(*sw_desc), GFP_NOWAIT);
+	sw_desc = kzalloc_obj(*sw_desc, GFP_NOWAIT);
 	if (!sw_desc)
 		return NULL;
 
@@ -282,8 +285,8 @@ xdma_alloc_desc(struct xdma_chan *chan, u32 desc_num, bool cyclic)
 	sw_desc->cyclic = cyclic;
 	sw_desc->error = false;
 	dblk_num = DIV_ROUND_UP(desc_num, XDMA_DESC_ADJACENT);
-	sw_desc->desc_blocks = kcalloc(dblk_num, sizeof(*sw_desc->desc_blocks),
-				       GFP_NOWAIT);
+	sw_desc->desc_blocks = kzalloc_objs(*sw_desc->desc_blocks, dblk_num,
+					    GFP_NOWAIT);
 	if (!sw_desc->desc_blocks)
 		goto failed;
 
@@ -376,6 +379,8 @@ static int xdma_xfer_start(struct xdma_chan *xchan)
 		return ret;
 
 	xchan->busy = true;
+	xchan->stop_requested = false;
+	reinit_completion(&xchan->last_interrupt);
 
 	return 0;
 }
@@ -386,22 +391,11 @@ static int xdma_xfer_start(struct xdma_chan *xchan)
  */
 static int xdma_xfer_stop(struct xdma_chan *xchan)
 {
-	int ret;
-	u32 val;
 	struct xdma_device *xdev = xchan->xdev_hdl;
 
 	/* clear run stop bit to prevent any further auto-triggering */
-	ret = regmap_write(xdev->rmap, xchan->base + XDMA_CHAN_CONTROL_W1C,
-			   CHAN_CTRL_RUN_STOP);
-	if (ret)
-		return ret;
-
-	/* Clear the channel status register */
-	ret = regmap_read(xdev->rmap, xchan->base + XDMA_CHAN_STATUS_RC, &val);
-	if (ret)
-		return ret;
-
-	return 0;
+	return regmap_write(xdev->rmap, xchan->base + XDMA_CHAN_CONTROL_W1C,
+			    CHAN_CTRL_RUN_STOP);
 }
 
 /**
@@ -450,8 +444,7 @@ static int xdma_alloc_channels(struct xdma_device *xdev,
 		return -EINVAL;
 	}
 
-	*chans = devm_kcalloc(&xdev->pdev->dev, *chan_num, sizeof(**chans),
-			      GFP_KERNEL);
+	*chans = devm_kzalloc_objs(&xdev->pdev->dev, **chans, *chan_num);
 	if (!*chans)
 		return -ENOMEM;
 
@@ -474,6 +467,8 @@ static int xdma_alloc_channels(struct xdma_device *xdev,
 		xchan->xdev_hdl = xdev;
 		xchan->base = base + i * XDMA_CHAN_STRIDE;
 		xchan->dir = dir;
+		xchan->stop_requested = false;
+		init_completion(&xchan->last_interrupt);
 
 		ret = xdma_channel_init(xchan);
 		if (ret)
@@ -521,6 +516,7 @@ static int xdma_terminate_all(struct dma_chan *chan)
 	spin_lock_irqsave(&xdma_chan->vchan.lock, flags);
 
 	xdma_chan->busy = false;
+	xdma_chan->stop_requested = true;
 	vd = vchan_next_desc(&xdma_chan->vchan);
 	if (vd) {
 		list_del(&vd->node);
@@ -542,17 +538,26 @@ static int xdma_terminate_all(struct dma_chan *chan)
 static void xdma_synchronize(struct dma_chan *chan)
 {
 	struct xdma_chan *xdma_chan = to_xdma_chan(chan);
+	struct xdma_device *xdev = xdma_chan->xdev_hdl;
+	int st = 0;
+
+	/* If the engine continues running, wait for the last interrupt */
+	regmap_read(xdev->rmap, xdma_chan->base + XDMA_CHAN_STATUS, &st);
+	if (st & XDMA_CHAN_STATUS_BUSY)
+		wait_for_completion_timeout(&xdma_chan->last_interrupt, msecs_to_jiffies(1000));
 
 	vchan_synchronize(&xdma_chan->vchan);
 }
 
 /**
- * xdma_fill_descs - Fill hardware descriptors with contiguous memory block addresses
- * @sw_desc: tx descriptor state container
- * @src_addr: Value for a ->src_addr field of a first descriptor
- * @dst_addr: Value for a ->dst_addr field of a first descriptor
- * @size: Total size of a contiguous memory block
- * @filled_descs_num: Number of filled hardware descriptors for corresponding sw_desc
+ * xdma_fill_descs() - Fill hardware descriptors for one contiguous memory chunk.
+ *		       More than one descriptor will be used if the size is bigger
+ *		       than XDMA_DESC_BLEN_MAX.
+ * @sw_desc: Descriptor container
+ * @src_addr: First value for the ->src_addr field
+ * @dst_addr: First value for the ->dst_addr field
+ * @size: Size of the contiguous memory block
+ * @filled_descs_num: Index of the first descriptor to take care of in @sw_desc
  */
 static inline u32 xdma_fill_descs(struct xdma_desc *sw_desc, u64 src_addr,
 				  u64 dst_addr, u32 size, u32 filled_descs_num)
@@ -600,13 +605,11 @@ xdma_prep_device_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	struct xdma_chan *xdma_chan = to_xdma_chan(chan);
 	struct dma_async_tx_descriptor *tx_desc;
 	struct xdma_desc *sw_desc;
-	u32 desc_num = 0, i;
 	u64 addr, dev_addr, *src, *dst;
+	u32 desc_num, i;
 	struct scatterlist *sg;
 
-	for_each_sg(sgl, sg, sg_len, i)
-		desc_num += DIV_ROUND_UP(sg_dma_len(sg), XDMA_DESC_BLEN_MAX);
-
+	desc_num = sg_nents_for_dma(sgl, sg_len, XDMA_DESC_BLEN_MAX);
 	sw_desc = xdma_alloc_desc(xdma_chan, desc_num, false);
 	if (!sw_desc)
 		return NULL;
@@ -704,7 +707,7 @@ xdma_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t address,
 	desc_num = 0;
 	for (i = 0; i < periods; i++) {
 		desc_num += xdma_fill_descs(sw_desc, *src, *dst, period_size, desc_num);
-		addr += i * period_size;
+		addr += period_size;
 	}
 
 	tx_desc = vchan_tx_prep(&xdma_chan->vchan, &sw_desc->vdesc, flags);
@@ -877,6 +880,9 @@ static irqreturn_t xdma_channel_isr(int irq, void *dev_id)
 	bool repeat_tx;
 
 	spin_lock(&xchan->vchan.lock);
+
+	if (xchan->stop_requested)
+		complete(&xchan->last_interrupt);
 
 	/* get submitted request */
 	vd = vchan_next_desc(&xchan->vchan);
@@ -1199,7 +1205,7 @@ static int xdma_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	xdev = devm_kzalloc(&pdev->dev, sizeof(*xdev), GFP_KERNEL);
+	xdev = devm_kzalloc_obj(&pdev->dev, *xdev);
 	if (!xdev)
 		return -ENOMEM;
 
@@ -1228,8 +1234,8 @@ static int xdma_probe(struct platform_device *pdev)
 
 	xdev->rmap = devm_regmap_init_mmio(&pdev->dev, reg_base,
 					   &xdma_regmap_config);
-	if (!xdev->rmap) {
-		xdma_err(xdev, "config regmap failed: %d", ret);
+	if (IS_ERR(xdev->rmap)) {
+		xdma_err(xdev, "config regmap failed: %pe", xdev->rmap);
 		goto failed;
 	}
 	INIT_LIST_HEAD(&xdev->dma_dev.channels);
@@ -1295,6 +1301,7 @@ static const struct platform_device_id xdma_id_table[] = {
 	{ "xdma", 0},
 	{ },
 };
+MODULE_DEVICE_TABLE(platform, xdma_id_table);
 
 static struct platform_driver xdma_driver = {
 	.driver		= {
@@ -1302,7 +1309,7 @@ static struct platform_driver xdma_driver = {
 	},
 	.id_table	= xdma_id_table,
 	.probe		= xdma_probe,
-	.remove_new	= xdma_remove,
+	.remove		= xdma_remove,
 };
 
 module_platform_driver(xdma_driver);

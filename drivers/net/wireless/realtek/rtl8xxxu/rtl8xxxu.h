@@ -5,8 +5,9 @@
  * Register definitions taken from original Realtek rtl8723au driver
  */
 
-#include <asm/byteorder.h>
 #include <linux/average.h>
+#include <linux/usb.h>
+#include <net/mac80211.h>
 
 #define RTL8XXXU_DEBUG_REG_WRITE	0x01
 #define RTL8XXXU_DEBUG_REG_READ		0x02
@@ -120,6 +121,15 @@ enum rtl8xxxu_rx_type {
 	RX_TYPE_DATA_PKT = 0,
 	RX_TYPE_C2H = 1,
 	RX_TYPE_ERROR = -1
+};
+
+enum rtl8xxxu_rx_desc_enc {
+	RX_DESC_ENC_NONE	= 0,
+	RX_DESC_ENC_WEP40	= 1,
+	RX_DESC_ENC_TKIP_WO_MIC	= 2,
+	RX_DESC_ENC_TKIP_MIC	= 3,
+	RX_DESC_ENC_AES		= 4,
+	RX_DESC_ENC_WEP104	= 5,
 };
 
 struct rtl8xxxu_rxdesc16 {
@@ -1779,10 +1789,16 @@ struct rtl8xxxu_cfo_tracking {
 #define RTL8XXXU_BC_MC_MACID1	1
 #define RTL8XXXU_MAX_SEC_CAM_NUM	64
 
+struct rtl8xxxu_hw_feature {
+	u8 max_bw;
+};
+
 struct rtl8xxxu_priv {
 	struct ieee80211_hw *hw;
 	struct usb_device *udev;
 	struct rtl8xxxu_fileops *fops;
+
+	struct rtl8xxxu_hw_feature hw_feature;
 
 	spinlock_t tx_urb_lock;
 	struct list_head tx_urb_free_list;
@@ -1793,7 +1809,7 @@ struct rtl8xxxu_priv {
 	struct list_head rx_urb_pending_list;
 	int rx_urb_pending_count;
 	bool shutdown;
-	struct work_struct rx_urb_wq;
+	struct delayed_work rx_urb_wq;
 
 	u8 mac_addr[ETH_ALEN];
 	char chip_name[8];
@@ -1999,6 +2015,7 @@ struct rtl8xxxu_fileops {
 	u8 init_reg_pkt_life_time:1;
 	u8 init_reg_hmtfr:1;
 	u8 supports_concurrent:1;
+	u8 hw_feature_report:1;
 	u8 ampdu_max_time;
 	u8 ustime_tsf_edca;
 	u16 max_aggr_num;
@@ -2022,7 +2039,6 @@ struct rtl8xxxu_fileops {
 
 extern int rtl8xxxu_debug;
 
-extern const struct rtl8xxxu_reg8val rtl8xxxu_gen1_mac_init_table[];
 extern const u32 rtl8xxxu_iqk_phy_iq_bb_reg[];
 u8 rtl8xxxu_read8(struct rtl8xxxu_priv *priv, u16 addr);
 u16 rtl8xxxu_read16(struct rtl8xxxu_priv *priv, u16 addr);
@@ -2069,7 +2085,6 @@ int rtl8xxxu_init_phy_regs(struct rtl8xxxu_priv *priv,
 			   const struct rtl8xxxu_reg32val *array);
 int rtl8xxxu_load_firmware(struct rtl8xxxu_priv *priv, const char *fw_name);
 void rtl8xxxu_firmware_self_reset(struct rtl8xxxu_priv *priv);
-void rtl8xxxu_power_off(struct rtl8xxxu_priv *priv);
 void rtl8xxxu_identify_vendor_1bit(struct rtl8xxxu_priv *priv, u32 vendor);
 void rtl8xxxu_identify_vendor_2bits(struct rtl8xxxu_priv *priv, u32 vendor);
 void rtl8xxxu_config_endpoints_sie(struct rtl8xxxu_priv *priv);

@@ -16,6 +16,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
+#include "internals.h"
 
 #define REG_SSIDR	0x0
 #define REG_SSICR0	0x4
@@ -163,10 +164,8 @@ spi_ingenic_prepare_dma(struct spi_controller *ctlr, struct dma_chan *chan,
 	cookie = dmaengine_submit(desc);
 
 	ret = dma_submit_error(cookie);
-	if (ret) {
-		dmaengine_desc_free(desc);
+	if (ret)
 		return ERR_PTR(ret);
-	}
 
 	return desc;
 }
@@ -185,7 +184,6 @@ static int spi_ingenic_dma_tx(struct spi_controller *ctlr,
 					  &xfer->tx_sg, DMA_MEM_TO_DEV, bits);
 	if (IS_ERR(tx_desc)) {
 		dmaengine_terminate_async(ctlr->dma_rx);
-		dmaengine_desc_free(rx_desc);
 		return PTR_ERR(tx_desc);
 	}
 
@@ -242,11 +240,10 @@ static int spi_ingenic_transfer_one(struct spi_controller *ctlr,
 {
 	struct ingenic_spi *priv = spi_controller_get_devdata(ctlr);
 	unsigned int bits = xfer->bits_per_word ?: spi->bits_per_word;
-	bool can_dma = ctlr->can_dma && ctlr->can_dma(ctlr, spi, xfer);
 
 	spi_ingenic_prepare_transfer(priv, spi, xfer);
 
-	if (ctlr->cur_msg_mapped && can_dma)
+	if (spi_xfer_is_dma_mapped(ctlr, spi, xfer))
 		return spi_ingenic_dma_tx(ctlr, xfer, bits);
 
 	if (bits > 16)
@@ -354,8 +351,11 @@ static int spi_ingenic_request_dma(struct spi_controller *ctlr,
 	ctlr->dma_tx = chan;
 
 	chan = dma_request_chan(dev, "rx");
-	if (IS_ERR(chan))
+	if (IS_ERR(chan)) {
+		dma_release_channel(ctlr->dma_tx);
+		ctlr->dma_tx = NULL;
 		return PTR_ERR(chan);
+	}
 	ctlr->dma_rx = chan;
 
 	ctlr->can_dma = spi_ingenic_can_dma;
@@ -442,7 +442,6 @@ static int spi_ingenic_probe(struct platform_device *pdev)
 	ctlr->use_gpio_descriptors = true;
 	ctlr->max_native_cs = pdata->max_native_cs;
 	ctlr->num_chipselect = num_cs;
-	ctlr->dev.of_node = pdev->dev.of_node;
 
 	if (spi_ingenic_request_dma(ctlr, dev))
 		dev_warn(dev, "DMA not available.\n");

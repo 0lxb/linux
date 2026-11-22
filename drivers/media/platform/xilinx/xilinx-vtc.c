@@ -321,7 +321,7 @@ static int xvtc_probe(struct platform_device *pdev)
 	struct xvtc_device *xvtc;
 	int ret;
 
-	xvtc = devm_kzalloc(&pdev->dev, sizeof(*xvtc), GFP_KERNEL);
+	xvtc = devm_kzalloc_obj(&pdev->dev, *xvtc);
 	if (!xvtc)
 		return -ENOMEM;
 
@@ -365,7 +365,7 @@ static struct platform_driver xvtc_driver = {
 		.of_match_table = xvtc_of_id_table,
 	},
 	.probe = xvtc_probe,
-	.remove_new = xvtc_remove,
+	.remove = xvtc_remove,
 };
 
 module_platform_driver(xvtc_driver);

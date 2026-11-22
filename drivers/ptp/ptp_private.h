@@ -22,7 +22,13 @@
 #define PTP_MAX_TIMESTAMPS 128
 #define PTP_BUF_TIMESTAMPS 30
 #define PTP_DEFAULT_MAX_VCLOCKS 20
+#define PTP_MAX_VCLOCKS_LIMIT (KMALLOC_MAX_SIZE/(sizeof(int)))
 #define PTP_MAX_CHANNELS 2048
+
+enum {
+	PTP_LOCK_PHYSICAL = 0,
+	PTP_LOCK_VIRTUAL,
+};
 
 struct timestamp_event_queue {
 	struct ptp_extts_event buf[PTP_MAX_TIMESTAMPS];
@@ -75,7 +81,11 @@ struct ptp_vclock {
 	struct hlist_node vclock_hash_node;
 	struct cyclecounter cc;
 	struct timecounter tc;
-	struct mutex lock;	/* protects tc/cc */
+	u64 cycles;
+	struct mutex lock;	/* protects tc/cc and the cached sample */
+	/* Owned by the auxiliary worker. */
+	unsigned long retry_delay;
+	unsigned long refresh_deadline;
 };
 
 /*
@@ -100,10 +110,20 @@ static inline bool ptp_vclock_in_use(struct ptp_clock *ptp)
 {
 	bool in_use = false;
 
+	/* Virtual clocks can't be stacked on top of virtual clocks.
+	 * Avoid acquiring the n_vclocks_mux on virtual clocks, to allow this
+	 * function to be called from code paths where the n_vclocks_mux of the
+	 * parent physical clock is already held. Functionally that's not an
+	 * issue, but lockdep would complain, because they have the same lock
+	 * class.
+	 */
+	if (ptp->is_virtual_clock)
+		return false;
+
 	if (mutex_lock_interruptible(&ptp->n_vclocks_mux))
 		return true;
 
-	if (!ptp->is_virtual_clock && ptp->n_vclocks)
+	if (ptp->n_vclocks)
 		in_use = true;
 
 	mutex_unlock(&ptp->n_vclocks_mux);
@@ -125,6 +145,8 @@ extern const struct class ptp_class;
 /*
  * see ptp_chardev.c
  */
+
+void ptp_disable_all_events(struct ptp_clock *ptp);
 
 /* caller must hold pincfg_mux */
 int ptp_set_pinfunc(struct ptp_clock *ptp, unsigned int pin,
@@ -151,6 +173,7 @@ extern const struct attribute_group *ptp_groups[];
 
 int ptp_populate_pin_groups(struct ptp_clock *ptp);
 void ptp_cleanup_pin_groups(struct ptp_clock *ptp);
+void ptp_vclock_remove_sysfs(struct ptp_clock *ptp);
 
 struct ptp_vclock *ptp_vclock_register(struct ptp_clock *pclock);
 void ptp_vclock_unregister(struct ptp_vclock *vclock);

@@ -27,10 +27,11 @@
 #include <xen/xen.h>
 
 #include <asm/apic.h>
-#include <asm/hypervisor.h>
 #include <asm/io_apic.h>
 #include <asm/mpspec.h>
+#include <asm/msr.h>
 #include <asm/smp.h>
+#include <asm/numa.h>
 
 #include "cpu.h"
 
@@ -74,15 +75,11 @@ bool arch_match_cpu_phys_id(int cpu, u64 phys_id)
 	return phys_id == (u64)cpuid_to_apicid[cpu];
 }
 
-#ifdef CONFIG_SMP
 static void cpu_mark_primary_thread(unsigned int cpu, unsigned int apicid)
 {
 	if (!(apicid & (__max_threads_per_core - 1)))
 		cpumask_set_cpu(cpu, &__cpu_primary_thread_mask);
 }
-#else
-static inline void cpu_mark_primary_thread(unsigned int cpu, unsigned int apicid) { }
-#endif
 
 /*
  * Convert the APIC ID to a domain level ID by masking out the low bits
@@ -123,12 +120,14 @@ static void topo_set_cpuids(unsigned int cpu, u32 apic_id, u32 acpi_id)
 	early_per_cpu(x86_cpu_to_apicid, cpu) = apic_id;
 	early_per_cpu(x86_cpu_to_acpiid, cpu) = acpi_id;
 #endif
-	set_cpu_possible(cpu, true);
 	set_cpu_present(cpu, true);
 }
 
 static __init bool check_for_real_bsp(u32 apic_id)
 {
+	bool is_bsp = false, has_apic_base = boot_cpu_data.x86 >= 6;
+	u64 msr;
+
 	/*
 	 * There is no real good way to detect whether this a kdump()
 	 * kernel, but except on the Voyager SMP monstrosity which is not
@@ -145,31 +144,71 @@ static __init bool check_for_real_bsp(u32 apic_id)
 	if (topo_info.real_bsp_apic_id != BAD_APICID)
 		return false;
 
-	if (apic_id == topo_info.boot_cpu_apic_id) {
-		topo_info.real_bsp_apic_id = apic_id;
-		return false;
+	/*
+	 * Check whether the enumeration order is broken by evaluating the
+	 * BSP bit in the APICBASE MSR. If the CPU does not have the
+	 * APICBASE MSR then the BSP detection is not possible and the
+	 * kernel must rely on the firmware enumeration order.
+	 */
+	if (has_apic_base) {
+		rdmsrq(MSR_IA32_APICBASE, msr);
+		is_bsp = !!(msr & MSR_IA32_APICBASE_BSP);
 	}
 
-	pr_warn("Boot CPU APIC ID not the first enumerated APIC ID: %x > %x\n",
+	if (apic_id == topo_info.boot_cpu_apic_id) {
+		/*
+		 * If the boot CPU has the APIC BSP bit set then the
+		 * firmware enumeration is agreeing. If the CPU does not
+		 * have the APICBASE MSR then the only choice is to trust
+		 * the enumeration order.
+		 */
+		if (is_bsp || !has_apic_base) {
+			topo_info.real_bsp_apic_id = apic_id;
+			return false;
+		}
+		/*
+		 * If the boot APIC is enumerated first, but the APICBASE
+		 * MSR does not have the BSP bit set, then there is no way
+		 * to discover the real BSP here. Assume a crash kernel and
+		 * limit the number of CPUs to 1 as an INIT to the real BSP
+		 * would reset the machine.
+		 */
+		pr_warn("Enumerated BSP APIC %x is not marked in APICBASE MSR\n", apic_id);
+		pr_warn("Assuming crash kernel. Limiting to one CPU to prevent machine INIT\n");
+		set_nr_cpu_ids(1);
+		goto fwbug;
+	}
+
+	pr_warn("Boot CPU APIC ID not the first enumerated APIC ID: %x != %x\n",
 		topo_info.boot_cpu_apic_id, apic_id);
+
+	if (is_bsp) {
+		/*
+		 * The boot CPU has the APIC BSP bit set. Use it and complain
+		 * about the broken firmware enumeration.
+		 */
+		topo_info.real_bsp_apic_id = topo_info.boot_cpu_apic_id;
+		goto fwbug;
+	}
+
 	pr_warn("Crash kernel detected. Disabling real BSP to prevent machine INIT\n");
 
 	topo_info.real_bsp_apic_id = apic_id;
 	return true;
+
+fwbug:
+	pr_warn(FW_BUG "APIC enumeration order not specification compliant\n");
+	return false;
 }
 
 static unsigned int topo_unit_count(u32 lvlid, enum x86_topology_domains at_level,
 				    unsigned long *map)
 {
-	unsigned int id, end, cnt = 0;
+	unsigned int end;
 
 	/* Calculate the exclusive end */
 	end = lvlid + (1U << x86_topo_system.dom_shifts[at_level]);
-
-	/* Unfortunately there is no bitmap_weight_range() */
-	for (id = find_next_bit(map, end, lvlid); id < end; id = find_next_bit(map, end, ++id))
-		cnt++;
-	return cnt;
+	return bitmap_weight_from(map, lvlid, end);
 }
 
 static __init void topo_register_apic(u32 apic_id, u32 acpi_id, bool present)
@@ -193,24 +232,14 @@ static __init void topo_register_apic(u32 apic_id, u32 acpi_id, bool present)
 		cpuid_to_apicid[cpu] = apic_id;
 		topo_set_cpuids(cpu, apic_id, acpi_id);
 	} else {
-		u32 pkgid = topo_apicid(apic_id, TOPO_PKG_DOMAIN);
-
-		/*
-		 * Check for present APICs in the same package when running
-		 * on bare metal. Allow the bogosity in a guest.
-		 */
-		if (hypervisor_is_type(X86_HYPER_NATIVE) &&
-		    topo_unit_count(pkgid, TOPO_PKG_DOMAIN, phys_cpu_present_map)) {
-			pr_info_once("Ignoring hot-pluggable APIC ID %x in present package.\n",
-				     apic_id);
-			topo_info.nr_rejected_cpus++;
-			return;
-		}
-
 		topo_info.nr_disabled_cpus++;
 	}
 
-	/* Register present and possible CPUs in the domain maps */
+	/*
+	 * Register present and possible CPUs in the domain
+	 * maps. cpu_possible_map will be updated in
+	 * topology_init_possible_cpus() after enumeration is done.
+	 */
 	for (dom = TOPO_SMT_DOMAIN; dom < TOPO_MAX_DOMAIN; dom++)
 		set_bit(topo_apicid(apic_id, dom), apic_maps[dom].map);
 }
@@ -321,6 +350,19 @@ unsigned int topology_unit_count(u32 apicid, enum x86_topology_domains which_uni
 	return topo_unit_count(lvlid, at_level, apic_maps[which_units].map);
 }
 
+#ifdef CONFIG_SMP
+int topology_get_primary_thread(unsigned int cpu)
+{
+	u32 apic_id = cpuid_to_apicid[cpu];
+
+	/*
+	 * Get the core domain level APIC id, which is the primary thread
+	 * and return the CPU number assigned to it.
+	 */
+	return topo_lookup_cpuid(topo_apicid(apic_id, TOPO_CORE_DOMAIN));
+}
+#endif
+
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
 /**
  * topology_hotplug_apic - Handle a physical hotplugged APIC after boot
@@ -378,8 +420,8 @@ void __init topology_apply_cmdline_limits_early(void)
 {
 	unsigned int possible = nr_cpu_ids;
 
-	/* 'maxcpus=0' 'nosmp' 'nolapic' 'disableapic' 'noapic' */
-	if (!setup_max_cpus || ioapic_is_disabled || apic_is_disabled)
+	/* 'maxcpus=0' 'nosmp' 'nolapic' */
+	if (!setup_max_cpus || apic_is_disabled)
 		possible = 1;
 
 	/* 'possible_cpus=N' */
@@ -393,7 +435,7 @@ void __init topology_apply_cmdline_limits_early(void)
 
 static __init bool restrict_to_up(void)
 {
-	if (!smp_found_config || ioapic_is_disabled)
+	if (!smp_found_config)
 		return true;
 	/*
 	 * XEN PV is special as it does not advertise the local APIC
@@ -414,6 +456,17 @@ void __init topology_init_possible_cpus(void)
 	unsigned int cnta, cntb, cpu, allowed = 1;
 	unsigned int total = assigned + disabled;
 	u32 apicid, firstid;
+
+	/*
+	 * If there was no APIC registered, then fake one so that the
+	 * topology bitmap is populated. That ensures that the code below
+	 * is valid and the various query interfaces can be used
+	 * unconditionally. This does not affect the actual APIC code in
+	 * any way because either the local APIC address has not been
+	 * registered or the local APIC was disabled on the command line.
+	 */
+	if (topo_info.boot_cpu_apic_id == BAD_APICID)
+		topology_register_boot_apic(0);
 
 	if (!restrict_to_up()) {
 		if (WARN_ON_ONCE(assigned > nr_cpu_ids)) {
@@ -436,11 +489,19 @@ void __init topology_init_possible_cpus(void)
 	set_nr_cpu_ids(allowed);
 
 	cnta = domain_weight(TOPO_PKG_DOMAIN);
-	cntb = domain_weight(TOPO_DIE_DOMAIN);
 	__max_logical_packages = cnta;
+
+	pr_info("Max. logical packages: %3u\n", __max_logical_packages);
+
+	cntb = num_phys_nodes();
+	__num_nodes_per_package = DIV_ROUND_UP(cntb, cnta);
+
+	pr_info("Max. logical nodes:    %3u\n", cntb);
+	pr_info("Num. nodes per package:%3u\n", __num_nodes_per_package);
+
+	cntb = domain_weight(TOPO_DIE_DOMAIN);
 	__max_dies_per_package = 1U << (get_count_order(cntb) - get_count_order(cnta));
 
-	pr_info("Max. logical packages: %3u\n", cnta);
 	pr_info("Max. logical dies:     %3u\n", cntb);
 	pr_info("Max. dies per package: %3u\n", __max_dies_per_package);
 

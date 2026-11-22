@@ -73,6 +73,10 @@ static int usbtv_configure_for_norm(struct usbtv *usbtv, v4l2_std_id norm)
 	}
 
 	if (params) {
+		if (vb2_is_busy(&usbtv->vb2q) &&
+		    (usbtv->width != params->cap_width ||
+		     usbtv->height != params->cap_height))
+			return -EBUSY;
 		usbtv->width = params->cap_width;
 		usbtv->height = params->cap_height;
 		usbtv->n_chunks = usbtv->width * usbtv->height
@@ -780,8 +784,6 @@ static const struct vb2_ops usbtv_vb2_ops = {
 	.buf_queue = usbtv_buf_queue,
 	.start_streaming = usbtv_start_streaming,
 	.stop_streaming = usbtv_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 static int usbtv_s_ctrl(struct v4l2_ctrl *ctrl)
@@ -947,13 +949,11 @@ int usbtv_video_init(struct usbtv *usbtv)
 	ret = video_register_device(&usbtv->vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		dev_warn(usbtv->dev, "Could not register video device\n");
-		goto vdev_fail;
+		return ret;
 	}
 
 	return 0;
 
-vdev_fail:
-	v4l2_device_unregister(&usbtv->v4l2_dev);
 v4l2_fail:
 ctrl_fail:
 	v4l2_ctrl_handler_free(&usbtv->ctrl);
@@ -965,6 +965,10 @@ void usbtv_video_free(struct usbtv *usbtv)
 {
 	vb2_video_unregister_device(&usbtv->vdev);
 	v4l2_device_disconnect(&usbtv->v4l2_dev);
+
+	mutex_lock(&usbtv->v4l2_lock);
+	usbtv->udev = NULL;
+	mutex_unlock(&usbtv->v4l2_lock);
 
 	v4l2_device_put(&usbtv->v4l2_dev);
 }

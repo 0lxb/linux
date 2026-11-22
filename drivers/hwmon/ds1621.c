@@ -342,21 +342,18 @@ static const struct attribute_group ds1621_group = {
 };
 __ATTRIBUTE_GROUPS(ds1621);
 
-static const struct i2c_device_id ds1621_id[];
-
 static int ds1621_probe(struct i2c_client *client)
 {
 	struct ds1621_data *data;
 	struct device *hwmon_dev;
 
-	data = devm_kzalloc(&client->dev, sizeof(struct ds1621_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, struct ds1621_data);
 	if (!data)
 		return -ENOMEM;
 
 	mutex_init(&data->update_lock);
 
-	data->kind = i2c_match_id(ds1621_id, client)->driver_data;
+	data->kind = (uintptr_t)i2c_get_match_data(client);
 	data->client = client;
 
 	/* Initialize the DS1621 chip */
@@ -369,11 +366,11 @@ static int ds1621_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ds1621_id[] = {
-	{ "ds1621", ds1621 },
-	{ "ds1625", ds1625 },
-	{ "ds1631", ds1631 },
-	{ "ds1721", ds1721 },
-	{ "ds1731", ds1731 },
+	{ .name = "ds1621", .driver_data = ds1621 },
+	{ .name = "ds1625", .driver_data = ds1625 },
+	{ .name = "ds1631", .driver_data = ds1631 },
+	{ .name = "ds1721", .driver_data = ds1721 },
+	{ .name = "ds1731", .driver_data = ds1731 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ds1621_id);

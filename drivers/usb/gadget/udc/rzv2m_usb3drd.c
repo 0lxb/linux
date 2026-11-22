@@ -73,7 +73,7 @@ static int rzv2m_usb3drd_probe(struct platform_device *pdev)
 	struct rzv2m_usb3drd *usb3;
 	int ret;
 
-	usb3 = devm_kzalloc(&pdev->dev, sizeof(*usb3), GFP_KERNEL);
+	usb3 = devm_kzalloc_obj(&pdev->dev, *usb3);
 	if (!usb3)
 		return -ENOMEM;
 
@@ -127,7 +127,7 @@ static struct platform_driver rzv2m_usb3drd_driver = {
 		.of_match_table = rzv2m_usb3drd_of_match,
 	},
 	.probe = rzv2m_usb3drd_probe,
-	.remove_new = rzv2m_usb3drd_remove,
+	.remove = rzv2m_usb3drd_remove,
 };
 module_platform_driver(rzv2m_usb3drd_driver);
 

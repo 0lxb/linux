@@ -623,7 +623,7 @@ int cx231xx_set_video_input_mux(struct cx231xx *dev, u8 input)
 }
 
 int cx231xx_set_decoder_video_input(struct cx231xx *dev,
-				u8 pin_type, u8 input)
+				u8 pin_type, u32 input)
 {
 	int status = 0;
 	u32 value = 0;
@@ -1338,142 +1338,6 @@ void update_HH_register_after_set_DIF(struct cx231xx *dev)
 */
 }
 
-void cx231xx_dump_HH_reg(struct cx231xx *dev)
-{
-	u32 value = 0;
-	u16  i = 0;
-
-	value = 0x45005390;
-	vid_blk_write_word(dev, 0x104, value);
-
-	for (i = 0x100; i < 0x140; i++) {
-		vid_blk_read_word(dev, i, &value);
-		dev_dbg(dev->dev, "reg0x%x=0x%x\n", i, value);
-		i = i+3;
-	}
-
-	for (i = 0x300; i < 0x400; i++) {
-		vid_blk_read_word(dev, i, &value);
-		dev_dbg(dev->dev, "reg0x%x=0x%x\n", i, value);
-		i = i+3;
-	}
-
-	for (i = 0x400; i < 0x440; i++) {
-		vid_blk_read_word(dev, i,  &value);
-		dev_dbg(dev->dev, "reg0x%x=0x%x\n", i, value);
-		i = i+3;
-	}
-
-	vid_blk_read_word(dev, AFE_CTRL_C2HH_SRC_CTRL, &value);
-	dev_dbg(dev->dev, "AFE_CTRL_C2HH_SRC_CTRL=0x%x\n", value);
-	vid_blk_write_word(dev, AFE_CTRL_C2HH_SRC_CTRL, 0x4485D390);
-	vid_blk_read_word(dev, AFE_CTRL_C2HH_SRC_CTRL, &value);
-	dev_dbg(dev->dev, "AFE_CTRL_C2HH_SRC_CTRL=0x%x\n", value);
-}
-
-#if 0
-static void cx231xx_dump_SC_reg(struct cx231xx *dev)
-{
-	u8 value[4] = { 0, 0, 0, 0 };
-	dev_dbg(dev->dev, "%s!\n", __func__);
-
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, BOARD_CFG_STAT,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", BOARD_CFG_STAT, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, TS_MODE_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", TS_MODE_REG, value[0],
-		 value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, TS1_CFG_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", TS1_CFG_REG, value[0],
-		 value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, TS1_LENGTH_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", TS1_LENGTH_REG, value[0],
-		value[1], value[2], value[3]);
-
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, TS2_CFG_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", TS2_CFG_REG, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, TS2_LENGTH_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", TS2_LENGTH_REG, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, EP_MODE_SET,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", EP_MODE_SET, value[0],
-		 value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_PTN1,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_PTN1, value[0],
-		value[1], value[2], value[3]);
-
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_PTN2,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_PTN2, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_PTN3,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_PTN3, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_MASK0,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_MASK0, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_MASK1,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_MASK1, value[0],
-		value[1], value[2], value[3]);
-
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_PWR_MASK2,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_PWR_MASK2, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_GAIN,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_GAIN, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_CAR_REG,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_CAR_REG, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_OT_CFG1,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_OT_CFG1, value[0],
-		value[1], value[2], value[3]);
-
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, CIR_OT_CFG2,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", CIR_OT_CFG2, value[0],
-		value[1], value[2], value[3]);
-	cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, PWR_CTL_EN,
-				 value, 4);
-	dev_dbg(dev->dev,
-		"reg0x%x=0x%x 0x%x 0x%x 0x%x\n", PWR_CTL_EN, value[0],
-		value[1], value[2], value[3]);
-}
-#endif
-
 void cx231xx_Setup_AFE_for_LowIF(struct cx231xx *dev)
 
 {
@@ -2060,10 +1924,9 @@ int cx231xx_dif_set_standard(struct cx231xx *dev, u32 standard)
 		status = vid_blk_write_word(dev, DIF_SRC_GAIN_CONTROL,
 						0x000035e8);
 
-		status = vid_blk_write_word(dev, DIF_AGC_CTRL_IF, 0xC2262600);
-		status = vid_blk_write_word(dev, DIF_AGC_CTRL_INT,
-						0xC2262600);
-		status = vid_blk_write_word(dev, DIF_AGC_CTRL_RF, 0xC2262600);
+		status = vid_blk_write_word(dev, DIF_AGC_CTRL_IF,  0xC2262600);
+		status = vid_blk_write_word(dev, DIF_AGC_CTRL_INT, 0xC2260000);
+		status = vid_blk_write_word(dev, DIF_AGC_CTRL_RF,  0xC2260000);
 
 		/* Save the Spec Inversion value */
 		dif_misc_ctrl_value &= FLD_DIF_SPEC_INV;
@@ -2460,30 +2323,6 @@ int cx231xx_set_power_mode(struct cx231xx *dev, enum AV_MODE mode)
 	return status;
 }
 
-int cx231xx_power_suspend(struct cx231xx *dev)
-{
-	u8 value[4] = { 0, 0, 0, 0 };
-	u32 tmp = 0;
-	int status = 0;
-
-	status = cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER, PWR_CTL_EN,
-				       value, 4);
-	if (status > 0)
-		return status;
-
-	tmp = le32_to_cpu(*((__le32 *) value));
-	tmp &= (~PWR_MODE_MASK);
-
-	value[0] = (u8) tmp;
-	value[1] = (u8) (tmp >> 8);
-	value[2] = (u8) (tmp >> 16);
-	value[3] = (u8) (tmp >> 24);
-	status = cx231xx_write_ctrl_reg(dev, VRT_SET_REGISTER, PWR_CTL_EN,
-					value, 4);
-
-	return status;
-}
-
 /******************************************************************************
  *                  S T R E A M    C O N T R O L   functions                  *
  ******************************************************************************/
@@ -2761,7 +2600,6 @@ int cx231xx_set_gpio_value(struct cx231xx *dev, int pin_number, int pin_value)
 		dev->gpio_dir = value;
 		status = cx231xx_set_gpio_bit(dev, dev->gpio_dir,
 					      dev->gpio_val);
-		value = 0;
 	}
 
 	if (pin_value == 0)

@@ -9,6 +9,7 @@
 #include <linux/spinlock.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/uaccess.h>
 
 #include "core.h"
@@ -686,6 +687,7 @@ static int params_show(struct seq_file *seq, void *v)
 	print_param(seq, p, host_channels);
 	print_param(seq, p, phy_type);
 	print_param(seq, p, phy_utmi_width);
+	print_param(seq, p, eusb2_disc);
 	print_param(seq, p, phy_ulpi_ddr);
 	print_param(seq, p, phy_ulpi_ext_vbus);
 	print_param(seq, p, i2c_enable);
@@ -701,6 +703,7 @@ static int params_show(struct seq_file *seq, void *v)
 	print_param(seq, p, uframe_sched);
 	print_param(seq, p, external_id_pin_ctl);
 	print_param(seq, p, power_down);
+	print_param(seq, p, no_clock_gating);
 	print_param(seq, p, lpm);
 	print_param(seq, p, lpm_clock_gating);
 	print_param(seq, p, besl);
@@ -785,8 +788,7 @@ int dwc2_debugfs_init(struct dwc2_hsotg *hsotg)
 	/* Add gadget debugfs nodes */
 	dwc2_hsotg_create_debug(hsotg);
 
-	hsotg->regset = devm_kzalloc(hsotg->dev, sizeof(*hsotg->regset),
-								GFP_KERNEL);
+	hsotg->regset = kzalloc_obj(*hsotg->regset);
 	if (!hsotg->regset) {
 		ret = -ENOMEM;
 		goto err;
@@ -808,4 +810,6 @@ void dwc2_debugfs_exit(struct dwc2_hsotg *hsotg)
 {
 	debugfs_remove_recursive(hsotg->debug_root);
 	hsotg->debug_root = NULL;
+	kfree(hsotg->regset);
+	hsotg->regset = NULL;
 }

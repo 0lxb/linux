@@ -51,7 +51,7 @@ static int dcss_drv_platform_probe(struct platform_device *pdev)
 
 	of_node_put(remote);
 
-	mdrv = devm_kzalloc(dev, sizeof(*mdrv), GFP_KERNEL);
+	mdrv = devm_kzalloc_obj(dev, *mdrv);
 	if (!mdrv)
 		return -ENOMEM;
 
@@ -112,7 +112,7 @@ MODULE_DEVICE_TABLE(of, dcss_of_match);
 
 static struct platform_driver dcss_platform_driver = {
 	.probe	= dcss_drv_platform_probe,
-	.remove_new = dcss_drv_platform_remove,
+	.remove = dcss_drv_platform_remove,
 	.shutdown = dcss_drv_platform_shutdown,
 	.driver	= {
 		.name = "imx-dcss",

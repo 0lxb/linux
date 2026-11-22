@@ -1,29 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2022 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 
 #include <linux/errno.h>
-#include <linux/if_arp.h>
-#include <linux/netdevice.h>
-#include <linux/skbuff.h>
-#include <linux/if_rmnet.h>
 #include <linux/etherdevice.h>
-#include <net/pkt_sched.h>
+#include <linux/if_arp.h>
+#include <linux/if_rmnet.h>
+#include <linux/netdevice.h>
 #include <linux/pm_runtime.h>
+#include <linux/skbuff.h>
+#include <net/pkt_sched.h>
+
 #include <linux/remoteproc/qcom_rproc.h>
 
 #include "ipa.h"
-#include "ipa_data.h"
 #include "ipa_endpoint.h"
-#include "ipa_table.h"
 #include "ipa_mem.h"
 #include "ipa_modem.h"
 #include "ipa_smp2p.h"
-#include "ipa_qmi.h"
+#include "ipa_table.h"
 #include "ipa_uc.h"
-#include "ipa_power.h"
 
 #define IPA_NETDEV_NAME		"rmnet_ipa%d"
 #define IPA_NETDEV_TAILROOM	0	/* for padding by mux layer */
@@ -73,7 +71,6 @@ static int ipa_open(struct net_device *netdev)
 
 	netif_start_queue(netdev);
 
-	pm_runtime_mark_last_busy(dev);
 	(void)pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -104,7 +101,6 @@ static int ipa_stop(struct net_device *netdev)
 	ipa_endpoint_disable_one(priv->rx);
 	ipa_endpoint_disable_one(priv->tx);
 out_power_put:
-	pm_runtime_mark_last_busy(dev);
 	(void)pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -177,7 +173,6 @@ ipa_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	ret = ipa_endpoint_skb_tx(endpoint, skb);
 
-	pm_runtime_mark_last_busy(dev);
 	(void)pm_runtime_put_autosuspend(dev);
 
 	if (ret) {
@@ -271,13 +266,29 @@ void ipa_modem_suspend(struct net_device *netdev)
  * the modem.  We can't enable the queue directly in ipa_modem_resume()
  * because transmits restart the instant the queue is awakened; but the
  * device power state won't be ACTIVE until *after* ipa_modem_resume()
- * returns.
+ * returns.  A transmit restarted before that would stop the queue
+ * again and get -EINPROGRESS from pm_runtime_get(), and with this
+ * work having already run, nothing would ever wake the queue again.
+ * So wait for the resume to complete before waking the queue.
  */
 static void ipa_modem_wake_queue_work(struct work_struct *work)
 {
 	struct ipa_priv *priv = container_of(work, struct ipa_priv, work);
+	struct device *dev = priv->ipa->dev;
+	int ret;
 
+	ret = pm_runtime_get_sync(dev);
+
+	/* Wake the queue even if the device could not be resumed, so
+	 * that pending packets are dropped by the transmit path rather
+	 * than stranded behind a stopped queue.
+	 */
 	netif_wake_queue(priv->tx->netdev);
+
+	if (ret < 0)
+		pm_runtime_put_noidle(dev);
+	else
+		(void)pm_runtime_put_autosuspend(dev);
 }
 
 /** ipa_modem_resume() - resume callback for runtime_pm
@@ -434,7 +445,6 @@ static void ipa_modem_crashed(struct ipa *ipa)
 		dev_err(dev, "error %d zeroing modem memory regions\n", ret);
 
 out_power_put:
-	pm_runtime_mark_last_busy(dev);
 	(void)pm_runtime_put_autosuspend(dev);
 }
 

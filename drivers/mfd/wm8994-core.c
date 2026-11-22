@@ -344,10 +344,9 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err;
 	}
 
-	wm8994->supplies = devm_kcalloc(wm8994->dev,
-					wm8994->num_supplies,
-					sizeof(struct regulator_bulk_data),
-					GFP_KERNEL);
+	wm8994->supplies = devm_kzalloc_objs(wm8994->dev,
+					     struct regulator_bulk_data,
+					     wm8994->num_supplies);
 	if (!wm8994->supplies) {
 		ret = -ENOMEM;
 		goto err;
@@ -614,7 +613,7 @@ static int wm8994_i2c_probe(struct i2c_client *i2c)
 	struct wm8994 *wm8994;
 	int ret;
 
-	wm8994 = devm_kzalloc(&i2c->dev, sizeof(struct wm8994), GFP_KERNEL);
+	wm8994 = devm_kzalloc_obj(&i2c->dev, struct wm8994);
 	if (wm8994 == NULL)
 		return -ENOMEM;
 
@@ -622,7 +621,7 @@ static int wm8994_i2c_probe(struct i2c_client *i2c)
 	wm8994->dev = &i2c->dev;
 	wm8994->irq = i2c->irq;
 
-	wm8994->type = (enum wm8994_type)i2c_get_match_data(i2c);
+	wm8994->type = (kernel_ulong_t)i2c_get_match_data(i2c);
 
 	wm8994->regmap = devm_regmap_init_i2c(i2c, &wm8994_base_regmap_config);
 	if (IS_ERR(wm8994->regmap)) {

@@ -54,30 +54,18 @@ static const struct jh71x0_clk_data jh7110_aonclk_data[] = {
 	JH71X0_GATE(JH7110_AONCLK_RTC_CAL, "rtc_cal", 0, JH7110_AONCLK_OSC),
 };
 
-static struct clk_hw *jh7110_aonclk_get(struct of_phandle_args *clkspec, void *data)
-{
-	struct jh71x0_clk_priv *priv = data;
-	unsigned int idx = clkspec->args[0];
-
-	if (idx < JH7110_AONCLK_END)
-		return &priv->reg[idx].hw;
-
-	return ERR_PTR(-EINVAL);
-}
-
 static int jh7110_aoncrg_probe(struct platform_device *pdev)
 {
 	struct jh71x0_clk_priv *priv;
 	unsigned int idx;
 	int ret;
 
-	priv = devm_kzalloc(&pdev->dev,
-			    struct_size(priv, reg, JH7110_AONCLK_END),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_flex(&pdev->dev, *priv, reg, JH7110_AONCLK_END);
 	if (!priv)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->rmw_lock);
+	priv->num_reg = JH7110_AONCLK_END;
 	priv->dev = &pdev->dev;
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
@@ -127,7 +115,7 @@ static int jh7110_aoncrg_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh7110_aonclk_get, priv);
+	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh71x0_clk_get, priv);
 	if (ret)
 		return ret;
 

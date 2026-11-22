@@ -9,6 +9,7 @@
 
 #include <linux/pm_runtime.h>
 #include <linux/math.h>
+#include <linux/math64.h>
 #include <linux/time.h>
 #include <linux/units.h>
 #include <net/pkt_cls.h>
@@ -275,9 +276,31 @@ static int am65_cpsw_iet_set_verify_timeout_count(struct am65_cpsw_port *port)
 	/* The number of wireside clocks contained in the verify
 	 * timeout counter. The default is 0x1312d0
 	 * (10ms at 125Mhz in 1G mode).
+	 * The frequency of the clock depends on the link speed
+	 * and the PHY interface.
 	 */
-	val = 125 * HZ_PER_MHZ;	/* assuming 125MHz wireside clock */
+	switch (port->slave.phy_if) {
+	case PHY_INTERFACE_MODE_RGMII:
+	case PHY_INTERFACE_MODE_RGMII_ID:
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+	case PHY_INTERFACE_MODE_RGMII_TXID:
+		if (port->qos.link_speed == SPEED_1000)
+			val = 125 * HZ_PER_MHZ;	/* 125 MHz at 1000Mbps*/
+		else if (port->qos.link_speed == SPEED_100)
+			val = 25 * HZ_PER_MHZ;	/* 25 MHz at 100Mbps*/
+		else
+			val = (25 * HZ_PER_MHZ) / 10;	/* 2.5 MHz at 10Mbps*/
+		break;
 
+	case PHY_INTERFACE_MODE_QSGMII:
+	case PHY_INTERFACE_MODE_SGMII:
+		val = 125 * HZ_PER_MHZ;	/* 125 MHz */
+		break;
+
+	default:
+		netdev_err(port->ndev, "selected mode does not supported IET\n");
+		return -EOPNOTSUPP;
+	}
 	val /= MILLIHZ_PER_HZ;		/* count per ms timeout */
 	val *= verify_time_ms;		/* count for timeout ms */
 
@@ -294,20 +317,21 @@ static int am65_cpsw_iet_verify_wait(struct am65_cpsw_port *port)
 	u32 ctrl, status;
 	int try;
 
-	try = 20;
+	try = 3;
+
+	/* Reset the verify state machine by writing 1
+	 * to LINKFAIL
+	 */
+	ctrl = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+	ctrl |= AM65_CPSW_PN_IET_MAC_LINKFAIL;
+	writel(ctrl, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+
+	/* Clear MAC_LINKFAIL bit to start Verify. */
+	ctrl = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+	ctrl &= ~AM65_CPSW_PN_IET_MAC_LINKFAIL;
+	writel(ctrl, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
+
 	do {
-		/* Reset the verify state machine by writing 1
-		 * to LINKFAIL
-		 */
-		ctrl = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
-		ctrl |= AM65_CPSW_PN_IET_MAC_LINKFAIL;
-		writel(ctrl, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
-
-		/* Clear MAC_LINKFAIL bit to start Verify. */
-		ctrl = readl(port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
-		ctrl &= ~AM65_CPSW_PN_IET_MAC_LINKFAIL;
-		writel(ctrl, port->port_base + AM65_CPSW_PN_REG_IET_CTRL);
-
 		msleep(port->qos.iet.verify_time_ms);
 
 		status = readl(port->port_base + AM65_CPSW_PN_REG_IET_STATUS);
@@ -329,7 +353,7 @@ static int am65_cpsw_iet_verify_wait(struct am65_cpsw_port *port)
 			netdev_dbg(port->ndev, "MAC Merge verify error\n");
 			return -ENODEV;
 		}
-	} while (try-- > 0);
+	} while (--try > 0);
 
 	netdev_dbg(port->ndev, "MAC Merge verify timeout\n");
 	return -ETIMEDOUT;
@@ -837,6 +861,7 @@ static int am65_cpsw_taprio_replace(struct net_device *ndev,
 	struct am65_cpsw_port *port = am65_ndev_to_port(ndev);
 	struct am65_cpts *cpts = common->cpts;
 	struct am65_cpsw_est *est_new;
+	u64 cur_time, n;
 	int ret, tact;
 
 	if (!netif_running(ndev)) {
@@ -859,9 +884,8 @@ static int am65_cpsw_taprio_replace(struct net_device *ndev,
 		return -EOPNOTSUPP;
 	}
 
-	est_new = devm_kzalloc(&ndev->dev,
-			       struct_size(est_new, taprio.entries, taprio->num_entries),
-			       GFP_KERNEL);
+	est_new = devm_kzalloc_flex(&ndev->dev, *est_new, taprio.entries,
+				    taprio->num_entries);
 	if (!est_new)
 		return -ENOMEM;
 
@@ -888,12 +912,20 @@ static int am65_cpsw_taprio_replace(struct net_device *ndev,
 	if (tact == TACT_PROG)
 		am65_cpsw_timer_stop(ndev);
 
-	if (!est_new->taprio.base_time)
-		est_new->taprio.base_time = am65_cpts_ns_gettime(cpts);
-
 	am65_cpsw_port_est_get_buf_num(ndev, est_new);
 	am65_cpsw_est_set_sched_list(ndev, est_new);
 	am65_cpsw_port_est_assign_buf_num(ndev, est_new->buf);
+
+	/* If the base-time is in the past, start schedule from the time:
+	 * base_time + (N*cycle_time)
+	 * where N is the smallest possible integer such that the above
+	 * time is in the future.
+	 */
+	cur_time = am65_cpts_ns_gettime(cpts);
+	if (est_new->taprio.base_time < cur_time) {
+		n = div64_u64(cur_time - est_new->taprio.base_time, est_new->taprio.cycle_time);
+		est_new->taprio.base_time += (n + 1) * est_new->taprio.cycle_time;
+	}
 
 	am65_cpsw_est_set(ndev, 1);
 
@@ -1007,6 +1039,9 @@ static int am65_cpsw_qos_clsflower_add_policer(struct am65_cpsw_port *port,
 				   "Unsupported keys used");
 		return -EOPNOTSUPP;
 	}
+
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
 
 	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
 		NL_SET_ERR_MSG_MOD(extack, "Not matching on eth address");

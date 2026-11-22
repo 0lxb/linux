@@ -43,6 +43,7 @@
 #include <linux/videodev2.h>
 
 #include <linux/platform_data/media/camera-pxa.h>
+#include <linux/workqueue.h>
 
 #define PXA_CAM_VERSION "0.0.6"
 #define PXA_CAM_DRV_NAME "pxa27x-camera"
@@ -683,7 +684,7 @@ struct pxa_camera_dev {
 	unsigned int		buf_sequence;
 
 	struct pxa_buffer	*active;
-	struct tasklet_struct	task_eof;
+	struct work_struct	eof_bh_work;
 
 	u32			save_cicr[5];
 };
@@ -740,7 +741,7 @@ static struct pxa_camera_format_xlate *pxa_mbus_build_fmts_xlate(
 	if (!fmts)
 		return ERR_PTR(-ENXIO);
 
-	user_formats = kcalloc(fmts + 1, sizeof(*user_formats), GFP_KERNEL);
+	user_formats = kzalloc_objs(*user_formats, fmts + 1);
 	if (!user_formats)
 		return ERR_PTR(-ENOMEM);
 
@@ -1146,9 +1147,9 @@ static void pxa_camera_deactivate(struct pxa_camera_dev *pcdev)
 	clk_disable_unprepare(pcdev->clk);
 }
 
-static void pxa_camera_eof(struct tasklet_struct *t)
+static void pxa_camera_eof_bh_work(struct work_struct *t)
 {
-	struct pxa_camera_dev *pcdev = from_tasklet(pcdev, t, task_eof);
+	struct pxa_camera_dev *pcdev = from_work(pcdev, t, eof_bh_work);
 	unsigned long cifr;
 	struct pxa_buffer *buf;
 
@@ -1185,7 +1186,7 @@ static irqreturn_t pxa_camera_irq(int irq, void *data)
 	if (status & CISR_EOF) {
 		cicr0 = __raw_readl(pcdev->base + CICR0) | CICR0_EOFM;
 		__raw_writel(cicr0, pcdev->base + CICR0);
-		tasklet_schedule(&pcdev->task_eof);
+		queue_work(system_bh_wq, &pcdev->eof_bh_work);
 	}
 
 	return IRQ_HANDLED;
@@ -1503,8 +1504,6 @@ static const struct vb2_ops pxac_vb2_ops = {
 	.buf_cleanup		= pxac_vb2_cleanup,
 	.start_streaming	= pxac_vb2_start_streaming,
 	.stop_streaming		= pxac_vb2_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int pxa_camera_init_videobuf2(struct pxa_camera_dev *pcdev)
@@ -1820,7 +1819,7 @@ static int pxac_vidioc_try_fmt_vid_cap(struct file *filp, void *priv,
 			      pixfmt == V4L2_PIX_FMT_YUV422P ? 4 : 0);
 
 	v4l2_fill_mbus_format(mf, pix, xlate->code);
-	ret = sensor_call(pcdev, pad, set_fmt, &pad_state, &format);
+	ret = sensor_call(pcdev, pad, set_fmt, NULL, &pad_state, &format);
 	if (ret < 0)
 		return ret;
 
@@ -1883,7 +1882,7 @@ static int pxac_vidioc_s_fmt_vid_cap(struct file *filp, void *priv,
 	xlate = pxa_mbus_xlate_by_fourcc(pcdev->user_formats,
 					 pix->pixelformat);
 	v4l2_fill_mbus_format(&format.format, pix, xlate->code);
-	ret = sensor_call(pcdev, pad, set_fmt, NULL, &format);
+	ret = sensor_call(pcdev, pad, set_fmt, NULL, NULL, &format);
 	if (ret < 0) {
 		dev_warn(pcdev_to_dev(pcdev),
 			 "Failed to configure for format %x\n",
@@ -2092,7 +2091,7 @@ static int pxa_camera_sensor_bound(struct v4l2_async_notifier *notifier,
 	if (err)
 		goto out;
 
-	err = sensor_call(pcdev, pad, set_fmt, NULL, &format);
+	err = sensor_call(pcdev, pad, set_fmt, NULL, NULL, &format);
 	if (err)
 		goto out_sensor_poweroff;
 
@@ -2278,7 +2277,7 @@ static int pxa_camera_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return -ENODEV;
 
-	pcdev = devm_kzalloc(&pdev->dev, sizeof(*pcdev), GFP_KERNEL);
+	pcdev = devm_kzalloc_obj(&pdev->dev, *pcdev);
 	if (!pcdev) {
 		dev_err(&pdev->dev, "Could not allocate pcdev\n");
 		return -ENOMEM;
@@ -2383,7 +2382,7 @@ static int pxa_camera_probe(struct platform_device *pdev)
 		}
 	}
 
-	tasklet_setup(&pcdev->task_eof, pxa_camera_eof);
+	INIT_WORK(&pcdev->eof_bh_work, pxa_camera_eof_bh_work);
 
 	pxa_camera_activate(pcdev);
 
@@ -2409,7 +2408,7 @@ static int pxa_camera_probe(struct platform_device *pdev)
 	return 0;
 exit_deactivate:
 	pxa_camera_deactivate(pcdev);
-	tasklet_kill(&pcdev->task_eof);
+	cancel_work_sync(&pcdev->eof_bh_work);
 exit_free_dma:
 	dma_release_channel(pcdev->dma_chans[2]);
 exit_free_dma_u:
@@ -2428,7 +2427,7 @@ static void pxa_camera_remove(struct platform_device *pdev)
 	struct pxa_camera_dev *pcdev = platform_get_drvdata(pdev);
 
 	pxa_camera_deactivate(pcdev);
-	tasklet_kill(&pcdev->task_eof);
+	cancel_work_sync(&pcdev->eof_bh_work);
 	dma_release_channel(pcdev->dma_chans[0]);
 	dma_release_channel(pcdev->dma_chans[1]);
 	dma_release_channel(pcdev->dma_chans[2]);
@@ -2459,7 +2458,7 @@ static struct platform_driver pxa_camera_driver = {
 		.of_match_table = pxa_camera_of_match,
 	},
 	.probe		= pxa_camera_probe,
-	.remove_new	= pxa_camera_remove,
+	.remove		= pxa_camera_remove,
 };
 
 module_platform_driver(pxa_camera_driver);

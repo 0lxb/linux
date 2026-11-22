@@ -36,7 +36,7 @@ int max1600_init(struct device *dev, struct max1600 **ptr,
 	if (code != MAX1600_CODE_LOW && code != MAX1600_CODE_HIGH)
 		return -EINVAL;
 
-	m = devm_kzalloc(dev, sizeof(*m), GFP_KERNEL);
+	m = devm_kzalloc_obj(dev, *m);
 	if (!m)
 		return -ENOMEM;
 
@@ -119,4 +119,5 @@ int max1600_configure(struct max1600 *m, unsigned int vcc, unsigned int vpp)
 }
 EXPORT_SYMBOL_GPL(max1600_configure);
 
+MODULE_DESCRIPTION("MAX1600 PCMCIA power switch library");
 MODULE_LICENSE("GPL v2");

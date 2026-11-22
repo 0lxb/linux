@@ -243,7 +243,7 @@ static int lpass_gfm_clk_driver_probe(struct platform_device *pdev)
 	if (!data)
 		return -EINVAL;
 
-	cc = devm_kzalloc(dev, sizeof(*cc), GFP_KERNEL);
+	cc = devm_kzalloc_obj(dev, *cc);
 	if (!cc)
 		return -ENOMEM;
 
@@ -315,3 +315,4 @@ static struct platform_driver lpass_gfm_clk_driver = {
 };
 module_platform_driver(lpass_gfm_clk_driver);
 MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("QTI SM8250 LPASS Glitch Free Mux clock driver");

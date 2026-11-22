@@ -8,6 +8,7 @@
 
 #include <linux/clk.h>
 #include <linux/console.h>
+#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/libfdt.h>
 #include <linux/module.h>
@@ -29,7 +30,7 @@ struct ingenic_uart_config {
 struct ingenic_uart_data {
 	struct clk	*clk_module;
 	struct clk	*clk_baud;
-	int		line;
+	struct uart_8250_port *uport;
 };
 
 static const struct of_device_id of_match[];
@@ -168,9 +169,9 @@ OF_EARLYCON_DECLARE(jz4780_uart, "ingenic,jz4780-uart",
 OF_EARLYCON_DECLARE(x1000_uart, "ingenic,x1000-uart",
 		    ingenic_early_console_setup);
 
-static void ingenic_uart_serial_out(struct uart_port *p, int offset, int value)
+static void ingenic_uart_serial_out(struct uart_port *p, unsigned int offset, u32 value)
 {
-	int ier;
+	u32 ier;
 
 	switch (offset) {
 	case UART_FCR:
@@ -206,9 +207,9 @@ static void ingenic_uart_serial_out(struct uart_port *p, int offset, int value)
 	writeb(value, p->membase + (offset << p->regshift));
 }
 
-static unsigned int ingenic_uart_serial_in(struct uart_port *p, int offset)
+static u32 ingenic_uart_serial_in(struct uart_port *p, unsigned int offset)
 {
-	unsigned int value;
+	u8 value;
 
 	value = readb(p->membase + (offset << p->regshift));
 
@@ -234,7 +235,7 @@ static int ingenic_uart_probe(struct platform_device *pdev)
 	struct ingenic_uart_data *data;
 	const struct ingenic_uart_config *cdata;
 	struct resource *regs;
-	int irq, err, line;
+	int err;
 
 	cdata = of_device_get_match_data(&pdev->dev);
 	if (!cdata) {
@@ -242,38 +243,32 @@ static int ingenic_uart_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!regs) {
 		dev_err(&pdev->dev, "no registers defined\n");
 		return -EINVAL;
 	}
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
 	spin_lock_init(&uart.port.lock);
 	uart.port.type = PORT_16550A;
 	uart.port.flags = UPF_SKIP_TEST | UPF_IOREMAP | UPF_FIXED_TYPE;
-	uart.port.iotype = UPIO_MEM;
 	uart.port.mapbase = regs->start;
-	uart.port.regshift = 2;
 	uart.port.serial_out = ingenic_uart_serial_out;
 	uart.port.serial_in = ingenic_uart_serial_in;
-	uart.port.irq = irq;
 	uart.port.dev = &pdev->dev;
-	uart.port.fifosize = cdata->fifosize;
 	uart.tx_loadsz = cdata->tx_loadsz;
 	uart.capabilities = UART_CAP_FIFO | UART_CAP_RTOIE;
 
-	/* Check for a fixed line number */
-	line = of_alias_get_id(pdev->dev.of_node, "serial");
-	if (line >= 0)
-		uart.port.line = line;
+	err = uart_read_port_properties(&uart.port);
+	if (err)
+		return err;
+
+	uart.port.regshift = 2;
+	uart.port.fifosize = cdata->fifosize;
 
 	uart.port.membase = devm_ioremap(&pdev->dev, regs->start,
 					 resource_size(regs));
@@ -303,9 +298,9 @@ static int ingenic_uart_probe(struct platform_device *pdev)
 	}
 	uart.port.uartclk = clk_get_rate(data->clk_baud);
 
-	data->line = serial8250_register_8250_port(&uart);
-	if (data->line < 0) {
-		err = data->line;
+	data->uport = serial8250_register_8250_port(&uart);
+	if (IS_ERR(data->uport)) {
+		err = PTR_ERR(data->uport);
 		goto out_disable_baudclk;
 	}
 
@@ -324,7 +319,7 @@ static void ingenic_uart_remove(struct platform_device *pdev)
 {
 	struct ingenic_uart_data *data = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(data->line);
+	serial8250_unregister_port(data->uport);
 	clk_disable_unprepare(data->clk_module);
 	clk_disable_unprepare(data->clk_baud);
 }
@@ -367,7 +362,7 @@ static struct platform_driver ingenic_uart_platform_driver = {
 		.of_match_table	= of_match,
 	},
 	.probe			= ingenic_uart_probe,
-	.remove_new		= ingenic_uart_remove,
+	.remove			= ingenic_uart_remove,
 };
 
 module_platform_driver(ingenic_uart_platform_driver);

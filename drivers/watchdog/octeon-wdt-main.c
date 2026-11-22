@@ -55,6 +55,7 @@
 #include <linux/cpu.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
+#include <linux/stringify.h>
 
 #include <asm/mipsregs.h>
 #include <asm/uasm.h>
@@ -93,13 +94,13 @@ static int heartbeat = WD_TIMO;
 module_param(heartbeat, int, 0444);
 MODULE_PARM_DESC(heartbeat,
 	"Watchdog heartbeat in seconds. (0 < heartbeat, default="
-				__MODULE_STRING(WD_TIMO) ")");
+				__stringify(WD_TIMO) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0444);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");
 
 static int disable;
 module_param(disable, int, 0444);
@@ -381,11 +382,7 @@ static int octeon_wdt_cpu_online(unsigned int cpu)
 
 	/* Must set the irq affinity here */
 	if (octeon_has_feature(OCTEON_FEATURE_CIU3)) {
-		cpumask_t mask;
-
-		cpumask_clear(&mask);
-		cpumask_set_cpu(cpu, &mask);
-		irq_set_affinity(irq, &mask);
+		irq_set_affinity(irq, cpumask_of(cpu));
 	}
 
 	cpumask_set_cpu(cpu, &irq_enabled_cpus);
@@ -563,10 +560,8 @@ static int __init octeon_wdt_init(void)
 	watchdog_set_nowayout(&octeon_wdt, nowayout);
 
 	ret = watchdog_register_device(&octeon_wdt);
-	if (ret) {
-		pr_err("watchdog_register_device() failed: %d\n", ret);
+	if (ret)
 		return ret;
-	}
 
 	if (disable) {
 		pr_notice("disabled\n");

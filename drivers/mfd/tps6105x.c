@@ -16,14 +16,14 @@
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps6105x.h>
 
-static struct regmap_config tps6105x_regmap_config = {
+static const struct regmap_config tps6105x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = TPS6105X_REG_3,
@@ -103,7 +103,7 @@ static struct tps6105x_platform_data *tps6105x_parse_dt(struct device *dev)
 		dev_err(dev, "cannot support multiple operational modes");
 		return ERR_PTR(-EINVAL);
 	}
-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(dev, *pdata);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 	pdata->mode = TPS6105X_MODE_SHUTDOWN;
@@ -131,7 +131,7 @@ static int tps6105x_probe(struct i2c_client *client)
 		return PTR_ERR(pdata);
 	}
 
-	tps6105x = devm_kmalloc(&client->dev, sizeof(*tps6105x), GFP_KERNEL);
+	tps6105x = devm_kmalloc_obj(&client->dev, *tps6105x);
 	if (!tps6105x)
 		return -ENOMEM;
 
@@ -191,8 +191,8 @@ static void tps6105x_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tps6105x_id[] = {
-	{ "tps61050", 0 },
-	{ "tps61052", 0 },
+	{ "tps61050" },
+	{ "tps61052" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tps6105x_id);

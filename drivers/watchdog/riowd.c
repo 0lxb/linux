@@ -160,7 +160,6 @@ static ssize_t riowd_write(struct file *file, const char __user *buf,
 
 static const struct file_operations riowd_fops = {
 	.owner =		THIS_MODULE,
-	.llseek =		no_llseek,
 	.unlocked_ioctl =	riowd_ioctl,
 	.compat_ioctl	=	compat_ptr_ioctl,
 	.open =			riowd_open,
@@ -183,7 +182,7 @@ static int riowd_probe(struct platform_device *op)
 		goto out;
 
 	err = -ENOMEM;
-	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
+	p = devm_kzalloc_obj(&op->dev, *p);
 	if (!p)
 		goto out;
 
@@ -239,7 +238,7 @@ static struct platform_driver riowd_driver = {
 		.of_match_table = riowd_match,
 	},
 	.probe		= riowd_probe,
-	.remove_new	= riowd_remove,
+	.remove		= riowd_remove,
 };
 
 module_platform_driver(riowd_driver);

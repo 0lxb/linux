@@ -70,7 +70,7 @@ struct oct_iq_stats {
 
 /** The instruction (input) queue.
  *  The input queue is used to post raw (instruction) mode data or packet
- *  data to Octeon device from the host. Each input queue (upto 4) for
+ *  data to Octeon device from the host. Each input queue (up to 4) for
  *  a Octeon device has one such structure to represent it.
  */
 struct octeon_instr_queue {
@@ -377,9 +377,6 @@ lio_process_iq_request_list(struct octeon_device *oct,
 int octeon_send_command(struct octeon_device *oct, u32 iq_no,
 			u32 force_db, void *cmd, void *buf,
 			u32 datasize, u32 reqtype);
-
-void octeon_dump_soft_command(struct octeon_device *oct,
-			      struct octeon_soft_command *sc);
 
 void octeon_prepare_soft_command(struct octeon_device *oct,
 				 struct octeon_soft_command *sc,

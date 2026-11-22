@@ -88,6 +88,9 @@ sequentially and type id is assigned to each recognized type starting from id
     #define BTF_KIND_DECL_TAG       17      /* Decl Tag     */
     #define BTF_KIND_TYPE_TAG       18      /* Type Tag     */
     #define BTF_KIND_ENUM64         19      /* Enumeration up to 64-bit values */
+    #define BTF_KIND_LOC_PARAM      20      /* Location description (register, const etc) */
+    #define BTF_KIND_LOC_PROTO      21      /* Set of location parameters for site */
+    #define BTF_KIND_LOCSEC         22      /* Section with site descriptions */
 
 Note that the type section encodes debug info, not just pure types.
 ``BTF_KIND_FUNC`` is not a type, and it represents a defined subprogram.
@@ -97,19 +100,20 @@ Each type contains the following common data::
     struct btf_type {
         __u32 name_off;
         /* "info" bits arrangement
-         * bits  0-15: vlen (e.g. # of struct's members)
-         * bits 16-23: unused
-         * bits 24-28: kind (e.g. int, ptr, array...etc)
-         * bits 29-30: unused
+         * bits  0-23: vlen (e.g. # of struct's members)
+         * bits 24-30: kind (e.g. int, ptr, array...etc)
          * bit     31: kind_flag, currently used by
-         *             struct, union, fwd, enum and enum64.
+         *             struct, union, enum, fwd, enum64,
+         *             decl_tag and type_tag
          */
         __u32 info;
-        /* "size" is used by INT, ENUM, STRUCT, UNION and ENUM64.
+        /* "size" is used by INT, ENUM, STRUCT, UNION, ENUM64 and
+         * LOC_PARAM.
          * "size" tells the size of the type it is describing.
          *
          * "type" is used by PTR, TYPEDEF, VOLATILE, CONST, RESTRICT,
-         * FUNC, FUNC_PROTO, DECL_TAG and TYPE_TAG.
+         * FUNC, FUNC_PROTO, DECL_TAG and TYPE_TAG. It is unused by
+         * LOC_PROTO and LOCSEC.
          * "type" is a type_id referring to another type.
          */
         union {
@@ -368,7 +372,7 @@ No additional type data follow ``btf_type``.
   * ``info.kind_flag``: 0
   * ``info.kind``: BTF_KIND_FUNC
   * ``info.vlen``: linkage information (BTF_FUNC_STATIC, BTF_FUNC_GLOBAL
-                   or BTF_FUNC_EXTERN)
+                   or BTF_FUNC_EXTERN - see :ref:`BTF_Function_Linkage_Constants`)
   * ``type``: a BTF_KIND_FUNC_PROTO type
 
 No additional type data follow ``btf_type``.
@@ -417,16 +421,15 @@ If the function has variable arguments, the last parameter is encoded with
   * ``info.vlen``: 0
   * ``type``: the type of the variable
 
-``btf_type`` is followed by a single ``struct btf_variable`` with the
+``btf_type`` is followed by a single ``struct btf_var`` with the
 following data::
 
     struct btf_var {
         __u32   linkage;
     };
 
-``struct btf_var`` encoding:
-  * ``linkage``: currently only static variable 0, or globally allocated
-                 variable in ELF sections 1
+``btf_var.linkage`` may take the values: BTF_VAR_STATIC, BTF_VAR_GLOBAL_ALLOCATED or BTF_VAR_GLOBAL_EXTERN -
+see :ref:`BTF_Var_Linkage_Constants`.
 
 Not all type of global variables are supported by LLVM at this point.
 The following is currently available:
@@ -479,7 +482,7 @@ No additional type data follow ``btf_type``.
 
 ``struct btf_type`` encoding requirement:
  * ``name_off``: offset to a non-empty string
- * ``info.kind_flag``: 0
+ * ``info.kind_flag``: 0 or 1
  * ``info.kind``: BTF_KIND_DECL_TAG
  * ``info.vlen``: 0
  * ``type``: ``struct``, ``union``, ``func``, ``var`` or ``typedef``
@@ -490,7 +493,6 @@ No additional type data follow ``btf_type``.
         __u32   component_idx;
     };
 
-The ``name_off`` encodes btf_decl_tag attribute string.
 The ``type`` should be ``struct``, ``union``, ``func``, ``var`` or ``typedef``.
 For ``var`` or ``typedef`` type, ``btf_decl_tag.component_idx`` must be ``-1``.
 For the other three types, if the btf_decl_tag attribute is
@@ -500,12 +502,21 @@ the attribute is applied to a ``struct``/``union`` member or
 a ``func`` argument, and ``btf_decl_tag.component_idx`` should be a
 valid index (starting from 0) pointing to a member or an argument.
 
+If ``info.kind_flag`` is 0, then this is a normal decl tag, and the
+``name_off`` encodes btf_decl_tag attribute string.
+
+If ``info.kind_flag`` is 1, then the decl tag represents an arbitrary
+__attribute__. In this case, ``name_off`` encodes a string
+representing the attribute-list of the attribute specifier. For
+example, for an ``__attribute__((aligned(4)))`` the string's contents
+is ``aligned(4)``.
+
 2.2.18 BTF_KIND_TYPE_TAG
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
  * ``name_off``: offset to a non-empty string
- * ``info.kind_flag``: 0
+ * ``info.kind_flag``: 0 or 1
  * ``info.kind``: BTF_KIND_TYPE_TAG
  * ``info.vlen``: 0
  * ``type``: the type with ``btf_type_tag`` attribute
@@ -522,6 +533,14 @@ Basically, a pointer type points to zero or more
 type_tag, then zero or more const/volatile/restrict/typedef
 and finally the base type. The base type is one of
 int, ptr, array, struct, union, enum, func_proto and float types.
+
+Similarly to decl tags, if the ``info.kind_flag`` is 0, then this is a
+normal type tag, and the ``name_off`` encodes btf_type_tag attribute
+string.
+
+If ``info.kind_flag`` is 1, then the type tag represents an arbitrary
+__attribute__, and the ``name_off`` encodes a string representing the
+attribute-list of the attribute specifier.
 
 2.2.19 BTF_KIND_ENUM64
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -548,6 +567,112 @@ The ``btf_enum64`` encoding:
 
 If the original enum value is signed and the size is less than 8,
 that value will be sign extended into 8 bytes.
+
+2.2.20 BTF_KIND_LOC_PARAM
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``struct btf_type`` encoding requirement:
+  * ``name_off``: 0
+  * ``info.kind_flag``: 0
+  * ``info.kind``: BTF_KIND_LOC_PARAM
+  * ``info.vlen``: number of 32-bit location value words
+  * ``size``: size in bytes of the represented parameter: 1 through 16
+
+``btf_type`` is followed by a ``struct btf_loc_param`` and ``info.vlen``
+number of 32-bit value words.::
+
+    struct btf_loc_param {
+        __u32 flags;
+        __u32 values[];
+    };
+
+The ``flags`` field describes how to interpret ``values``:
+
+  * ``BTF_LOC_PARAM_CONST`` describes a constant; the value is stored in
+    low-word, high-word order when it requires 64 bits.
+  * ``BTF_LOC_PARAM_ADDR | BTF_LOC_PARAM_CONST`` describes an address offset
+    relative to the runtime base address of the kernel or module image.
+  * ``BTF_LOC_PARAM_REG`` with one word describes a register number; with two
+    words it describes a multi-register parameter.
+  * ``BTF_LOC_PARAM_REG | BTF_LOC_PARAM_OFFSET`` describes an address held in
+    a register plus an offset. Adding ``BTF_LOC_PARAM_DEREF`` dereferences
+    that address. ``BTF_LOC_PARAM_REG | BTF_LOC_PARAM_DEREF`` with one word
+    dereferences the value held in the register.
+  * ``BTF_LOC_PARAM_SIGNED`` makes a constant or offset signed. A constant's
+    signed width is ``size``. For a register-relative offset, its signed
+    width is the number of offset value words times 32 bits.
+
+2.2.21 BTF_KIND_LOC_PROTO
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``struct btf_type`` encoding requirement:
+  * ``name_off``: 0
+  * ``info.kind_flag``: 0
+  * ``info.kind``: BTF_KIND_LOC_PROTO
+  * ``info.vlen``: number of function parameter locations
+  * ``type``: 0
+
+``btf_type`` is followed by ``info.vlen`` number of ``__u32`` BTF type IDs.
+Each entry corresponds to a function parameter at an inline site. An entry is
+either 0, meaning that no location information is available, or the type ID
+of a ``BTF_KIND_LOC_PARAM``.
+
+2.2.22 BTF_KIND_LOCSEC
+~~~~~~~~~~~~~~~~~~~~~~
+
+``struct btf_type`` encoding requirement:
+  * ``name_off``: offset to a valid ELF section name
+  * ``info.kind_flag``: 0
+  * ``info.kind``: BTF_KIND_LOCSEC
+  * ``info.vlen``: number of inline sites in the section
+  * ``type``: 0
+
+``btf_type`` is followed by ``info.vlen`` number of ``struct btf_loc``.::
+
+    struct btf_loc {
+        __u32 func;
+        __u32 loc_proto;
+        __u32 offset;
+    };
+
+The ``func`` field is the non-zero type ID of the ``BTF_KIND_FUNC`` being
+described. ``loc_proto`` is the non-zero type ID of the associated
+``BTF_KIND_LOC_PROTO``. ``offset`` is the location address offset relative to
+the runtime base address of the ELF section associated with the LOCSEC.
+For example, a LOCSEC named ``inline.text`` contains records for ``.text``
+whose offsets are relative to the runtime base of that section.
+
+2.3 Constant Values
+-------------------
+
+.. _BTF_Function_Linkage_Constants:
+
+2.3.1 Function Linkage Constant Values
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. table:: Function Linkage Values and Meanings
+
+  ===================  =====  ===========
+  kind                 value  description
+  ===================  =====  ===========
+  ``BTF_FUNC_STATIC``  0x0    definition of subprogram not visible outside containing compilation unit
+  ``BTF_FUNC_GLOBAL``  0x1    definition of subprogram visible outside containing compilation unit
+  ``BTF_FUNC_EXTERN``  0x2    declaration of a subprogram whose definition is outside the containing compilation unit
+  ===================  =====  ===========
+
+
+.. _BTF_Var_Linkage_Constants:
+
+2.3.2 Variable Linkage Constant Values
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. table:: Variable Linkage Values and Meanings
+
+  ============================  =====  ===========
+  kind                          value  description
+  ============================  =====  ===========
+  ``BTF_VAR_STATIC``            0x0    definition of global variable not visible outside containing compilation unit
+  ``BTF_VAR_GLOBAL_ALLOCATED``  0x1    definition of global variable visible outside containing compilation unit
+  ``BTF_VAR_GLOBAL_EXTERN``     0x2    declaration of global variable whose definition is outside the containing compilation unit
+  ============================  =====  ===========
 
 3. BTF Kernel API
 =================
@@ -804,7 +929,7 @@ section named by ``btf_ext_info_sec->sec_name_off``.
 See :ref:`Documentation/bpf/llvm_reloc.rst <btf-co-re-relocations>`
 for more information on CO-RE relocations.
 
-4.2 .BTF_ids section
+4.3 .BTF_ids section
 --------------------
 
 The .BTF_ids section encodes BTF ID values that are used within the kernel.
@@ -864,6 +989,81 @@ and is used as a filter when resolving the BTF ID value.
 
 All the BTF ID lists and sets are compiled in the .BTF_ids section and
 resolved during the linking phase of kernel build by ``resolve_btfids`` tool.
+
+4.4 .BTF.base section
+---------------------
+Split BTF - where the .BTF section only contains types not in the associated
+base .BTF section - is an extremely efficient way to encode type information
+for kernel modules, since they generally consist of a few module-specific
+types along with a large set of shared kernel types. The former are encoded
+in split BTF, while the latter are encoded in base BTF, resulting in more
+compact representations. A type in split BTF that refers to a type in
+base BTF refers to it using its base BTF ID, and split BTF IDs start
+at last_base_BTF_ID + 1.
+
+The downside of this approach however is that this makes the split BTF
+somewhat brittle - when the base BTF changes, base BTF ID references are
+no longer valid and the split BTF itself becomes useless. The role of the
+.BTF.base section is to make split BTF more resilient for cases where
+the base BTF may change, as is the case for kernel modules not built every
+time the kernel is for example. .BTF.base contains named base types; INTs,
+FLOATs, STRUCTs, UNIONs, ENUM[64]s and FWDs. INTs and FLOATs are fully
+described in .BTF.base sections, while composite types like structs
+and unions are not fully defined - the .BTF.base type simply serves as
+a description of the type the split BTF referred to, so structs/unions
+have 0 members in the .BTF.base section. ENUM[64]s are similarly recorded
+with 0 members. Any other types are added to the split BTF. This
+distillation process then leaves us with a .BTF.base section with
+such minimal descriptions of base types and .BTF split section which refers
+to those base types. Later, we can relocate the split BTF using both the
+information stored in the .BTF.base section and the new .BTF base; the type
+information in the .BTF.base section allows us to update the split BTF
+references to point at the corresponding new base BTF IDs.
+
+BTF relocation happens on kernel module load when a kernel module has a
+.BTF.base section, and libbpf also provides a btf__relocate() API to
+accomplish this.
+
+As an example consider the following base BTF::
+
+      [1] INT 'int' size=4 bits_offset=0 nr_bits=32 encoding=SIGNED
+      [2] STRUCT 'foo' size=8 vlen=2
+              'f1' type_id=1 bits_offset=0
+              'f2' type_id=1 bits_offset=32
+
+...and associated split BTF::
+
+      [3] PTR '(anon)' type_id=2
+
+i.e. split BTF describes a pointer to struct foo { int f1; int f2 };
+
+.BTF.base will consist of::
+
+      [1] INT 'int' size=4 bits_offset=0 nr_bits=32 encoding=SIGNED
+      [2] STRUCT 'foo' size=8 vlen=0
+
+If we relocate the split BTF later using the following new base BTF::
+
+      [1] INT 'long unsigned int' size=8 bits_offset=0 nr_bits=64 encoding=(none)
+      [2] INT 'int' size=4 bits_offset=0 nr_bits=32 encoding=SIGNED
+      [3] STRUCT 'foo' size=8 vlen=2
+              'f1' type_id=2 bits_offset=0
+              'f2' type_id=2 bits_offset=32
+
+...we can use our .BTF.base description to know that the split BTF reference
+is to struct foo, and relocation results in new split BTF::
+
+      [4] PTR '(anon)' type_id=3
+
+Note that we had to update BTF ID and start BTF ID for the split BTF.
+
+So we see how .BTF.base plays the role of facilitating later relocation,
+leading to more resilient split BTF.
+
+.BTF.base sections will be generated automatically for out-of-tree kernel module
+builds - i.e. where KBUILD_EXTMOD is set (as it would be for "make M=path/2/mod"
+cases). .BTF.base generation requires pahole support for the "distilled_base"
+BTF feature; this is available in pahole v1.28 and later.
 
 5. Using BTF
 ============

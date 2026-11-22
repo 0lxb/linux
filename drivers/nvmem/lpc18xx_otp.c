@@ -21,7 +21,7 @@
  * LPC18xx OTP memory contains 4 banks with 4 32-bit words. Bank 0 starts
  * at offset 0 from the base.
  *
- * Bank 0 contains the part ID for Flashless devices and is reseverd for
+ * Bank 0 contains the part ID for Flashless devices and is reserved for
  * devices with Flash.
  * Bank 1/2 is generale purpose or AES key storage for secure devices.
  * Bank 3 contains control data, USB ID and generale purpose words.
@@ -68,7 +68,7 @@ static int lpc18xx_otp_probe(struct platform_device *pdev)
 	struct nvmem_device *nvmem;
 	struct lpc18xx_otp *otp;
 
-	otp = devm_kzalloc(&pdev->dev, sizeof(*otp), GFP_KERNEL);
+	otp = devm_kzalloc_obj(&pdev->dev, *otp);
 	if (!otp)
 		return -ENOMEM;
 

@@ -8,10 +8,8 @@
 #include <linux/bits.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm_wakeup.h>
 #include <linux/pm_wakeirq.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -131,7 +129,7 @@ static int mt6370_tcpc_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int irq, ret;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -170,7 +168,7 @@ static int mt6370_tcpc_probe(struct platform_device *pdev)
 	ret = devm_request_threaded_irq(dev, irq, NULL, mt6370_irq_handler,
 					IRQF_ONESHOT, dev_name(dev), priv);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to allocate irq\n");
+		return ret;
 
 	device_init_wakeup(dev, true);
 	dev_pm_set_wake_irq(dev, irq);
@@ -196,7 +194,7 @@ static struct platform_driver mt6370_tcpc_driver = {
 		.of_match_table = mt6370_tcpc_devid_table,
 	},
 	.probe = mt6370_tcpc_probe,
-	.remove_new = mt6370_tcpc_remove,
+	.remove = mt6370_tcpc_remove,
 };
 module_platform_driver(mt6370_tcpc_driver);
 

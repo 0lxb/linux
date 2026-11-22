@@ -506,9 +506,18 @@ int eeh_dev_check_failure(struct eeh_dev *edev)
 	 * We will punt with the following conditions: Failure to get
 	 * PE's state, EEH not support and Permanently unavailable
 	 * state, PE is in good state.
+	 *
+	 * On the pSeries, after reaching the threshold, get_state might
+	 * return EEH_STATE_NOT_SUPPORT. However, it's possible that the
+	 * device state remains uncleared if the device is not marked
+	 * pci_channel_io_perm_failure. Therefore, consider logging the
+	 * event to let device removal happen.
+	 *
 	 */
 	if ((ret < 0) ||
-	    (ret == EEH_STATE_NOT_SUPPORT) || eeh_state_active(ret)) {
+	    (ret == EEH_STATE_NOT_SUPPORT &&
+	     dev->error_state == pci_channel_io_perm_failure) ||
+	    eeh_state_active(ret)) {
 		eeh_stats.false_positives++;
 		pe->false_positives++;
 		rc = 0;
@@ -1130,6 +1139,7 @@ int eeh_unfreeze_pe(struct eeh_pe *pe)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(eeh_unfreeze_pe);
 
 
 static struct pci_device_id eeh_reset_ids[] = {
@@ -1199,16 +1209,16 @@ int eeh_dev_open(struct pci_dev *pdev)
 	struct eeh_dev *edev;
 	int ret = -ENODEV;
 
-	mutex_lock(&eeh_dev_mutex);
+	guard(mutex)(&eeh_dev_mutex);
 
 	/* No PCI device ? */
 	if (!pdev)
-		goto out;
+		return ret;
 
 	/* No EEH device or PE ? */
 	edev = pci_dev_to_eeh_dev(pdev);
 	if (!edev || !edev->pe)
-		goto out;
+		return ret;
 
 	/*
 	 * The PE might have been put into frozen state, but we
@@ -1218,16 +1228,12 @@ int eeh_dev_open(struct pci_dev *pdev)
 	 */
 	ret = eeh_pe_change_owner(edev->pe);
 	if (ret)
-		goto out;
+		return ret;
 
 	/* Increase PE's pass through count */
 	atomic_inc(&edev->pe->pass_dev_cnt);
-	mutex_unlock(&eeh_dev_mutex);
 
 	return 0;
-out:
-	mutex_unlock(&eeh_dev_mutex);
-	return ret;
 }
 EXPORT_SYMBOL_GPL(eeh_dev_open);
 
@@ -1243,42 +1249,24 @@ void eeh_dev_release(struct pci_dev *pdev)
 {
 	struct eeh_dev *edev;
 
-	mutex_lock(&eeh_dev_mutex);
+	guard(mutex)(&eeh_dev_mutex);
 
 	/* No PCI device ? */
 	if (!pdev)
-		goto out;
+		return;
 
 	/* No EEH device ? */
 	edev = pci_dev_to_eeh_dev(pdev);
 	if (!edev || !edev->pe || !eeh_pe_passed(edev->pe))
-		goto out;
+		return;
 
 	/* Decrease PE's pass through count */
 	WARN_ON(atomic_dec_if_positive(&edev->pe->pass_dev_cnt) < 0);
 	eeh_pe_change_owner(edev->pe);
-out:
-	mutex_unlock(&eeh_dev_mutex);
 }
 EXPORT_SYMBOL(eeh_dev_release);
 
 #ifdef CONFIG_IOMMU_API
-
-static int dev_has_iommu_table(struct device *dev, void *data)
-{
-	struct pci_dev *pdev = to_pci_dev(dev);
-	struct pci_dev **ppdev = data;
-
-	if (!dev)
-		return 0;
-
-	if (device_iommu_mapped(dev)) {
-		*ppdev = pdev;
-		return 1;
-	}
-
-	return 0;
-}
 
 /**
  * eeh_iommu_group_to_pe - Convert IOMMU group to EEH PE
@@ -1516,6 +1504,8 @@ int eeh_pe_configure(struct eeh_pe *pe)
 	/* Invalid PE ? */
 	if (!pe)
 		return -ENODEV;
+	else
+		ret = eeh_ops->configure_bridge(pe);
 
 	return ret;
 }
@@ -1543,10 +1533,6 @@ int eeh_pe_inject_err(struct eeh_pe *pe, int type, int func,
 	/* Unsupported operation ? */
 	if (!eeh_ops || !eeh_ops->err_inject)
 		return -ENOENT;
-
-	/* Check on PCI error type */
-	if (type != EEH_ERR_TYPE_32 && type != EEH_ERR_TYPE_64)
-		return -EINVAL;
 
 	/* Check on PCI error function */
 	if (func < EEH_ERR_FUNC_MIN || func > EEH_ERR_FUNC_MAX)
@@ -1585,160 +1571,7 @@ static int proc_eeh_show(struct seq_file *m, void *v)
 }
 #endif /* CONFIG_PROC_FS */
 
-#ifdef CONFIG_DEBUG_FS
-
-
-static struct pci_dev *eeh_debug_lookup_pdev(struct file *filp,
-					     const char __user *user_buf,
-					     size_t count, loff_t *ppos)
-{
-	uint32_t domain, bus, dev, fn;
-	struct pci_dev *pdev;
-	char buf[20];
-	int ret;
-
-	memset(buf, 0, sizeof(buf));
-	ret = simple_write_to_buffer(buf, sizeof(buf)-1, ppos, user_buf, count);
-	if (!ret)
-		return ERR_PTR(-EFAULT);
-
-	ret = sscanf(buf, "%x:%x:%x.%x", &domain, &bus, &dev, &fn);
-	if (ret != 4) {
-		pr_err("%s: expected 4 args, got %d\n", __func__, ret);
-		return ERR_PTR(-EINVAL);
-	}
-
-	pdev = pci_get_domain_bus_and_slot(domain, bus, (dev << 3) | fn);
-	if (!pdev)
-		return ERR_PTR(-ENODEV);
-
-	return pdev;
-}
-
-static int eeh_enable_dbgfs_set(void *data, u64 val)
-{
-	if (val)
-		eeh_clear_flag(EEH_FORCE_DISABLED);
-	else
-		eeh_add_flag(EEH_FORCE_DISABLED);
-
-	return 0;
-}
-
-static int eeh_enable_dbgfs_get(void *data, u64 *val)
-{
-	if (eeh_enabled())
-		*val = 0x1ul;
-	else
-		*val = 0x0ul;
-	return 0;
-}
-
-DEFINE_DEBUGFS_ATTRIBUTE(eeh_enable_dbgfs_ops, eeh_enable_dbgfs_get,
-			 eeh_enable_dbgfs_set, "0x%llx\n");
-
-static ssize_t eeh_force_recover_write(struct file *filp,
-				const char __user *user_buf,
-				size_t count, loff_t *ppos)
-{
-	struct pci_controller *hose;
-	uint32_t phbid, pe_no;
-	struct eeh_pe *pe;
-	char buf[20];
-	int ret;
-
-	ret = simple_write_to_buffer(buf, sizeof(buf), ppos, user_buf, count);
-	if (!ret)
-		return -EFAULT;
-
-	/*
-	 * When PE is NULL the event is a "special" event. Rather than
-	 * recovering a specific PE it forces the EEH core to scan for failed
-	 * PHBs and recovers each. This needs to be done before any device
-	 * recoveries can occur.
-	 */
-	if (!strncmp(buf, "hwcheck", 7)) {
-		__eeh_send_failure_event(NULL);
-		return count;
-	}
-
-	ret = sscanf(buf, "%x:%x", &phbid, &pe_no);
-	if (ret != 2)
-		return -EINVAL;
-
-	hose = pci_find_controller_for_domain(phbid);
-	if (!hose)
-		return -ENODEV;
-
-	/* Retrieve PE */
-	pe = eeh_pe_get(hose, pe_no);
-	if (!pe)
-		return -ENODEV;
-
-	/*
-	 * We don't do any state checking here since the detection
-	 * process is async to the recovery process. The recovery
-	 * thread *should* not break even if we schedule a recovery
-	 * from an odd state (e.g. PE removed, or recovery of a
-	 * non-isolated PE)
-	 */
-	__eeh_send_failure_event(pe);
-
-	return ret < 0 ? ret : count;
-}
-
-static const struct file_operations eeh_force_recover_fops = {
-	.open	= simple_open,
-	.llseek	= no_llseek,
-	.write	= eeh_force_recover_write,
-};
-
-static ssize_t eeh_debugfs_dev_usage(struct file *filp,
-				char __user *user_buf,
-				size_t count, loff_t *ppos)
-{
-	static const char usage[] = "input format: <domain>:<bus>:<dev>.<fn>\n";
-
-	return simple_read_from_buffer(user_buf, count, ppos,
-				       usage, sizeof(usage) - 1);
-}
-
-static ssize_t eeh_dev_check_write(struct file *filp,
-				const char __user *user_buf,
-				size_t count, loff_t *ppos)
-{
-	struct pci_dev *pdev;
-	struct eeh_dev *edev;
-	int ret;
-
-	pdev = eeh_debug_lookup_pdev(filp, user_buf, count, ppos);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
-
-	edev = pci_dev_to_eeh_dev(pdev);
-	if (!edev) {
-		pci_err(pdev, "No eeh_dev for this device!\n");
-		pci_dev_put(pdev);
-		return -ENODEV;
-	}
-
-	ret = eeh_dev_check_failure(edev);
-	pci_info(pdev, "eeh_dev_check_failure(%s) = %d\n",
-			pci_name(pdev), ret);
-
-	pci_dev_put(pdev);
-
-	return count;
-}
-
-static const struct file_operations eeh_dev_check_fops = {
-	.open	= simple_open,
-	.llseek	= no_llseek,
-	.write	= eeh_dev_check_write,
-	.read   = eeh_debugfs_dev_usage,
-};
-
-static int eeh_debugfs_break_device(struct pci_dev *pdev)
+static int eeh_break_device(struct pci_dev *pdev)
 {
 	struct resource *bar = NULL;
 	void __iomem *mapped;
@@ -1831,6 +1664,164 @@ static int eeh_debugfs_break_device(struct pci_dev *pdev)
 	return 0;
 }
 
+int eeh_pe_inject_mmio_error(struct pci_dev *pdev)
+{
+	return eeh_break_device(pdev);
+}
+
+#ifdef CONFIG_DEBUG_FS
+
+
+static struct pci_dev *eeh_debug_lookup_pdev(struct file *filp,
+					     const char __user *user_buf,
+					     size_t count, loff_t *ppos)
+{
+	uint32_t domain, bus, dev, fn;
+	struct pci_dev *pdev;
+	char buf[20];
+	int ret;
+
+	memset(buf, 0, sizeof(buf));
+	ret = simple_write_to_buffer(buf, sizeof(buf)-1, ppos, user_buf, count);
+	if (!ret)
+		return ERR_PTR(-EFAULT);
+
+	ret = sscanf(buf, "%x:%x:%x.%x", &domain, &bus, &dev, &fn);
+	if (ret != 4) {
+		pr_err("%s: expected 4 args, got %d\n", __func__, ret);
+		return ERR_PTR(-EINVAL);
+	}
+
+	pdev = pci_get_domain_bus_and_slot(domain, bus, (dev << 3) | fn);
+	if (!pdev)
+		return ERR_PTR(-ENODEV);
+
+	return pdev;
+}
+
+static int eeh_enable_dbgfs_set(void *data, u64 val)
+{
+	if (val)
+		eeh_clear_flag(EEH_FORCE_DISABLED);
+	else
+		eeh_add_flag(EEH_FORCE_DISABLED);
+
+	return 0;
+}
+
+static int eeh_enable_dbgfs_get(void *data, u64 *val)
+{
+	if (eeh_enabled())
+		*val = 0x1ul;
+	else
+		*val = 0x0ul;
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(eeh_enable_dbgfs_ops, eeh_enable_dbgfs_get,
+			 eeh_enable_dbgfs_set, "0x%llx\n");
+
+static ssize_t eeh_force_recover_write(struct file *filp,
+				const char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct pci_controller *hose;
+	uint32_t phbid, pe_no;
+	struct eeh_pe *pe;
+	char buf[20] = {};
+	int ret;
+
+	ret = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, user_buf, count);
+	if (ret < 0)
+		return ret;
+	if (!ret)
+		return -EFAULT;
+
+	/*
+	 * When PE is NULL the event is a "special" event. Rather than
+	 * recovering a specific PE it forces the EEH core to scan for failed
+	 * PHBs and recovers each. This needs to be done before any device
+	 * recoveries can occur.
+	 */
+	if (!strncmp(buf, "hwcheck", 7)) {
+		__eeh_send_failure_event(NULL);
+		return count;
+	}
+
+	ret = sscanf(buf, "%x:%x", &phbid, &pe_no);
+	if (ret != 2)
+		return -EINVAL;
+
+	hose = pci_find_controller_for_domain(phbid);
+	if (!hose)
+		return -ENODEV;
+
+	/* Retrieve PE */
+	pe = eeh_pe_get(hose, pe_no);
+	if (!pe)
+		return -ENODEV;
+
+	/*
+	 * We don't do any state checking here since the detection
+	 * process is async to the recovery process. The recovery
+	 * thread *should* not break even if we schedule a recovery
+	 * from an odd state (e.g. PE removed, or recovery of a
+	 * non-isolated PE)
+	 */
+	__eeh_send_failure_event(pe);
+
+	return ret < 0 ? ret : count;
+}
+
+static const struct file_operations eeh_force_recover_fops = {
+	.open	= simple_open,
+	.write	= eeh_force_recover_write,
+};
+
+static ssize_t eeh_debugfs_dev_usage(struct file *filp,
+				char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	static const char usage[] = "input format: <domain>:<bus>:<dev>.<fn>\n";
+
+	return simple_read_from_buffer(user_buf, count, ppos,
+				       usage, sizeof(usage) - 1);
+}
+
+static ssize_t eeh_dev_check_write(struct file *filp,
+				const char __user *user_buf,
+				size_t count, loff_t *ppos)
+{
+	struct pci_dev *pdev;
+	struct eeh_dev *edev;
+	int ret;
+
+	pdev = eeh_debug_lookup_pdev(filp, user_buf, count, ppos);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
+
+	edev = pci_dev_to_eeh_dev(pdev);
+	if (!edev) {
+		pci_err(pdev, "No eeh_dev for this device!\n");
+		pci_dev_put(pdev);
+		return -ENODEV;
+	}
+
+	ret = eeh_dev_check_failure(edev);
+	pci_info(pdev, "eeh_dev_check_failure(%s) = %d\n",
+			pci_name(pdev), ret);
+
+	pci_dev_put(pdev);
+
+	return count;
+}
+
+static const struct file_operations eeh_dev_check_fops = {
+	.open	= simple_open,
+	.write	= eeh_dev_check_write,
+	.read   = eeh_debugfs_dev_usage,
+};
+
 static ssize_t eeh_dev_break_write(struct file *filp,
 				const char __user *user_buf,
 				size_t count, loff_t *ppos)
@@ -1842,7 +1833,7 @@ static ssize_t eeh_dev_break_write(struct file *filp,
 	if (IS_ERR(pdev))
 		return PTR_ERR(pdev);
 
-	ret = eeh_debugfs_break_device(pdev);
+	ret = eeh_break_device(pdev);
 	pci_dev_put(pdev);
 
 	if (ret < 0)
@@ -1853,7 +1844,6 @@ static ssize_t eeh_dev_break_write(struct file *filp,
 
 static const struct file_operations eeh_dev_break_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_dev_break_write,
 	.read   = eeh_debugfs_dev_usage,
 };
@@ -1900,7 +1890,6 @@ static ssize_t eeh_dev_can_recover(struct file *filp,
 
 static const struct file_operations eeh_dev_can_recover_fops = {
 	.open	= simple_open,
-	.llseek	= no_llseek,
 	.write	= eeh_dev_can_recover,
 	.read   = eeh_debugfs_dev_usage,
 };

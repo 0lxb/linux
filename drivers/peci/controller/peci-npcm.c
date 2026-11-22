@@ -221,10 +221,9 @@ static const struct regmap_config npcm_peci_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = NPCM_PECI_MAX_REG,
-	.fast_io = true,
 };
 
-static struct peci_controller_ops npcm_ops = {
+static const struct peci_controller_ops npcm_ops = {
 	.xfer = npcm_peci_xfer,
 };
 
@@ -235,7 +234,7 @@ static int npcm_peci_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -254,13 +253,13 @@ static int npcm_peci_probe(struct platform_device *pdev)
 	if (priv->irq < 0)
 		return priv->irq;
 
+	init_completion(&priv->xfer_complete);
+	spin_lock_init(&priv->lock);
+
 	ret = devm_request_irq(&pdev->dev, priv->irq, npcm_peci_irq_handler,
 			       0, "peci-npcm-irq", priv);
 	if (ret)
 		return ret;
-
-	init_completion(&priv->xfer_complete);
-	spin_lock_init(&priv->lock);
 
 	ret = npcm_peci_init_ctrl(priv);
 	if (ret)
@@ -295,4 +294,4 @@ module_platform_driver(npcm_peci_driver);
 MODULE_AUTHOR("Tomer Maimon <tomer.maimon@nuvoton.com>");
 MODULE_DESCRIPTION("NPCM PECI driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PECI);
+MODULE_IMPORT_NS("PECI");

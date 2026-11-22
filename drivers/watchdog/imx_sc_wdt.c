@@ -11,6 +11,7 @@
 #include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 #define DEFAULT_TIMEOUT 60
@@ -39,7 +40,7 @@
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0000);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+		 __stringify(WATCHDOG_NOWAYOUT) ")");
 
 struct imx_sc_wdt_device {
 	struct watchdog_device wdd;
@@ -54,6 +55,25 @@ static int imx_sc_wdt_ping(struct watchdog_device *wdog)
 		      0, 0, 0, 0, 0, 0, &res);
 
 	return 0;
+}
+
+static bool imx_sc_wdt_is_running(void)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(IMX_SIP_TIMER, IMX_SIP_TIMER_START_WDOG,
+		      0, 0, 0, 0, 0, 0, &res);
+
+	/* Already enabled (SC_TIMER_ERR_BUSY)? */
+	if (res.a0 == SC_TIMER_ERR_BUSY)
+		return true;
+
+	/* Undo only if that was us who has (successfully) enabled the WDT */
+	if (!res.a0)
+		arm_smccc_smc(IMX_SIP_TIMER, IMX_SIP_TIMER_STOP_WDOG,
+			      0, 0, 0, 0, 0, 0, &res);
+
+	return false;
 }
 
 static int imx_sc_wdt_start(struct watchdog_device *wdog)
@@ -163,7 +183,7 @@ static int imx_sc_wdt_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	imx_sc_wdd = devm_kzalloc(dev, sizeof(*imx_sc_wdd), GFP_KERNEL);
+	imx_sc_wdd = devm_kzalloc_obj(dev, *imx_sc_wdd);
 	if (!imx_sc_wdd)
 		return -ENOMEM;
 
@@ -182,6 +202,9 @@ static int imx_sc_wdt_probe(struct platform_device *pdev)
 	ret = imx_sc_wdt_set_timeout(wdog, wdog->timeout);
 	if (ret)
 		return ret;
+
+	if (imx_sc_wdt_is_running())
+		set_bit(WDOG_HW_RUNNING, &wdog->status);
 
 	watchdog_stop_on_reboot(wdog);
 	watchdog_stop_on_unregister(wdog);
@@ -216,29 +239,6 @@ register_device:
 	return devm_watchdog_register_device(dev, wdog);
 }
 
-static int __maybe_unused imx_sc_wdt_suspend(struct device *dev)
-{
-	struct imx_sc_wdt_device *imx_sc_wdd = dev_get_drvdata(dev);
-
-	if (watchdog_active(&imx_sc_wdd->wdd))
-		imx_sc_wdt_stop(&imx_sc_wdd->wdd);
-
-	return 0;
-}
-
-static int __maybe_unused imx_sc_wdt_resume(struct device *dev)
-{
-	struct imx_sc_wdt_device *imx_sc_wdd = dev_get_drvdata(dev);
-
-	if (watchdog_active(&imx_sc_wdd->wdd))
-		imx_sc_wdt_start(&imx_sc_wdd->wdd);
-
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(imx_sc_wdt_pm_ops,
-			 imx_sc_wdt_suspend, imx_sc_wdt_resume);
-
 static const struct of_device_id imx_sc_wdt_dt_ids[] = {
 	{ .compatible = "fsl,imx-sc-wdt", },
 	{ /* sentinel */ }
@@ -250,7 +250,6 @@ static struct platform_driver imx_sc_wdt_driver = {
 	.driver		= {
 		.name	= "imx-sc-wdt",
 		.of_match_table = imx_sc_wdt_dt_ids,
-		.pm	= &imx_sc_wdt_pm_ops,
 	},
 };
 module_platform_driver(imx_sc_wdt_driver);

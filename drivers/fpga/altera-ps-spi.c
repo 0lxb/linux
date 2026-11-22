@@ -235,7 +235,7 @@ static int altera_ps_probe(struct spi_device *spi)
 	struct altera_ps_conf *conf;
 	struct fpga_manager *mgr;
 
-	conf = devm_kzalloc(&spi->dev, sizeof(*conf), GFP_KERNEL);
+	conf = devm_kzalloc_obj(&spi->dev, *conf);
 	if (!conf)
 		return -ENOMEM;
 
@@ -284,7 +284,6 @@ MODULE_DEVICE_TABLE(spi, altera_ps_spi_ids);
 static struct spi_driver altera_ps_driver = {
 	.driver = {
 		.name = "altera-ps-spi",
-		.owner = THIS_MODULE,
 		.of_match_table = of_ef_match,
 	},
 	.id_table = altera_ps_spi_ids,

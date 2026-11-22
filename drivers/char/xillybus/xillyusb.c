@@ -24,6 +24,7 @@
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/sizes.h>
 #include <linux/crc32.h>
 #include <linux/poll.h>
 #include <linux/delay.h>
@@ -50,6 +51,8 @@ MODULE_LICENSE("GPL v2");
 static const char xillyname[] = "xillyusb";
 
 static unsigned int fifo_buf_order;
+static DEFINE_MUTEX(fifo_buf_order_mutex);
+static struct workqueue_struct *wakeup_wq;
 
 #define USB_VENDOR_ID_XILINX		0x03fd
 #define USB_VENDOR_ID_ALTERA		0x09fb
@@ -70,7 +73,6 @@ struct xillyfifo {
 	unsigned int bufsize; /* In bytes, always a power of 2 */
 	unsigned int bufnum;
 	unsigned int size; /* Lazy: Equals bufsize * bufnum */
-	unsigned int buf_order;
 
 	int fill; /* Number of bytes in the FIFO */
 	spinlock_t lock;
@@ -94,7 +96,6 @@ struct xillyusb_endpoint {
 	struct list_head filled_buffers;
 	spinlock_t buffers_lock; /* protect these two lists */
 
-	unsigned int order;
 	unsigned int buffer_size;
 
 	unsigned int fill_mask;
@@ -369,37 +370,41 @@ static int fifo_init(struct xillyfifo *fifo,
 		     unsigned int log2_size)
 {
 	unsigned int log2_bufnum;
-	unsigned int buf_order;
 	int i;
 
 	unsigned int log2_fifo_buf_size;
+
+	mutex_lock(&fifo_buf_order_mutex);
 
 retry:
 	log2_fifo_buf_size = fifo_buf_order + PAGE_SHIFT;
 
 	if (log2_size > log2_fifo_buf_size) {
 		log2_bufnum = log2_size - log2_fifo_buf_size;
-		buf_order = fifo_buf_order;
 		fifo->bufsize = 1 << log2_fifo_buf_size;
 	} else {
 		log2_bufnum = 0;
-		buf_order = (log2_size > PAGE_SHIFT) ?
-			log2_size - PAGE_SHIFT : 0;
 		fifo->bufsize = 1 << log2_size;
 	}
 
 	fifo->bufnum = 1 << log2_bufnum;
 	fifo->size = fifo->bufnum * fifo->bufsize;
-	fifo->buf_order = buf_order;
+
+	if (!fifo->size || /* Unsigned integer overflow */
+	    fifo->size > SZ_1G) { /* Avoid signed int issues */
+		mutex_unlock(&fifo_buf_order_mutex);
+		return -ENOMEM; /* Reported as greed for memory */
+	}
 
 	fifo->mem = kmalloc_array(fifo->bufnum, sizeof(void *), GFP_KERNEL);
 
-	if (!fifo->mem)
+	if (!fifo->mem) {
+		mutex_unlock(&fifo_buf_order_mutex);
 		return -ENOMEM;
+	}
 
 	for (i = 0; i < fifo->bufnum; i++) {
-		fifo->mem[i] = (void *)
-			__get_free_pages(GFP_KERNEL, buf_order);
+		fifo->mem[i] = kmalloc(fifo->bufsize, GFP_KERNEL);
 
 		if (!fifo->mem[i])
 			goto memfail;
@@ -412,11 +417,13 @@ retry:
 	fifo->writebuf = 0;
 	spin_lock_init(&fifo->lock);
 	init_waitqueue_head(&fifo->waitq);
+
+	mutex_unlock(&fifo_buf_order_mutex);
 	return 0;
 
 memfail:
 	for (i--; i >= 0; i--)
-		free_pages((unsigned long)fifo->mem[i], buf_order);
+		kfree(fifo->mem[i]);
 
 	kfree(fifo->mem);
 	fifo->mem = NULL;
@@ -425,6 +432,7 @@ memfail:
 		fifo_buf_order--;
 		goto retry;
 	} else {
+		mutex_unlock(&fifo_buf_order_mutex);
 		return -ENOMEM;
 	}
 }
@@ -437,7 +445,7 @@ static void fifo_mem_release(struct xillyfifo *fifo)
 		return;
 
 	for (i = 0; i < fifo->bufnum; i++)
-		free_pages((unsigned long)fifo->mem[i], fifo->buf_order);
+		kfree(fifo->mem[i]);
 
 	kfree(fifo->mem);
 }
@@ -476,7 +484,7 @@ static void endpoint_dealloc(struct xillyusb_endpoint *ep)
 		struct xillybuffer *xb =
 			list_entry(this, struct xillybuffer, entry);
 
-		free_pages((unsigned long)xb->buf, ep->order);
+		kfree(xb->buf);
 		kfree(xb);
 	}
 
@@ -494,7 +502,7 @@ static struct xillyusb_endpoint
 
 	struct xillyusb_endpoint *ep;
 
-	ep = kzalloc(sizeof(*ep), GFP_KERNEL);
+	ep = kzalloc_obj(*ep);
 
 	if (!ep)
 		return NULL;
@@ -508,8 +516,7 @@ static struct xillyusb_endpoint
 	init_usb_anchor(&ep->anchor);
 	INIT_WORK(&ep->workitem, work);
 
-	ep->order = order;
-	ep->buffer_size =  1 << (PAGE_SHIFT + order);
+	ep->buffer_size = 1 << (PAGE_SHIFT + order);
 	ep->outstanding_urbs = 0;
 	ep->drained = true;
 	ep->wake_on_drain = false;
@@ -519,24 +526,22 @@ static struct xillyusb_endpoint
 
 	for (i = 0; i < bufnum; i++) {
 		struct xillybuffer *xb;
-		unsigned long addr;
 
-		xb = kzalloc(sizeof(*xb), GFP_KERNEL);
+		xb = kzalloc_obj(*xb);
 
 		if (!xb) {
 			endpoint_dealloc(ep);
 			return NULL;
 		}
 
-		addr = __get_free_pages(GFP_KERNEL, order);
+		xb->buf = kmalloc(ep->buffer_size, GFP_KERNEL);
 
-		if (!addr) {
+		if (!xb->buf) {
 			kfree(xb);
 			endpoint_dealloc(ep);
 			return NULL;
 		}
 
-		xb->buf = (void *)addr;
 		xb->ep = ep;
 		list_add_tail(&xb->entry, &ep->buffers);
 	}
@@ -569,10 +574,6 @@ static void cleanup_dev(struct kref *kref)
  * errors if executed. The mechanism relies on that xdev->error is assigned
  * a non-zero value by report_io_error() prior to queueing wakeup_all(),
  * which prevents bulk_in_work() from calling process_bulk_in().
- *
- * The fact that wakeup_all() and bulk_in_work() are queued on the same
- * workqueue makes their concurrent execution very unlikely, however the
- * kernel's API doesn't seem to ensure this strictly.
  */
 
 static void wakeup_all(struct work_struct *work)
@@ -627,7 +628,7 @@ static void report_io_error(struct xillyusb_dev *xdev,
 
 	if (do_once) {
 		kref_get(&xdev->kref); /* xdev is used by work item */
-		queue_work(xdev->workq, &xdev->wakeup_workitem);
+		queue_work(wakeup_wq, &xdev->wakeup_workitem);
 	}
 }
 
@@ -888,6 +889,7 @@ static int process_in_opcode(struct xillyusb_dev *xdev,
 	struct xillyusb_channel *chan;
 	struct device *dev = xdev->dev;
 	int chan_idx = chan_num >> 1;
+	struct xillyfifo *in_fifo;
 
 	if (chan_idx >= xdev->num_channels) {
 		dev_err(dev, "Received illegal channel ID %d from FPGA\n",
@@ -912,7 +914,10 @@ static int process_in_opcode(struct xillyusb_dev *xdev,
 		 */
 		smp_wmb();
 		WRITE_ONCE(chan->read_data_ok, 0);
-		wake_up_interruptible(&chan->in_fifo->waitq);
+
+		in_fifo = READ_ONCE(chan->in_fifo);
+		if (in_fifo)
+			wake_up_interruptible(&in_fifo->waitq);
 		break;
 
 	case OPCODE_REACHED_CHECKPOINT:
@@ -1127,12 +1132,13 @@ unlock_done:
  */
 
 static int flush_downstream(struct xillyusb_channel *chan,
-			    long timeout,
+			    unsigned long timeout,
 			    bool interruptible)
 {
 	struct xillyusb_dev *xdev = chan->xdev;
 	int chan_num = chan->chan_idx << 1;
-	long deadline, left_to_sleep;
+	unsigned long deadline;
+	long left_to_sleep;
 	int rc;
 
 	if (chan->flushed)
@@ -1141,7 +1147,8 @@ static int flush_downstream(struct xillyusb_channel *chan,
 	deadline = jiffies + 1 + timeout;
 
 	if (chan->flushing) {
-		long cancel_deadline = jiffies + 1 + XILLY_RESPONSE_TIMEOUT;
+		unsigned long cancel_deadline =
+			jiffies + 1 + XILLY_RESPONSE_TIMEOUT;
 
 		chan->canceled = 0;
 		rc = xillyusb_send_opcode(xdev, chan_num,
@@ -1152,7 +1159,7 @@ static int flush_downstream(struct xillyusb_channel *chan,
 
 		/* Ignoring interrupts. Cancellation must be handled */
 		while (!chan->canceled) {
-			left_to_sleep = cancel_deadline - ((long)jiffies);
+			left_to_sleep = cancel_deadline - jiffies;
 
 			if (left_to_sleep <= 0) {
 				report_io_error(xdev, -EIO);
@@ -1202,7 +1209,7 @@ static int flush_downstream(struct xillyusb_channel *chan,
 	}
 
 	while (chan->flushing) {
-		left_to_sleep = deadline - ((long)jiffies);
+		left_to_sleep = deadline - jiffies;
 
 		if (left_to_sleep <= 0)
 			return -ETIMEDOUT;
@@ -1339,7 +1346,7 @@ static int xillyusb_open(struct inode *inode, struct file *filp)
 	}
 
 	if (filp->f_mode & FMODE_READ) {
-		in_fifo = kzalloc(sizeof(*in_fifo), GFP_KERNEL);
+		in_fifo = kzalloc_obj(*in_fifo);
 
 		if (!in_fifo) {
 			rc = -ENOMEM;
@@ -1419,15 +1426,11 @@ unopen:
 	if (filp->f_mode & FMODE_WRITE)
 		chan->open_for_write = 0;
 
-	mutex_unlock(&chan->lock);
-
-	kref_put(&xdev->kref, cleanup_dev);
-
-	return rc;
-
 unmutex_fail:
-	kref_put(&xdev->kref, cleanup_dev);
 	mutex_unlock(&chan->lock);
+
+	kref_put(&xdev->kref, cleanup_dev);
+
 	return rc;
 }
 
@@ -1439,7 +1442,8 @@ static ssize_t xillyusb_read(struct file *filp, char __user *userbuf,
 	struct xillyfifo *fifo = chan->in_fifo;
 	int chan_num = (chan->chan_idx << 1) | 1;
 
-	long deadline, left_to_sleep;
+	unsigned long deadline;
+	long left_to_sleep;
 	int bytes_done = 0;
 	bool sent_set_push = false;
 	int rc;
@@ -1468,7 +1472,7 @@ static ssize_t xillyusb_read(struct file *filp, char __user *userbuf,
 		bytes_done += rc;
 		chan->in_consumed_bytes += rc;
 
-		left_to_sleep = deadline - ((long)jiffies);
+		left_to_sleep = deadline - jiffies;
 
 		/*
 		 * Some 32-bit arithmetic that may wrap. Note that
@@ -1511,8 +1515,8 @@ static ssize_t xillyusb_read(struct file *filp, char __user *userbuf,
 		 */
 
 		if (chan->read_data_ok &&
-		    (leap > (fifo->size >> 3) ||
-		     (checkpoint_for_complete && leap > 0))) {
+		    (leap > 0 && (leap > (fifo->size >> 3) ||
+				  checkpoint_for_complete))) {
 			chan->in_current_checkpoint = checkpoint;
 			rc = xillyusb_send_opcode(xdev, chan_num,
 						  OPCODE_SET_CHECKPOINT,
@@ -1906,6 +1910,13 @@ static const struct file_operations xillyusb_fops = {
 
 static int xillyusb_setup_base_eps(struct xillyusb_dev *xdev)
 {
+	struct usb_device *udev = xdev->udev;
+
+	/* Verify that device has the two fundamental bulk in/out endpoints */
+	if (usb_pipe_type_check(udev, usb_sndbulkpipe(udev, MSG_EP_NUM)) ||
+	    usb_pipe_type_check(udev, usb_rcvbulkpipe(udev, IN_EP_NUM)))
+		return -ENODEV;
+
 	xdev->msg_ep = endpoint_alloc(xdev, MSG_EP_NUM | USB_DIR_OUT,
 				      bulk_out_work, 1, 2);
 	if (!xdev->msg_ep)
@@ -1935,14 +1946,18 @@ static int setup_channels(struct xillyusb_dev *xdev,
 			  __le16 *chandesc,
 			  int num_channels)
 {
-	struct xillyusb_channel *chan;
+	struct usb_device *udev = xdev->udev;
+	struct xillyusb_channel *chan, *new_channels;
 	int i;
 
-	chan = kcalloc(num_channels, sizeof(*chan), GFP_KERNEL);
+	/* Don't let process_bulk_in() run while we change the channels */
+	guard(mutex)(&xdev->process_in_mutex);
+
+	chan = kzalloc_objs(*chan, num_channels);
 	if (!chan)
 		return -ENOMEM;
 
-	xdev->channels = chan;
+	new_channels = chan;
 
 	for (i = 0; i < num_channels; i++, chan++) {
 		unsigned int in_desc = le16_to_cpu(*chandesc++);
@@ -1971,6 +1986,15 @@ static int setup_channels(struct xillyusb_dev *xdev,
 		 */
 
 		if ((out_desc & 0x80) && i < 14) { /* Entry is valid */
+			if (usb_pipe_type_check(udev,
+						usb_sndbulkpipe(udev, i + 2))) {
+				dev_err(xdev->dev,
+					"Missing BULK OUT endpoint %d\n",
+					i + 2);
+				kfree(new_channels);
+				return -ENODEV;
+			}
+
 			chan->writable = 1;
 			chan->out_synchronous = !!(out_desc & 0x40);
 			chan->out_seekable = !!(out_desc & 0x20);
@@ -1980,6 +2004,7 @@ static int setup_channels(struct xillyusb_dev *xdev,
 		}
 	}
 
+	xdev->channels = new_channels;
 	return 0;
 }
 
@@ -2052,6 +2077,13 @@ static int xillyusb_discovery(struct usb_interface *interface)
 	}
 
 	idt_len = READ_ONCE(idt_fifo.fill);
+
+	if (idt_len < 4 || idt_len > XILLYBUS_MAX_IDT) {
+		rc = -ENODEV;
+		dev_err(&interface->dev, "Invalid IDT length. Aborting.\n");
+		goto unfifo;
+	}
+
 	idt = kmalloc(idt_len, GFP_KERNEL);
 
 	if (!idt) {
@@ -2086,6 +2118,12 @@ static int xillyusb_discovery(struct usb_interface *interface)
 		goto unidt;
 	}
 
+	if (num_channels == 0 || num_channels > XILLYBUS_MAX_NODES) {
+		dev_err(&interface->dev, "Unreasonable number of channels. Aborting.\n");
+		rc = -ENODEV;
+		goto unidt;
+	}
+
 	rc = setup_channels(xdev, (void *)idt + 3, num_channels);
 
 	if (rc)
@@ -2096,9 +2134,11 @@ static int xillyusb_discovery(struct usb_interface *interface)
 	 * just after responding with the IDT, there is no reason for any
 	 * work item to be running now. To be sure that xdev->channels
 	 * is updated on anything that might run in parallel, flush the
-	 * workqueue, which rarely does anything.
+	 * device's workqueue and the wakeup work item. This rarely
+	 * does anything.
 	 */
 	flush_workqueue(xdev->workq);
+	flush_work(&xdev->wakeup_workitem);
 
 	xdev->num_channels = num_channels;
 
@@ -2132,7 +2172,7 @@ static int xillyusb_probe(struct usb_interface *interface,
 	struct xillyusb_dev *xdev;
 	int rc;
 
-	xdev = kzalloc(sizeof(*xdev), GFP_KERNEL);
+	xdev = kzalloc_obj(*xdev);
 	if (!xdev)
 		return -ENOMEM;
 
@@ -2146,7 +2186,7 @@ static int xillyusb_probe(struct usb_interface *interface,
 	spin_lock_init(&xdev->error_lock);
 	xdev->in_counter = 0;
 	xdev->in_bytes_left = 0;
-	xdev->workq = alloc_workqueue(xillyname, WQ_HIGHPRI, 0);
+	xdev->workq = alloc_workqueue(xillyname, WQ_HIGHPRI | WQ_UNBOUND, 0);
 
 	if (!xdev->workq) {
 		dev_err(&interface->dev, "Failed to allocate work queue\n");
@@ -2258,6 +2298,10 @@ static int __init xillyusb_init(void)
 {
 	int rc = 0;
 
+	wakeup_wq = alloc_workqueue(xillyname, WQ_UNBOUND, 0);
+	if (!wakeup_wq)
+		return -ENOMEM;
+
 	if (LOG2_INITIAL_FIFO_BUF_SIZE > PAGE_SHIFT)
 		fifo_buf_order = LOG2_INITIAL_FIFO_BUF_SIZE - PAGE_SHIFT;
 	else
@@ -2265,12 +2309,17 @@ static int __init xillyusb_init(void)
 
 	rc = usb_register(&xillyusb_driver);
 
+	if (rc)
+		destroy_workqueue(wakeup_wq);
+
 	return rc;
 }
 
 static void __exit xillyusb_exit(void)
 {
 	usb_deregister(&xillyusb_driver);
+
+	destroy_workqueue(wakeup_wq);
 }
 
 module_init(xillyusb_init);

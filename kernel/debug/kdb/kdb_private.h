@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _KDBPRIVATE_H
 #define _KDBPRIVATE_H
 
@@ -110,6 +111,7 @@ extern int kdbgetaddrarg(int, const char **, int*, unsigned long *,
 extern int kdbgetsymval(const char *, kdb_symtab_t *);
 extern int kdbnearsym(unsigned long, kdb_symtab_t *);
 extern char *kdb_strdup(const char *str, gfp_t type);
+extern char *kdb_strdup_dequote(const char *str, gfp_t type);
 extern void kdb_symbol_print(unsigned long, const kdb_symtab_t *, unsigned int);
 
 /* Routine for debugging the debugger state. */
@@ -210,8 +212,6 @@ extern void kdb_gdb_state_pass(char *buf);
 #define KDB_TSK(cpu) kgdb_info[cpu].task
 #define KDB_TSKREGS(cpu) kgdb_info[cpu].debuggerinfo
 
-extern struct task_struct *kdb_curr_task(int);
-
 #define kdb_task_has_cpu(p) (task_curr(p))
 
 #define GFP_KDB (in_dbg_master() ? GFP_ATOMIC : GFP_KERNEL)
@@ -225,7 +225,8 @@ extern void kdb_kbd_cleanup_state(void);
 #define kdb_kbd_cleanup_state()
 #endif /* ! CONFIG_KDB_KEYBOARD */
 
-extern char kdb_prompt_str[];
+#define CMD_BUFLEN 256
+extern char kdb_prompt_str[CMD_BUFLEN];
 
 #define	KDB_WORD_SIZE	((int)sizeof(unsigned long))
 

@@ -309,7 +309,7 @@ static int bcm_kp_probe(struct platform_device *pdev)
 	struct input_dev *input_dev;
 	int error;
 
-	kp = devm_kzalloc(&pdev->dev, sizeof(*kp), GFP_KERNEL);
+	kp = devm_kzalloc_obj(&pdev->dev, *kp);
 	if (!kp)
 		return -ENOMEM;
 
@@ -327,7 +327,6 @@ static int bcm_kp_probe(struct platform_device *pdev)
 
 	input_dev->name = pdev->name;
 	input_dev->phys = "keypad/input0";
-	input_dev->dev.parent = &pdev->dev;
 	input_dev->open = bcm_kp_open;
 	input_dev->close = bcm_kp_close;
 
@@ -418,7 +417,7 @@ static struct platform_driver bcm_kp_device_driver = {
 	.probe		= bcm_kp_probe,
 	.driver		= {
 		.name	= "bcm-keypad",
-		.of_match_table = of_match_ptr(bcm_kp_of_match),
+		.of_match_table = bcm_kp_of_match,
 	}
 };
 

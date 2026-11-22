@@ -177,9 +177,7 @@ static void phy_mdm6600_cmd(struct phy_mdm6600 *ddata, int val)
 
 	values[0] = val;
 
-	gpiod_set_array_value_cansleep(PHY_MDM6600_NR_CMD_LINES,
-				       ddata->cmd_gpios->desc,
-				       ddata->cmd_gpios->info, values);
+	gpiod_multi_set_value_cansleep(ddata->cmd_gpios, values);
 }
 
 /**
@@ -559,7 +557,7 @@ static int phy_mdm6600_probe(struct platform_device *pdev)
 	struct phy_mdm6600 *ddata;
 	int error;
 
-	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
+	ddata = devm_kzalloc_obj(&pdev->dev, *ddata);
 	if (!ddata)
 		return -ENOMEM;
 
@@ -655,7 +653,7 @@ static void phy_mdm6600_remove(struct platform_device *pdev)
 
 static struct platform_driver phy_mdm6600_driver = {
 	.probe = phy_mdm6600_probe,
-	.remove_new = phy_mdm6600_remove,
+	.remove = phy_mdm6600_remove,
 	.driver = {
 		.name = "phy-mapphone-mdm6600",
 		.pm = &phy_mdm6600_pm_ops,

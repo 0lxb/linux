@@ -46,9 +46,6 @@
 
 #include <xen/hvc-console.h>
 #include "xen-ops.h"
-#include "mmu.h"
-#include "smp.h"
-#include "pmu.h"
 
 cpumask_var_t xen_cpu_initialized_map;
 
@@ -68,12 +65,11 @@ static void cpu_bringup(void)
 	touch_softlockup_watchdog();
 
 	/* PVH runs in ring 0 and allows us to do native syscalls. Yay! */
-	if (!xen_feature(XENFEAT_supervisor_mode_kernel)) {
-		xen_enable_sysenter();
+	if (!xen_feature(XENFEAT_supervisor_mode_kernel))
 		xen_enable_syscall();
-	}
+
 	cpu = smp_processor_id();
-	smp_store_cpu_info(cpu);
+	identify_secondary_cpu(cpu);
 	set_cpu_sibling_map(cpu);
 
 	speculative_store_bypass_ht_init();
@@ -154,9 +150,9 @@ static void __init xen_pv_smp_config(void)
 	u32 apicid = 0;
 	int i;
 
-	topology_register_boot_apic(apicid++);
+	topology_register_boot_apic(apicid);
 
-	for (i = 1; i < nr_cpu_ids; i++)
+	for (i = 0; i < nr_cpu_ids; i++)
 		topology_register_apic(apicid++, CPU_ACPIID_INVALID, true);
 
 	/* Pretend to be a proper enumerated system */
@@ -234,7 +230,7 @@ cpu_initialize_context(unsigned int cpu, struct task_struct *idle)
 	if (cpumask_test_and_set_cpu(cpu, xen_cpu_initialized_map))
 		return 0;
 
-	ctxt = kzalloc(sizeof(*ctxt), GFP_KERNEL);
+	ctxt = kzalloc_obj(*ctxt);
 	if (ctxt == NULL) {
 		cpumask_clear_cpu(cpu, xen_cpu_initialized_map);
 		return -ENOMEM;
@@ -404,7 +400,7 @@ static void xen_pv_stop_other_cpus(int wait)
 static irqreturn_t xen_irq_work_interrupt(int irq, void *dev_id)
 {
 	irq_work_run();
-	inc_irq_stat(apic_irq_work_irqs);
+	inc_irq_stat(IRQ_WORK);
 
 	return IRQ_HANDLED;
 }

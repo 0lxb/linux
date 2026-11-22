@@ -620,7 +620,6 @@ static struct ata_port_operations mpc52xx_ata_port_ops = {
 	.bmdma_start		= mpc52xx_bmdma_start,
 	.bmdma_stop		= mpc52xx_bmdma_stop,
 	.bmdma_status		= mpc52xx_bmdma_status,
-	.qc_prep		= ata_noop_qc_prep,
 };
 
 static int mpc52xx_ata_init_one(struct device *dev,
@@ -738,7 +737,7 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	}
 
 	/* Prepare our private structure */
-	priv = devm_kzalloc(&op->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&op->dev, *priv);
 	if (!priv) {
 		rv = -ENOMEM;
 		goto err1;
@@ -770,10 +769,8 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	task_irq = bcom_get_task_irq(dmatsk);
 	rv = devm_request_irq(&op->dev, task_irq, &mpc52xx_ata_task_irq, 0,
 				"ATA task", priv);
-	if (rv) {
-		dev_err(&op->dev, "error requesting DMA IRQ\n");
+	if (rv)
 		goto err2;
-	}
 	priv->dmatsk = dmatsk;
 
 	/* Init the hw */
@@ -855,7 +852,7 @@ static const struct of_device_id mpc52xx_ata_of_match[] = {
 
 static struct platform_driver mpc52xx_ata_of_platform_driver = {
 	.probe		= mpc52xx_ata_probe,
-	.remove_new	= mpc52xx_ata_remove,
+	.remove		= mpc52xx_ata_remove,
 #ifdef CONFIG_PM_SLEEP
 	.suspend	= mpc52xx_ata_suspend,
 	.resume		= mpc52xx_ata_resume,

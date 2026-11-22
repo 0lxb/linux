@@ -18,38 +18,15 @@
 
 #define INIT_PSTATE_EL1 \
 	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL1h)
-#define INIT_PSTATE_EL2 \
-	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL2h)
 
-/*
- * PMR values used to mask/unmask interrupts.
- *
- * GIC priority masking works as follows: if an IRQ's priority is a higher value
- * than the value held in PMR, that IRQ is masked. Lowering the value of PMR
- * means masking more IRQs (or at least that the same IRQs remain masked).
- *
- * To mask interrupts, we clear the most significant bit of PMR.
- *
- * Some code sections either automatically switch back to PSR.I or explicitly
- * require to not use priority masking. If bit GIC_PRIO_PSR_I_SET is included
- * in the priority mask, it indicates that PSR.I should be set and
- * interrupt disabling temporarily does not rely on IRQ priorities.
- */
-#define GIC_PRIO_IRQON			0xe0
-#define __GIC_PRIO_IRQOFF		(GIC_PRIO_IRQON & ~0x80)
-#define __GIC_PRIO_IRQOFF_NS		0xa0
-#define GIC_PRIO_PSR_I_SET		(1 << 4)
+#include <linux/irqchip/arm-gic-v3-prio.h>
 
-#define GIC_PRIO_IRQOFF							\
-	({								\
-		extern struct static_key_false gic_nonsecure_priorities;\
-		u8 __prio = __GIC_PRIO_IRQOFF;				\
-									\
-		if (static_branch_unlikely(&gic_nonsecure_priorities))	\
-			__prio = __GIC_PRIO_IRQOFF_NS;			\
-									\
-		__prio;							\
-	})
+#define GIC_PRIO_IRQON		GICV3_PRIO_UNMASKED
+#define GIC_PRIO_IRQOFF		GICV3_PRIO_IRQ
+
+#define GIC_PRIO_PSR_I_SET	GICV3_PRIO_PSR_I_SET
+
+#if ARM64_S390_COMMON == 1
 
 /* Additional SPSR bits not exposed in the UABI */
 #define PSR_MODE_THREAD_BIT	(1 << 0)
@@ -91,11 +68,7 @@
 #define PSR_AA32_IT_MASK	0x0600fc00	/* If-Then execution state mask */
 #define PSR_AA32_GE_MASK	0x000f0000
 
-#ifdef CONFIG_CPU_BIG_ENDIAN
-#define PSR_AA32_ENDSTATE	PSR_AA32_E_BIT
-#else
-#define PSR_AA32_ENDSTATE	0
-#endif
+#endif /* ARM64_S390_COMMON == 1 */
 
 /* AArch32 CPSR bits, as seen in AArch32 */
 #define COMPAT_PSR_DIT_BIT	0x00200000
@@ -117,34 +90,58 @@
  */
 #define NO_SYSCALL (-1)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/bug.h>
 #include <linux/types.h>
+
+#include <asm/stacktrace/frame.h>
 
 /* sizeof(struct user) for AArch32 */
 #define COMPAT_USER_SZ	296
 
 /* Architecturally defined mapping between AArch32 and AArch64 registers */
+enum {
+	__compat_fp		= 11,
+	__compat_sp		= 13,
+	__compat_lr		= 14,
+	__compat_sp_hyp		= 15,
+	__compat_lr_irq		= 16,
+	__compat_sp_irq		= 17,
+	__compat_lr_svc		= 18,
+	__compat_sp_svc		= 19,
+	__compat_lr_abt		= 20,
+	__compat_sp_abt		= 21,
+	__compat_lr_und		= 22,
+	__compat_sp_und		= 23,
+	__compat_r8_fiq		= 24,
+	__compat_r9_fiq		= 25,
+	__compat_r10_fiq	= 26,
+	__compat_r11_fiq	= 27,
+	__compat_r12_fiq	= 28,
+	__compat_sp_fiq		= 29,
+	__compat_lr_fiq		= 30,
+};
+
 #define compat_usr(x)	regs[(x)]
-#define compat_fp	regs[11]
-#define compat_sp	regs[13]
-#define compat_lr	regs[14]
-#define compat_sp_hyp	regs[15]
-#define compat_lr_irq	regs[16]
-#define compat_sp_irq	regs[17]
-#define compat_lr_svc	regs[18]
-#define compat_sp_svc	regs[19]
-#define compat_lr_abt	regs[20]
-#define compat_sp_abt	regs[21]
-#define compat_lr_und	regs[22]
-#define compat_sp_und	regs[23]
-#define compat_r8_fiq	regs[24]
-#define compat_r9_fiq	regs[25]
-#define compat_r10_fiq	regs[26]
-#define compat_r11_fiq	regs[27]
-#define compat_r12_fiq	regs[28]
-#define compat_sp_fiq	regs[29]
-#define compat_lr_fiq	regs[30]
+#define compat_fp	regs[__compat_fp]
+#define compat_sp	regs[__compat_sp]
+#define compat_lr	regs[__compat_lr]
+#define compat_sp_hyp	regs[__compat_sp_hyp]
+#define compat_lr_irq	regs[__compat_lr_irq]
+#define compat_sp_irq	regs[__compat_sp_irq]
+#define compat_lr_svc	regs[__compat_lr_svc]
+#define compat_sp_svc	regs[__compat_sp_svc]
+#define compat_lr_abt	regs[__compat_lr_abt]
+#define compat_sp_abt	regs[__compat_sp_abt]
+#define compat_lr_und	regs[__compat_lr_und]
+#define compat_sp_und	regs[__compat_sp_und]
+#define compat_r8_fiq	regs[__compat_r8_fiq]
+#define compat_r9_fiq	regs[__compat_r9_fiq]
+#define compat_r10_fiq	regs[__compat_r10_fiq]
+#define compat_r11_fiq	regs[__compat_r11_fiq]
+#define compat_r12_fiq	regs[__compat_r12_fiq]
+#define compat_sp_fiq	regs[__compat_sp_fiq]
+#define compat_lr_fiq	regs[__compat_lr_fiq]
 
 static inline unsigned long compat_psr_to_pstate(const unsigned long psr)
 {
@@ -172,8 +169,7 @@ static inline unsigned long pstate_to_compat_psr(const unsigned long pstate)
 
 /*
  * This struct defines the way the registers are stored on the stack during an
- * exception. Note that sizeof(struct pt_regs) has to be a multiple of 16 (for
- * stack alignment). struct user_pt_regs must form a prefix of struct pt_regs.
+ * exception. struct user_pt_regs must form a prefix of struct pt_regs.
  */
 struct pt_regs {
 	union {
@@ -186,22 +182,20 @@ struct pt_regs {
 		};
 	};
 	u64 orig_x0;
-#ifdef __AARCH64EB__
-	u32 unused2;
 	s32 syscallno;
-#else
-	s32 syscallno;
-	u32 unused2;
-#endif
-	u64 sdei_ttbr1;
-	/* Only valid when ARM64_HAS_GIC_PRIO_MASKING is enabled. */
-	u64 pmr_save;
-	u64 stackframe[2];
+	u32 pmr;
 
-	/* Only valid for some EL1 exceptions. */
-	u64 lockdep_hardirqs;
-	u64 exit_rcu;
+	u64 sdei_ttbr1;
+	struct frame_record_meta stackframe;
+
+	u16	pcpu_gprs;
+	u16	__unused1;
+	u32	__unused2;
+	u64	__unused3;
 };
+
+/* For correct stack alignment, pt_regs has to be a multiple of 16 bytes. */
+static_assert(IS_ALIGNED(sizeof(struct pt_regs), 16));
 
 static inline bool in_syscall(struct pt_regs const *regs)
 {
@@ -236,14 +230,15 @@ static inline void forget_syscall(struct pt_regs *regs)
 
 #define irqs_priority_unmasked(regs)					\
 	(system_uses_irq_prio_masking() ?				\
-		(regs)->pmr_save == GIC_PRIO_IRQON :			\
+		(regs)->pmr == GIC_PRIO_IRQON :				\
 		true)
 
-#define interrupts_enabled(regs)			\
-	(!((regs)->pstate & PSR_I_BIT) && irqs_priority_unmasked(regs))
+static __always_inline bool regs_irqs_disabled(const struct pt_regs *regs)
+{
+	return (regs->pstate & PSR_I_BIT) || !irqs_priority_unmasked(regs);
+}
 
-#define fast_interrupts_enabled(regs) \
-	(!((regs)->pstate & PSR_F_BIT))
+#define interrupts_enabled(regs)	(!regs_irqs_disabled(regs))
 
 static inline unsigned long user_stack_pointer(struct pt_regs *regs)
 {
@@ -296,7 +291,8 @@ static inline u64 regs_get_register(struct pt_regs *regs, unsigned int offset)
  * Read a register given an architectural register index r.
  * This handles the common case where 31 means XZR, not SP.
  */
-static inline unsigned long pt_regs_read_reg(const struct pt_regs *regs, int r)
+static __always_inline unsigned long
+pt_regs_read_reg(const struct pt_regs *regs, int r)
 {
 	return (r == 31) ? 0 : regs->regs[r];
 }
@@ -305,8 +301,8 @@ static inline unsigned long pt_regs_read_reg(const struct pt_regs *regs, int r)
  * Write a register given an architectural register index r.
  * This handles the common case where 31 means XZR, not SP.
  */
-static inline void pt_regs_write_reg(struct pt_regs *regs, int r,
-				     unsigned long val)
+static __always_inline void
+pt_regs_write_reg(struct pt_regs *regs, int r, unsigned long val)
 {
 	if (r != 31)
 		regs->regs[r] = val;
@@ -389,5 +385,5 @@ static inline void procedure_link_pointer_set(struct pt_regs *regs,
 
 extern unsigned long profile_pc(struct pt_regs *regs);
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif

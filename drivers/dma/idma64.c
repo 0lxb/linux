@@ -25,11 +25,6 @@
 
 /* ---------------------------------------------------------------------- */
 
-static struct device *chan2dev(struct dma_chan *chan)
-{
-	return &chan->dev->device;
-}
-
 /* ---------------------------------------------------------------------- */
 
 static void idma64_off(struct idma64 *idma64)
@@ -171,6 +166,10 @@ static irqreturn_t idma64_irq(int irq, void *dev)
 	u32 status_err;
 	unsigned short i;
 
+	/* Since IRQ may be shared, check if DMA controller is powered on */
+	if (status == GENMASK(31, 0))
+		return IRQ_NONE;
+
 	dev_vdbg(idma64->dma.dev, "%s: status=%#x\n", __func__, status);
 
 	/* Check if we have any interrupt from the DMA controller */
@@ -192,11 +191,11 @@ static struct idma64_desc *idma64_alloc_desc(unsigned int ndesc)
 {
 	struct idma64_desc *desc;
 
-	desc = kzalloc(sizeof(*desc), GFP_NOWAIT);
+	desc = kzalloc_obj(*desc, GFP_NOWAIT);
 	if (!desc)
 		return NULL;
 
-	desc->hw = kcalloc(ndesc, sizeof(*desc->hw), GFP_NOWAIT);
+	desc->hw = kzalloc_objs(*desc->hw, ndesc, GFP_NOWAIT);
 	if (!desc->hw) {
 		kfree(desc);
 		return NULL;
@@ -286,7 +285,7 @@ static void idma64_desc_fill(struct idma64_chan *idma64c,
 		desc->length += hw->len;
 	} while (i);
 
-	/* Trigger an interrupt after the last block is transfered */
+	/* Trigger an interrupt after the last block is transferred */
 	lli->ctllo |= IDMA64C_CTLL_INT_EN;
 
 	/* Disable LLP transfer in the last block */
@@ -360,7 +359,7 @@ static size_t idma64_active_desc_size(struct idma64_chan *idma64c)
 	if (!i)
 		return bytes;
 
-	/* The current chunk is not fully transfered yet */
+	/* The current chunk is not fully transferred yet */
 	bytes += desc->hw[--i].len;
 
 	return bytes - IDMA64C_CTLH_BLOCK_TS(ctlhi);
@@ -503,11 +502,10 @@ static int idma64_alloc_chan_resources(struct dma_chan *chan)
 	struct idma64_chan *idma64c = to_idma64_chan(chan);
 
 	/* Create a pool of consistent memory blocks for hardware descriptors */
-	idma64c->pool = dma_pool_create(dev_name(chan2dev(chan)),
-					chan->device->dev,
+	idma64c->pool = dma_pool_create(dma_chan_name(chan), chan->device->dev,
 					sizeof(struct idma64_lli), 8, 0);
 	if (!idma64c->pool) {
-		dev_err(chan2dev(chan), "No memory for descriptors\n");
+		dev_err(dmaengine_chan_dev(chan), "No memory for descriptors\n");
 		return -ENOMEM;
 	}
 
@@ -537,15 +535,14 @@ static int idma64_probe(struct idma64_chip *chip)
 	unsigned short i;
 	int ret;
 
-	idma64 = devm_kzalloc(chip->dev, sizeof(*idma64), GFP_KERNEL);
+	idma64 = devm_kzalloc_obj(chip->dev, *idma64);
 	if (!idma64)
 		return -ENOMEM;
 
 	idma64->regs = chip->regs;
 	chip->idma64 = idma64;
 
-	idma64->chan = devm_kcalloc(chip->dev, nr_chan, sizeof(*idma64->chan),
-				    GFP_KERNEL);
+	idma64->chan = devm_kzalloc_objs(chip->dev, *idma64->chan, nr_chan);
 	if (!idma64->chan)
 		return -ENOMEM;
 
@@ -633,7 +630,7 @@ static int idma64_platform_probe(struct platform_device *pdev)
 	struct device *sysdev = dev->parent;
 	int ret;
 
-	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -689,7 +686,7 @@ static const struct dev_pm_ops idma64_dev_pm_ops = {
 
 static struct platform_driver idma64_platform_driver = {
 	.probe		= idma64_platform_probe,
-	.remove_new	= idma64_platform_remove,
+	.remove		= idma64_platform_remove,
 	.driver = {
 		.name	= LPSS_IDMA64_DRIVER_NAME,
 		.pm	= &idma64_dev_pm_ops,

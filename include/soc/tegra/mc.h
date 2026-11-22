@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2014 NVIDIA Corporation
+ * Copyright (C) 2014-2026 NVIDIA Corporation
  */
 
 #ifndef __SOC_TEGRA_MC_H__
@@ -10,10 +10,11 @@
 #include <linux/debugfs.h>
 #include <linux/err.h>
 #include <linux/interconnect-provider.h>
+#include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/reset-controller.h>
-#include <linux/types.h>
 #include <linux/tegra-icc.h>
+#include <linux/types.h>
 
 struct clk;
 struct device;
@@ -146,13 +147,14 @@ struct tegra_mc_icc_ops {
 	int (*set)(struct icc_node *src, struct icc_node *dst);
 	int (*aggregate)(struct icc_node *node, u32 tag, u32 avg_bw,
 			 u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
-	struct icc_node* (*xlate)(struct of_phandle_args *spec, void *data);
-	struct icc_node_data *(*xlate_extended)(struct of_phandle_args *spec,
+	struct icc_node* (*xlate)(const struct of_phandle_args *spec, void *data);
+	struct icc_node_data *(*xlate_extended)(const struct of_phandle_args *spec,
 						void *data);
 	int (*get_bw)(struct icc_node *node, u32 *avg, u32 *peak);
 };
 
-struct icc_node *tegra_mc_icc_xlate(struct of_phandle_args *spec, void *data);
+struct icc_node *tegra_mc_icc_xlate(const struct of_phandle_args *spec,
+				    void *data);
 extern const struct tegra_mc_icc_ops tegra_mc_icc_ops;
 
 struct tegra_mc_ops {
@@ -162,9 +164,30 @@ struct tegra_mc_ops {
 	 */
 	int (*probe)(struct tegra_mc *mc);
 	void (*remove)(struct tegra_mc *mc);
-	int (*resume)(struct tegra_mc *mc);
-	irqreturn_t (*handle_irq)(int irq, void *data);
+	void (*resume)(struct tegra_mc *mc);
 	int (*probe_device)(struct tegra_mc *mc, struct device *dev);
+};
+
+struct tegra_mc_regs {
+	unsigned int cfg_channel_enable;
+	unsigned int err_status;
+	unsigned int err_add;
+	unsigned int err_add_hi;
+	unsigned int err_vpr_status;
+	unsigned int err_vpr_add;
+	unsigned int err_sec_status;
+	unsigned int err_sec_add;
+	unsigned int err_mts_status;
+	unsigned int err_mts_add;
+	unsigned int err_gen_co_status;
+	unsigned int err_gen_co_add;
+	unsigned int err_route_status;
+	unsigned int err_route_add;
+};
+
+struct tegra_mc_intmask {
+	u32 reg;
+	u32 mask;
 };
 
 struct tegra_mc_soc {
@@ -184,7 +207,6 @@ struct tegra_mc_soc {
 
 	const struct tegra_smmu_soc *smmu;
 
-	u32 intmask;
 	u32 ch_intmask;
 	u32 global_intstatus_channel_shift;
 	bool has_addr_hi_reg;
@@ -195,6 +217,14 @@ struct tegra_mc_soc {
 
 	const struct tegra_mc_icc_ops *icc_ops;
 	const struct tegra_mc_ops *ops;
+	const struct tegra_mc_regs *regs;
+
+	const irq_handler_t *handle_irq;
+	unsigned int num_interrupts;
+	unsigned int mc_addr_hi_mask;
+	unsigned int mc_err_status_type_mask;
+	const struct tegra_mc_intmask *intmasks;
+	unsigned int num_intmasks;
 };
 
 struct tegra_mc {
@@ -205,7 +235,6 @@ struct tegra_mc {
 	void __iomem *bcast_ch_regs;
 	void __iomem **ch_regs;
 	struct clk *clk;
-	int irq;
 
 	const struct tegra_mc_soc *soc;
 	unsigned long tick;
@@ -254,5 +283,7 @@ tegra_mc_get_carveout_info(struct tegra_mc *mc, unsigned int id,
 	return -ENODEV;
 }
 #endif
+
+extern const struct tegra_mc_regs tegra20_mc_regs;
 
 #endif /* __SOC_TEGRA_MC_H__ */

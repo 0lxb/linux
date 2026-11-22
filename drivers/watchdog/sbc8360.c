@@ -48,6 +48,7 @@
 #include <linux/moduleparam.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 
 static unsigned long sbc8360_is_open;
@@ -199,7 +200,7 @@ MODULE_PARM_DESC(timeout, "Index into timeout table (0-63) (default=27 (60s))");
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /*
  *	Kernel methods.
@@ -301,7 +302,6 @@ static int sbc8360_notify_sys(struct notifier_block *this, unsigned long code,
 
 static const struct file_operations sbc8360_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.write = sbc8360_write,
 	.open = sbc8360_open,
 	.release = sbc8360_close,

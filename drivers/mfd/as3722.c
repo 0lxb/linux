@@ -340,7 +340,7 @@ static int as3722_i2c_probe(struct i2c_client *i2c)
 	int ret;
 	u8 val = 0;
 
-	as3722 = devm_kzalloc(&i2c->dev, sizeof(struct as3722), GFP_KERNEL);
+	as3722 = devm_kzalloc_obj(&i2c->dev, struct as3722);
 	if (!as3722)
 		return -ENOMEM;
 
@@ -394,7 +394,9 @@ static int as3722_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	device_init_wakeup(as3722->dev, true);
+	ret = devm_device_init_wakeup(as3722->dev);
+	if (ret)
+		return dev_err_probe(as3722->dev, ret, "Failed to init wakeup\n");
 
 	dev_dbg(as3722->dev, "AS3722 core driver initialized successfully\n");
 	return 0;
@@ -430,8 +432,8 @@ static const struct of_device_id as3722_of_match[] = {
 MODULE_DEVICE_TABLE(of, as3722_of_match);
 
 static const struct i2c_device_id as3722_i2c_id[] = {
-	{ "as3722", 0 },
-	{},
+	{ "as3722" },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, as3722_i2c_id);
 

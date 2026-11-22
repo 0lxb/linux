@@ -32,6 +32,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 #define DRIVER_NAME	"ath79-wdt"
 
@@ -50,12 +51,12 @@
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started "
-			   "(default=" __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+			   "(default=" __stringify(WATCHDOG_NOWAYOUT) ")");
 
 static int timeout = WDT_TIMEOUT;
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "Watchdog timeout in seconds "
-			  "(default=" __MODULE_STRING(WDT_TIMEOUT) "s)");
+			  "(default=" __stringify(WDT_TIMEOUT) "s)");
 
 static unsigned long wdt_flags;
 
@@ -231,7 +232,6 @@ static long ath79_wdt_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations ath79_wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= ath79_wdt_write,
 	.unlocked_ioctl	= ath79_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -306,7 +306,7 @@ MODULE_DEVICE_TABLE(of, ath79_wdt_match);
 
 static struct platform_driver ath79_wdt_driver = {
 	.probe		= ath79_wdt_probe,
-	.remove_new	= ath79_wdt_remove,
+	.remove		= ath79_wdt_remove,
 	.shutdown	= ath79_wdt_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,

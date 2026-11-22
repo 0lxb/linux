@@ -18,6 +18,8 @@ extern enum integrity_status evm_verifyxattr(struct dentry *dentry,
 					     const char *xattr_name,
 					     void *xattr_value,
 					     size_t xattr_value_len);
+int evm_fix_hmac(struct dentry *dentry, const char *xattr_name,
+		 const char *xattr_value, size_t xattr_value_len);
 int evm_inode_init_security(struct inode *inode, struct inode *dir,
 			    const struct qstr *qstr, struct xattr *xattrs,
 			    int *xattr_count);
@@ -26,6 +28,8 @@ extern int evm_protected_xattr_if_enabled(const char *req_xattr_name);
 extern int evm_read_protected_xattrs(struct dentry *dentry, u8 *buffer,
 				     int buffer_size, char type,
 				     bool canonical_fmt);
+extern bool evm_metadata_changed(struct inode *inode,
+				 struct inode *metadata_inode);
 #ifdef CONFIG_FS_POSIX_ACL
 extern int posix_xattr_acl(const char *xattrname);
 #else
@@ -48,6 +52,12 @@ static inline enum integrity_status evm_verifyxattr(struct dentry *dentry,
 						    size_t xattr_value_len)
 {
 	return INTEGRITY_UNKNOWN;
+}
+
+static inline int evm_fix_hmac(struct dentry *dentry, const char *xattr_name,
+			       const char *xattr_value, size_t xattr_value_len)
+{
+	return -EOPNOTSUPP;
 }
 #endif
 
@@ -74,6 +84,12 @@ static inline int evm_read_protected_xattrs(struct dentry *dentry, u8 *buffer,
 					    bool canonical_fmt)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline bool evm_metadata_changed(struct inode *inode,
+					struct inode *metadata_inode)
+{
+	return false;
 }
 
 #endif /* CONFIG_EVM */

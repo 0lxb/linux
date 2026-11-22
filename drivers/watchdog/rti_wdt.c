@@ -11,13 +11,13 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/stringify.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 
@@ -35,7 +35,8 @@
 #define RTIWWDRXCTRL	0xa4
 #define RTIWWDSIZECTRL	0xa8
 
-#define RTIWWDRX_NMI	0xa
+#define RTIWWDRXN_RST	0x5
+#define RTIWWDRXN_NMI	0xa
 
 #define RTIWWDSIZE_50P		0x50
 #define RTIWWDSIZE_25P		0x500
@@ -59,24 +60,33 @@
 #define PON_REASON_EOF_NUM	0xCCCCBBBB
 #define RESERVED_MEM_MIN_SIZE	12
 
-static int heartbeat = DEFAULT_HEARTBEAT;
+#define MAX_HW_ERROR		250
+
+static int heartbeat;
+
+struct rti_wdt_data {
+	bool nmi;
+};
 
 /*
  * struct to hold data for each WDT device
  * @base - base io address of WD device
  * @freq - source clock frequency of WDT
  * @wdd  - hold watchdog device as is in WDT core
+ * @nmi - Set if this WDT instance supports generating NMI
  */
 struct rti_wdt_device {
 	void __iomem		*base;
 	unsigned long		freq;
 	struct watchdog_device	wdd;
+	bool			nmi;
 };
 
 static int rti_wdt_start(struct watchdog_device *wdd)
 {
 	u32 timer_margin;
 	struct rti_wdt_device *wdt = watchdog_get_drvdata(wdd);
+	u8 reaction;
 	int ret;
 
 	ret = pm_runtime_resume_and_get(wdd->parent);
@@ -97,10 +107,15 @@ static int rti_wdt_start(struct watchdog_device *wdd)
 	 * to be 50% or less than that; we obviouly want to configure the open
 	 * window as large as possible so we select the 50% option.
 	 */
-	wdd->min_hw_heartbeat_ms = 500 * wdd->timeout;
+	wdd->min_hw_heartbeat_ms = 520 * wdd->timeout + MAX_HW_ERROR;
 
-	/* Generate NMI when wdt expires */
-	writel_relaxed(RTIWWDRX_NMI, wdt->base + RTIWWDRXCTRL);
+	/* When WDT expires, generate NMI or reset if NMI not supported */
+	if (wdt->nmi)
+		reaction = RTIWWDRXN_NMI;
+	else
+		reaction = RTIWWDRXN_RST;
+
+	writel_relaxed(reaction, wdt->base + RTIWWDRXCTRL);
 
 	/* Open window size 50%; this is the largest window size available */
 	writel_relaxed(RTIWWDSIZE_50P, wdt->base + RTIWWDSIZECTRL);
@@ -131,31 +146,33 @@ static int rti_wdt_setup_hw_hb(struct watchdog_device *wdd, u32 wsize)
 	 * be petted during the open window; not too early or not too late.
 	 * The HW configuration options only allow for the open window size
 	 * to be 50% or less than that.
+	 * To avoid any glitches, we accommodate 2% + max hardware error
+	 * safety margin.
 	 */
 	switch (wsize) {
 	case RTIWWDSIZE_50P:
-		/* 50% open window => 50% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 500 * heartbeat;
+		/* 50% open window => 52% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 520 * heartbeat + MAX_HW_ERROR;
 		break;
 
 	case RTIWWDSIZE_25P:
-		/* 25% open window => 75% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 750 * heartbeat;
+		/* 25% open window => 77% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 770 * heartbeat + MAX_HW_ERROR;
 		break;
 
 	case RTIWWDSIZE_12P5:
-		/* 12.5% open window => 87.5% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 875 * heartbeat;
+		/* 12.5% open window => 89.5% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 895 * heartbeat + MAX_HW_ERROR;
 		break;
 
 	case RTIWWDSIZE_6P25:
-		/* 6.5% open window => 93.5% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 935 * heartbeat;
+		/* 6.5% open window => 95.5% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 955 * heartbeat + MAX_HW_ERROR;
 		break;
 
 	case RTIWWDSIZE_3P125:
-		/* 3.125% open window => 96.9% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 969 * heartbeat;
+		/* 3.125% open window => 98.9% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 989 * heartbeat + MAX_HW_ERROR;
 		break;
 
 	default:
@@ -206,17 +223,17 @@ static int rti_wdt_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct device *dev = &pdev->dev;
+	const struct rti_wdt_data *data;
 	struct watchdog_device *wdd;
 	struct rti_wdt_device *wdt;
 	struct clk *clk;
 	u32 last_ping = 0;
-	struct device_node *node;
 	u32 reserved_mem_size;
 	struct resource res;
 	u32 *vaddr;
 	u64 paddr;
 
-	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
+	wdt = devm_kzalloc_obj(dev, *wdt);
 	if (!wdt)
 		return -ENOMEM;
 
@@ -233,14 +250,6 @@ static int rti_wdt_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	/*
-	 * If watchdog is running at 32k clock, it is not accurate.
-	 * Adjust frequency down in this case so that we don't pet
-	 * the watchdog too often.
-	 */
-	if (wdt->freq < 32768)
-		wdt->freq = wdt->freq * 9 / 10;
-
 	pm_runtime_enable(dev);
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0) {
@@ -256,7 +265,16 @@ static int rti_wdt_probe(struct platform_device *pdev)
 	wdd->min_timeout = 1;
 	wdd->max_hw_heartbeat_ms = (WDT_PRELOAD_MAX << WDT_PRELOAD_SHIFT) /
 		wdt->freq * 1000;
+	wdd->timeout = DEFAULT_HEARTBEAT;
 	wdd->parent = dev;
+
+	data = device_get_match_data(dev);
+	if (!data) {
+		ret = -ENODEV;
+		goto err_iomap;
+	}
+
+	wdt->nmi = data->nmi;
 
 	watchdog_set_drvdata(wdd, wdt);
 	watchdog_set_nowayout(wdd, 1);
@@ -276,7 +294,8 @@ static int rti_wdt_probe(struct platform_device *pdev)
 
 		set_bit(WDOG_HW_RUNNING, &wdd->status);
 		time_left_ms = rti_wdt_get_timeleft_ms(wdd);
-		heartbeat_ms = readl(wdt->base + RTIDWDPRLD);
+		/* AM62x TRM: texp = (RTIDWDPRLD + 1) * (2^13) / RTICLK1 */
+		heartbeat_ms = readl(wdt->base + RTIDWDPRLD) + 1;
 		heartbeat_ms <<= WDT_PRELOAD_SHIFT;
 		heartbeat_ms *= 1000;
 		do_div(heartbeat_ms, wdt->freq);
@@ -301,14 +320,8 @@ static int rti_wdt_probe(struct platform_device *pdev)
 		}
 	}
 
-	node = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
-	if (node) {
-		ret = of_address_to_resource(node, 0, &res);
-		if (ret) {
-			dev_err(dev, "No memory address assigned to the region.\n");
-			goto err_iomap;
-		}
-
+	ret = of_reserved_mem_region_to_resource(pdev->dev.of_node, 0, &res);
+	if (!ret) {
 		/*
 		 * If reserved memory is defined for watchdog reset cause.
 		 * Readout the Power-on(PON) reason and pass to bootstatus.
@@ -340,10 +353,8 @@ static int rti_wdt_probe(struct platform_device *pdev)
 	watchdog_init_timeout(wdd, heartbeat, dev);
 
 	ret = watchdog_register_device(wdd);
-	if (ret) {
-		dev_err(dev, "cannot register watchdog device\n");
+	if (ret)
 		goto err_iomap;
-	}
 
 	if (last_ping)
 		watchdog_set_last_hw_keepalive(wdd, last_ping);
@@ -372,8 +383,17 @@ static void rti_wdt_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
+static const struct rti_wdt_data rti_wdt_j7_data = {
+	.nmi = true,
+};
+
+static const struct rti_wdt_data rti_wdt_am62l_data = {
+	.nmi = false,
+};
+
 static const struct of_device_id rti_wdt_of_match[] = {
-	{ .compatible = "ti,j7-rti-wdt", },
+	{ .compatible = "ti,j7-rti-wdt", .data = &rti_wdt_j7_data },
+	{ .compatible = "ti,am62l-rti-wdt", .data = &rti_wdt_am62l_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, rti_wdt_of_match);
@@ -384,7 +404,7 @@ static struct platform_driver rti_wdt_driver = {
 		.of_match_table = rti_wdt_of_match,
 	},
 	.probe = rti_wdt_probe,
-	.remove_new = rti_wdt_remove,
+	.remove = rti_wdt_remove,
 };
 
 module_platform_driver(rti_wdt_driver);
@@ -395,8 +415,8 @@ MODULE_DESCRIPTION("K3 RTI Watchdog Driver");
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat,
 		 "Watchdog heartbeat period in seconds from 1 to "
-		 __MODULE_STRING(MAX_HEARTBEAT) ", default "
-		 __MODULE_STRING(DEFAULT_HEARTBEAT));
+		 __stringify(MAX_HEARTBEAT) ", default "
+		 __stringify(DEFAULT_HEARTBEAT));
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:rti-wdt");

@@ -42,10 +42,10 @@ static const struct smbus_methods_t ibm_smbus_methods = {
 };
 
 static const struct acpi_device_id acpi_smbus_cmi_ids[] = {
-	{"SMBUS01", (kernel_ulong_t)&smbus_methods},
-	{ACPI_SMBUS_IBM_HID, (kernel_ulong_t)&ibm_smbus_methods},
-	{ACPI_SMBUS_MS_HID, (kernel_ulong_t)&smbus_methods},
-	{"", 0}
+	{ .id = "SMBUS01", .driver_data = (kernel_ulong_t)&smbus_methods },
+	{ .id = ACPI_SMBUS_IBM_HID, .driver_data = (kernel_ulong_t)&ibm_smbus_methods },
+	{ .id = ACPI_SMBUS_MS_HID, .driver_data = (kernel_ulong_t)&smbus_methods },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, acpi_smbus_cmi_ids);
 
@@ -359,7 +359,7 @@ static int smbus_cmi_probe(struct platform_device *device)
 	struct acpi_smbus_cmi *smbus_cmi;
 	int ret;
 
-	smbus_cmi = kzalloc(sizeof(struct acpi_smbus_cmi), GFP_KERNEL);
+	smbus_cmi = kzalloc_obj(struct acpi_smbus_cmi);
 	if (!smbus_cmi)
 		return -ENOMEM;
 
@@ -411,7 +411,7 @@ static void smbus_cmi_remove(struct platform_device *device)
 
 static struct platform_driver smbus_cmi_driver = {
 	.probe = smbus_cmi_probe,
-	.remove_new = smbus_cmi_remove,
+	.remove = smbus_cmi_remove,
 	.driver = {
 		.name   = "smbus_cmi",
 		.acpi_match_table = acpi_smbus_cmi_ids,

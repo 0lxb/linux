@@ -127,7 +127,7 @@ int __pata_platform_probe(struct device *dev, struct resource *io_res,
 		return -ENOMEM;
 	ap = host->ports[0];
 
-	ap->ops = devm_kzalloc(dev, sizeof(*ap->ops), GFP_KERNEL);
+	ap->ops = devm_kzalloc_obj(dev, *ap->ops);
 	if (!ap->ops)
 		return -ENOMEM;
 	ap->ops->inherits = &ata_sff_port_ops;
@@ -223,7 +223,7 @@ static int pata_platform_probe(struct platform_device *pdev)
 
 static struct platform_driver pata_platform_driver = {
 	.probe		= pata_platform_probe,
-	.remove_new	= ata_platform_remove_one,
+	.remove		= ata_platform_remove_one,
 	.driver = {
 		.name		= DRV_NAME,
 	},

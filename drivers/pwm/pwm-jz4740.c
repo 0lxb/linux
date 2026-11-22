@@ -10,7 +10,6 @@
 
 #include <linux/clk.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/mfd/ingenic-tcu.h>
 #include <linux/mfd/syscon.h>
@@ -201,12 +200,11 @@ static int jz4740_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * state instead of its inactive state.
 	 */
 	if ((state->polarity == PWM_POLARITY_NORMAL) ^ state->enabled)
-		regmap_update_bits(jz->map, TCU_REG_TCSRc(pwm->hwpwm),
-				   TCU_TCSR_PWM_INITL_HIGH, 0);
+		regmap_clear_bits(jz->map, TCU_REG_TCSRc(pwm->hwpwm),
+				  TCU_TCSR_PWM_INITL_HIGH);
 	else
-		regmap_update_bits(jz->map, TCU_REG_TCSRc(pwm->hwpwm),
-				   TCU_TCSR_PWM_INITL_HIGH,
-				   TCU_TCSR_PWM_INITL_HIGH);
+		regmap_set_bits(jz->map, TCU_REG_TCSRc(pwm->hwpwm),
+				TCU_TCSR_PWM_INITL_HIGH);
 
 	if (state->enabled)
 		jz4740_pwm_enable(chip, pwm);
@@ -263,7 +261,7 @@ static const struct of_device_id jz4740_pwm_dt_ids[] = {
 	{ .compatible = "ingenic,jz4740-pwm", .data = &jz4740_soc_info },
 	{ .compatible = "ingenic,jz4725b-pwm", .data = &jz4725b_soc_info },
 	{ .compatible = "ingenic,x1000-pwm", .data = &x1000_soc_info },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, jz4740_pwm_dt_ids);
 

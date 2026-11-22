@@ -839,10 +839,8 @@ static int perf_copy_chunk(struct perf_thread *pthr,
 	dma_set_unmap(tx, unmap);
 
 	ret = dma_submit_error(dmaengine_submit(tx));
-	if (ret) {
-		dmaengine_unmap_put(unmap);
+	if (ret)
 		goto err_free_resource;
-	}
 
 	dmaengine_unmap_put(unmap);
 
@@ -1227,7 +1225,7 @@ static ssize_t perf_dbgfs_read_info(struct file *filep, char __user *ubuf,
 			"\tOut buffer addr 0x%pK\n", peer->outbuf);
 
 		pos += scnprintf(buf + pos, buf_size - pos,
-			"\tOut buff phys addr %pa[p]\n", &peer->out_phys_addr);
+			"\tOut buff phys addr %pap\n", &peer->out_phys_addr);
 
 		pos += scnprintf(buf + pos, buf_size - pos,
 			"\tOut buffer size %pa\n", &peer->outbuf_size);
@@ -1391,13 +1389,12 @@ static struct perf_ctx *perf_create_data(struct ntb_dev *ntb)
 {
 	struct perf_ctx *perf;
 
-	perf = devm_kzalloc(&ntb->dev, sizeof(*perf), GFP_KERNEL);
+	perf = devm_kzalloc_obj(&ntb->dev, *perf);
 	if (!perf)
 		return ERR_PTR(-ENOMEM);
 
 	perf->pcnt = ntb_peer_port_count(ntb);
-	perf->peers = devm_kcalloc(&ntb->dev, perf->pcnt, sizeof(*perf->peers),
-				  GFP_KERNEL);
+	perf->peers = devm_kzalloc_objs(&ntb->dev, *perf->peers, perf->pcnt);
 	if (!perf->peers)
 		return ERR_PTR(-ENOMEM);
 

@@ -155,7 +155,7 @@
 		/*Y0-Y7*/	"","","","","","","","",
 		/*Z0-Z7*/	"","","","","","","","";
 
-	usb_power {
+	usb-power-hog {
 		gpio-hog;
 		gpios = <ASPEED_GPIO(O, 3) GPIO_ACTIVE_LOW>;
 		output-high;
@@ -277,15 +277,11 @@
 		#size-cells = <0>;
 
 		fan0: fan@0 {
-			compatible = "pmbus-fan";
 			reg = <0>;
-			tach-pulses = <2>;
 		};
 
 		fan1: fan@1 {
-			compatible = "pmbus-fan";
 			reg = <1>;
-			tach-pulses = <2>;
 		};
 	};
 
@@ -488,7 +484,7 @@
 		#gpio-cells = <2>;
 
 		led@0 {
-			label = "nvme0";
+			label = "nvme3";
 			reg = <0>;
 			retain-state-shutdown;
 			default-state = "keep";
@@ -496,7 +492,7 @@
 		};
 
 		led@1 {
-			label = "nvme1";
+			label = "nvme2";
 			reg = <1>;
 			retain-state-shutdown;
 			default-state = "keep";
@@ -504,7 +500,7 @@
 		};
 
 		led@2 {
-			label = "nvme2";
+			label = "nvme1";
 			reg = <2>;
 			retain-state-shutdown;
 			default-state = "keep";
@@ -512,7 +508,7 @@
 		};
 
 		led@3 {
-			label = "nvme3";
+			label = "nvme0";
 			reg = <3>;
 			retain-state-shutdown;
 			default-state = "keep";
@@ -568,11 +564,6 @@
 
 &wdt2 {
 	status = "okay";
-};
-
-&xdma {
-	status = "okay";
-	memory-region = <&vga_memory>;
 };
 
 &kcs2 {

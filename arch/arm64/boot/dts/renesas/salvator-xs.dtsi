@@ -25,6 +25,8 @@
 		#clock-cells = <1>;
 		clocks = <&x23_clk>;
 		clock-names = "xin";
+		idt,shutdown = <0>;
+		idt,output-enable-active = <1>;
 	};
 };
 
@@ -70,7 +72,7 @@
 	 *	- Connect GP6_3[01] to BD082065 (USB2.0 ch3's host power).
 	 *	- Connect GP6_{04,21} to ADV7842.
 	 */
-	usb2_ch3_pins: usb2_ch3 {
+	usb2_ch3_pins: usb2-ch3 {
 		groups = "usb2_ch3";
 		function = "usb2_ch3";
 	};

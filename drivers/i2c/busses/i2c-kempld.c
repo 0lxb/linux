@@ -13,6 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <linux/mfd/kempld.h>
+#include <linux/stringify.h>
 
 #define KEMPLD_I2C_PRELOW	0x0b
 #define KEMPLD_I2C_PREHIGH	0x0c
@@ -66,7 +67,7 @@ struct kempld_i2c_data {
 static unsigned int bus_frequency = KEMPLD_I2C_FREQ_STD;
 module_param(bus_frequency, uint, 0);
 MODULE_PARM_DESC(bus_frequency, "Set I2C bus frequency in kHz (default="
-				__MODULE_STRING(KEMPLD_I2C_FREQ_STD)")");
+				__stringify(KEMPLD_I2C_FREQ_STD)")");
 
 static int i2c_bus = -1;
 module_param(i2c_bus, int, 0);
@@ -115,9 +116,7 @@ static int kempld_i2c_process(struct kempld_i2c_data *i2c)
 	if (i2c->state == STATE_ADDR) {
 		/* 10 bit address? */
 		if (i2c->msg->flags & I2C_M_TEN) {
-			addr = 0xf0 | ((i2c->msg->addr >> 7) & 0x6);
-			/* Set read bit if necessary */
-			addr |= (i2c->msg->flags & I2C_M_RD) ? 1 : 0;
+			addr = i2c_10bit_addr_hi_from_msg(msg);
 			i2c->state = STATE_ADDR10;
 		} else {
 			addr = i2c_8bit_addr_from_msg(i2c->msg);
@@ -132,10 +131,12 @@ static int kempld_i2c_process(struct kempld_i2c_data *i2c)
 
 	/* Second part of 10 bit addressing */
 	if (i2c->state == STATE_ADDR10) {
-		kempld_write8(pld, KEMPLD_I2C_DATA, i2c->msg->addr & 0xff);
+		addr = i2c_10bit_addr_lo_from_msg(msg);
+		i2c->state = STATE_START;
+
+		kempld_write8(pld, KEMPLD_I2C_DATA, addr);
 		kempld_write8(pld, KEMPLD_I2C_CMD, I2C_CMD_WRITE);
 
-		i2c->state = STATE_START;
 		return 0;
 	}
 
@@ -276,8 +277,8 @@ static u32 kempld_i2c_func(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm kempld_i2c_algorithm = {
-	.master_xfer	= kempld_i2c_xfer,
-	.functionality	= kempld_i2c_func,
+	.xfer = kempld_i2c_xfer,
+	.functionality = kempld_i2c_func,
 };
 
 static const struct i2c_adapter kempld_i2c_adapter = {
@@ -294,7 +295,7 @@ static int kempld_i2c_probe(struct platform_device *pdev)
 	int ret;
 	u8 ctrl;
 
-	i2c = devm_kzalloc(&pdev->dev, sizeof(*i2c), GFP_KERNEL);
+	i2c = devm_kzalloc_obj(&pdev->dev, *i2c);
 	if (!i2c)
 		return -ENOMEM;
 
@@ -385,7 +386,7 @@ static struct platform_driver kempld_i2c_driver = {
 		.pm = pm_sleep_ptr(&kempld_i2c_pm_ops),
 	},
 	.probe		= kempld_i2c_probe,
-	.remove_new	= kempld_i2c_remove,
+	.remove		= kempld_i2c_remove,
 };
 
 module_platform_driver(kempld_i2c_driver);

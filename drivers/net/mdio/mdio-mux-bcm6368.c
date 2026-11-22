@@ -93,7 +93,7 @@ static int bcm6368_mdiomux_probe(struct platform_device *pdev)
 	struct resource *res;
 	int rc;
 
-	md = devm_kzalloc(&pdev->dev, sizeof(*md), GFP_KERNEL);
+	md = devm_kzalloc_obj(&pdev->dev, *md);
 	if (!md)
 		return -ENOMEM;
 	md->dev = &pdev->dev;
@@ -173,7 +173,7 @@ static struct platform_driver bcm6368_mdiomux_driver = {
 		.of_match_table = bcm6368_mdiomux_ids,
 	},
 	.probe	= bcm6368_mdiomux_probe,
-	.remove_new = bcm6368_mdiomux_remove,
+	.remove = bcm6368_mdiomux_remove,
 };
 module_platform_driver(bcm6368_mdiomux_driver);
 

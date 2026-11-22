@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2022 Intel Corporation
 
 #include <linux/debugfs.h>
 #include <linux/sched/signal.h>
+#include <linux/sched/clock.h>
 #include <sound/sof/ipc4/header.h>
 #include "sof-priv.h"
 #include "ipc4-priv.h"
@@ -117,22 +118,19 @@ static int sof_ipc4_mtrace_dfs_open(struct inode *inode, struct file *file)
 	struct sof_mtrace_core_data *core_data = inode->i_private;
 	int ret;
 
-	mutex_lock(&core_data->buffer_lock);
+	guard(mutex)(&core_data->buffer_lock);
 
-	if (core_data->log_buffer) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (core_data->log_buffer)
+		return -EBUSY;
 
 	ret = debugfs_file_get(file->f_path.dentry);
 	if (unlikely(ret))
-		goto out;
+		return ret;
 
 	core_data->log_buffer = kmalloc(SOF_IPC4_DEBUG_SLOT_SIZE, GFP_KERNEL);
 	if (!core_data->log_buffer) {
 		debugfs_file_put(file->f_path.dentry);
-		ret = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 
 	ret = simple_open(inode, file);
@@ -140,9 +138,6 @@ static int sof_ipc4_mtrace_dfs_open(struct inode *inode, struct file *file)
 		kfree(core_data->log_buffer);
 		debugfs_file_put(file->f_path.dentry);
 	}
-
-out:
-	mutex_unlock(&core_data->buffer_lock);
 
 	return ret;
 }
@@ -280,10 +275,10 @@ static int sof_ipc4_mtrace_dfs_release(struct inode *inode, struct file *file)
 
 	debugfs_file_put(file->f_path.dentry);
 
-	mutex_lock(&core_data->buffer_lock);
-	kfree(core_data->log_buffer);
-	core_data->log_buffer = NULL;
-	mutex_unlock(&core_data->buffer_lock);
+	scoped_guard(mutex, &core_data->buffer_lock) {
+		kfree(core_data->log_buffer);
+		core_data->log_buffer = NULL;
+	}
 
 	return 0;
 }
@@ -412,7 +407,6 @@ static int ipc4_mtrace_enable(struct snd_sof_dev *sdev)
 	const struct sof_ipc_ops *iops = sdev->ipc->ops;
 	struct sof_ipc4_msg msg;
 	u64 system_time;
-	ktime_t kt;
 	int ret;
 
 	if (priv->mtrace_state != SOF_MTRACE_DISABLED)
@@ -424,9 +418,12 @@ static int ipc4_mtrace_enable(struct snd_sof_dev *sdev)
 	msg.primary |= SOF_IPC4_MOD_INSTANCE(SOF_IPC4_MOD_INIT_BASEFW_INSTANCE_ID);
 	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_FW_PARAM_SYSTEM_TIME);
 
-	/* The system time is in usec, UTC, epoch is 1601-01-01 00:00:00 */
-	kt = ktime_add_us(ktime_get_real(), FW_EPOCH_DELTA * USEC_PER_SEC);
-	system_time = ktime_to_us(kt);
+	/*
+	 * local_clock() is used to align with dmesg, so both kernel and firmware logs have
+	 * the same base and a minor delta due to the IPC. system time is in us format but
+	 * local_clock() returns the time in ns, so convert to ns.
+	 */
+	system_time = div64_u64(local_clock(), NSEC_PER_USEC);
 	msg.data_size = sizeof(system_time);
 	msg.data_ptr = &system_time;
 	ret = iops->set_get_data(sdev, &msg, msg.data_size, true);
@@ -550,8 +547,7 @@ static int ipc4_mtrace_init(struct snd_sof_dev *sdev)
 		return 0;
 	}
 
-	priv = devm_kzalloc(sdev->dev, struct_size(priv, cores, sdev->num_cores),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_flex(sdev->dev, *priv, cores, sdev->num_cores);
 	if (!priv)
 		return -ENOMEM;
 

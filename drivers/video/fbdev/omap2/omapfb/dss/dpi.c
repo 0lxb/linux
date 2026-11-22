@@ -13,13 +13,13 @@
 
 #include <linux/kernel.h>
 #include <linux/delay.h>
-#include <linux/export.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/string.h>
 #include <linux/of.h>
+#include <linux/of_graph.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 
@@ -778,7 +778,7 @@ static int dpi_bind(struct device *dev, struct device *master, void *data)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct dpi_data *dpi;
 
-	dpi = devm_kzalloc(&pdev->dev, sizeof(*dpi), GFP_KERNEL);
+	dpi = devm_kzalloc_obj(&pdev->dev, *dpi);
 	if (!dpi)
 		return -ENOMEM;
 
@@ -817,8 +817,8 @@ static void dpi_remove(struct platform_device *pdev)
 
 static struct platform_driver omap_dpi_driver = {
 	.probe		= dpi_probe,
-	.remove_new	= dpi_remove,
-	.driver         = {
+	.remove		= dpi_remove,
+	.driver		= {
 		.name   = "omapdss_dpi",
 		.suppress_bind_attrs = true,
 	},
@@ -841,11 +841,11 @@ int dpi_init_port(struct platform_device *pdev, struct device_node *port)
 	u32 datalines;
 	int r;
 
-	dpi = devm_kzalloc(&pdev->dev, sizeof(*dpi), GFP_KERNEL);
+	dpi = devm_kzalloc_obj(&pdev->dev, *dpi);
 	if (!dpi)
 		return -ENOMEM;
 
-	ep = omapdss_of_get_next_endpoint(port, NULL);
+	ep = of_graph_get_next_port_endpoint(port, NULL);
 	if (!ep)
 		return 0;
 

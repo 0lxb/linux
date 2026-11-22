@@ -84,12 +84,13 @@
 #define VBIOSSMC_MSG_AllowZstatesEntry            0x15
 #define VBIOSSMC_MSG_DisallowZstatesEntry     	  0x16
 #define VBIOSSMC_MSG_SetDtbClk                    0x17
-#define VBIOSSMC_MSG_DispPsrEntry                 0x18 ///< Display PSR entry, DMU
-#define VBIOSSMC_MSG_DispPsrExit                  0x19 ///< Display PSR exit, DMU
+#define VBIOSSMC_MSG_DispIPS2Entry                0x18 ///< Display IPS2 entry, DMU
+#define VBIOSSMC_MSG_DispIPS2Exit                 0x19 ///< Display IPS2 exit, DMU
 #define VBIOSSMC_MSG_DisableLSdma                 0x1A ///< Disable LSDMA; only sent by VBIOS
 #define VBIOSSMC_MSG_DpControllerPhyStatus        0x1B ///< Inform PMFW about the pre conditions for turning SLDO2 on/off . bit[0]==1 precondition is met, bit[1-2] are for DPPHY number
 #define VBIOSSMC_MSG_QueryIPS2Support             0x1C ///< Return 1: support; else not supported
-#define VBIOSSMC_Message_Count                    0x1D
+#define VBIOSSMC_MSG_NotifyHostRouterBW           0x1D
+#define VBIOSSMC_Message_Count                    0x1E
 
 #define VBIOSSMC_Status_BUSY                      0x0
 #define VBIOSSMC_Result_OK                        0x1
@@ -97,6 +98,14 @@
 #define VBIOSSMC_Result_UnknownCmd                0xFE
 #define VBIOSSMC_Result_CmdRejectedPrereq         0xFD
 #define VBIOSSMC_Result_CmdRejectedBusy           0xFC
+
+union dcn35_dpia_host_router_bw {
+	struct {
+		uint32_t hr_id : 16;
+		uint32_t bw_mbps : 16;
+	} bits;
+	uint32_t all;
+};
 
 /*
  * Function to be used instead of REG_WAIT macro because the wait ends when
@@ -195,7 +204,7 @@ int dcn35_smu_set_dispclk(struct clk_mgr_internal *clk_mgr, int requested_dispcl
 			khz_to_mhz_ceil(requested_dispclk_khz));
 
 	smu_print("requested_dispclk_khz = %d, actual_dispclk_set_mhz: %d\n", requested_dispclk_khz, actual_dispclk_set_mhz);
-	return actual_dispclk_set_mhz * 1000;
+	return (int)((long long)actual_dispclk_set_mhz * 1000);
 }
 
 int dcn35_smu_set_dprefclk(struct clk_mgr_internal *clk_mgr)
@@ -212,7 +221,7 @@ int dcn35_smu_set_dprefclk(struct clk_mgr_internal *clk_mgr)
 
 	/* TODO: add code for programing DP DTO, currently this is down by command table */
 
-	return actual_dprefclk_set_mhz * 1000;
+	return (int)((long long)actual_dprefclk_set_mhz * 1000);
 }
 
 int dcn35_smu_set_hard_min_dcfclk(struct clk_mgr_internal *clk_mgr, int requested_dcfclk_khz)
@@ -229,7 +238,7 @@ int dcn35_smu_set_hard_min_dcfclk(struct clk_mgr_internal *clk_mgr, int requeste
 
 	smu_print("requested_dcfclk_khz = %d, actual_dcfclk_set_mhz: %d\n", requested_dcfclk_khz, actual_dcfclk_set_mhz);
 
-	return actual_dcfclk_set_mhz * 1000;
+	return (int)((long long)actual_dcfclk_set_mhz * 1000);
 }
 
 int dcn35_smu_set_min_deep_sleep_dcfclk(struct clk_mgr_internal *clk_mgr, int requested_min_ds_dcfclk_khz)
@@ -246,7 +255,7 @@ int dcn35_smu_set_min_deep_sleep_dcfclk(struct clk_mgr_internal *clk_mgr, int re
 
 	smu_print("requested_min_ds_dcfclk_khz = %d, actual_min_ds_dcfclk_mhz: %d\n", requested_min_ds_dcfclk_khz, actual_min_ds_dcfclk_mhz);
 
-	return actual_min_ds_dcfclk_mhz * 1000;
+	return (int)((long long)actual_min_ds_dcfclk_mhz * 1000);
 }
 
 int dcn35_smu_set_dppclk(struct clk_mgr_internal *clk_mgr, int requested_dpp_khz)
@@ -263,7 +272,7 @@ int dcn35_smu_set_dppclk(struct clk_mgr_internal *clk_mgr, int requested_dpp_khz
 
 	smu_print("requested_dpp_khz = %d, actual_dppclk_set_mhz: %d\n", requested_dpp_khz, actual_dppclk_set_mhz);
 
-	return actual_dppclk_set_mhz * 1000;
+	return (int)((long long)actual_dppclk_set_mhz * 1000);
 }
 
 void dcn35_smu_set_display_idle_optimization(struct clk_mgr_internal *clk_mgr, uint32_t idle_info)
@@ -415,7 +424,7 @@ int dcn35_smu_get_dprefclk(struct clk_mgr_internal *clk_mgr)
 						 0);
 
 	smu_print("%s:  SMU DPREF clk  = %d mhz\n",  __func__, dprefclk);
-	return dprefclk * 1000;
+	return (int)((long long)dprefclk * 1000);
 }
 
 int dcn35_smu_get_dtbclk(struct clk_mgr_internal *clk_mgr)
@@ -430,7 +439,7 @@ int dcn35_smu_get_dtbclk(struct clk_mgr_internal *clk_mgr)
 					       0);
 
 	smu_print("%s: get_dtbclk  = %dmhz\n", __func__, dtbclk);
-	return dtbclk * 1000;
+	return (int)((long long)dtbclk * 1000);
 }
 /* Arg = 1: Turn DTB on; 0: Turn DTB CLK OFF. when it is on, it is 600MHZ */
 void dcn35_smu_set_dtbclk(struct clk_mgr_internal *clk_mgr, bool enable)
@@ -466,7 +475,7 @@ int dcn35_smu_exit_low_power_state(struct clk_mgr_internal *clk_mgr)
 
 	retv = dcn35_smu_send_msg_with_param(
 		clk_mgr,
-		VBIOSSMC_MSG_DispPsrExit,
+		VBIOSSMC_MSG_DispIPS2Exit,
 		0);
 	smu_print("%s: smu_exit_low_power_state return = %d\n", __func__, retv);
 	return retv;
@@ -488,23 +497,12 @@ int dcn35_smu_get_ips_supported(struct clk_mgr_internal *clk_mgr)
 	return retv;
 }
 
-void dcn35_smu_write_ips_scratch(struct clk_mgr_internal *clk_mgr, uint32_t param)
+void dcn35_smu_notify_host_router_bw(struct clk_mgr_internal *clk_mgr, uint32_t hr_id, uint32_t bw_kbps)
 {
-	if (!clk_mgr->smu_present)
-		return;
+	union dcn35_dpia_host_router_bw msg_data = { 0 };
 
-	REG_WRITE(MP1_SMN_C2PMSG_71, param);
-	//smu_print("%s: write_ips_scratch = %x\n", __func__, param);
-}
+	msg_data.bits.hr_id = hr_id;
+	msg_data.bits.bw_mbps = bw_kbps / 1000;
 
-uint32_t dcn35_smu_read_ips_scratch(struct clk_mgr_internal *clk_mgr)
-{
-	uint32_t retv;
-
-	if (!clk_mgr->smu_present)
-		return 0;
-
-	retv = REG_READ(MP1_SMN_C2PMSG_71);
-	//smu_print("%s: dcn35_smu_read_ips_scratch = %x\n",  __func__, retv);
-	return retv;
+	dcn35_smu_send_msg_with_param(clk_mgr, VBIOSSMC_MSG_NotifyHostRouterBW, msg_data.all);
 }

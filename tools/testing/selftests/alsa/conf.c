@@ -14,7 +14,7 @@
 #include <regex.h>
 #include <sys/stat.h>
 
-#include "../kselftest.h"
+#include "kselftest.h"
 #include "alsa-local.h"
 
 #define SYSFS_ROOT "/sys"
@@ -105,7 +105,7 @@ static struct card_cfg_data *conf_data_by_card(int card, bool msg)
 	return NULL;
 }
 
-static int dump_config_tree(snd_config_t *top)
+static void dump_config_tree(snd_config_t *top)
 {
 	snd_output_t *out;
 	int err;
@@ -448,7 +448,7 @@ int conf_get_bool(snd_config_t *root, const char *key1, const char *key2, int de
 		ksft_exit_fail_msg("key '%s'.'%s' search error: %s\n", key1, key2, snd_strerror(ret));
 	ret = snd_config_get_bool(cfg);
 	if (ret < 0)
-		ksft_exit_fail_msg("key '%s'.'%s' is not an bool\n", key1, key2);
+		ksft_exit_fail_msg("key '%s'.'%s' is not a bool\n", key1, key2);
 	return !!ret;
 }
 

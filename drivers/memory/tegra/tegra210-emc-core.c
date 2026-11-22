@@ -9,7 +9,6 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
@@ -558,7 +557,7 @@ tegra210_emc_table_register_offsets = {
 
 static void tegra210_emc_train(struct timer_list *timer)
 {
-	struct tegra210_emc *emc = from_timer(emc, timer, training);
+	struct tegra210_emc *emc = timer_container_of(emc, timer, training);
 	unsigned long flags;
 
 	if (!emc->last)
@@ -583,7 +582,7 @@ static void tegra210_emc_training_start(struct tegra210_emc *emc)
 
 static void tegra210_emc_training_stop(struct tegra210_emc *emc)
 {
-	del_timer(&emc->training);
+	timer_delete(&emc->training);
 }
 
 static unsigned int tegra210_emc_get_temperature(struct tegra210_emc *emc)
@@ -614,7 +613,8 @@ static unsigned int tegra210_emc_get_temperature(struct tegra210_emc *emc)
 
 static void tegra210_emc_poll_refresh(struct timer_list *timer)
 {
-	struct tegra210_emc *emc = from_timer(emc, timer, refresh_timer);
+	struct tegra210_emc *emc = timer_container_of(emc, timer,
+						      refresh_timer);
 	unsigned int temperature;
 
 	if (!emc->debugfs.temperature)
@@ -666,7 +666,7 @@ reset:
 static void tegra210_emc_poll_refresh_stop(struct tegra210_emc *emc)
 {
 	atomic_set(&emc->refresh_poll, 0);
-	del_timer_sync(&emc->refresh_timer);
+	timer_delete_sync(&emc->refresh_timer);
 }
 
 static void tegra210_emc_poll_refresh_start(struct tegra210_emc *emc)
@@ -1816,7 +1816,7 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	unsigned int i;
 	int err;
 
-	emc = devm_kzalloc(&pdev->dev, sizeof(*emc), GFP_KERNEL);
+	emc = devm_kzalloc_obj(&pdev->dev, *emc);
 	if (!emc)
 		return -ENOMEM;
 
@@ -1919,9 +1919,9 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 	emc->provider.dev = &pdev->dev;
 	emc->provider.set_rate = tegra210_emc_set_rate;
 
-	emc->provider.configs = devm_kcalloc(&pdev->dev, emc->num_timings,
-					     sizeof(*emc->provider.configs),
-					     GFP_KERNEL);
+	emc->provider.configs = devm_kzalloc_objs(&pdev->dev,
+						  *emc->provider.configs,
+						  emc->num_timings);
 	if (!emc->provider.configs) {
 		err = -ENOMEM;
 		goto release;
@@ -1965,8 +1965,8 @@ static int tegra210_emc_probe(struct platform_device *pdev)
 
 	tegra210_emc_debugfs_init(emc);
 
-	cd = devm_thermal_of_cooling_device_register(emc->dev, np, "emc", emc,
-						     &tegra210_emc_cd_ops);
+	cd = devm_thermal_of_child_cooling_device_register(emc->dev, np, "emc", emc,
+							   &tegra210_emc_cd_ops);
 	if (IS_ERR(cd)) {
 		err = PTR_ERR(cd);
 		dev_err(emc->dev, "failed to register cooling device: %d\n",
@@ -2051,7 +2051,7 @@ static struct platform_driver tegra210_emc_driver = {
 		.pm = &tegra210_emc_pm_ops,
 	},
 	.probe = tegra210_emc_probe,
-	.remove_new = tegra210_emc_remove,
+	.remove = tegra210_emc_remove,
 };
 
 module_platform_driver(tegra210_emc_driver);

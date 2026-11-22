@@ -690,6 +690,9 @@ static const struct mtk_thermal_data mt7986_thermal_data = {
 	.adcpnp = mt7986_adcpnp,
 	.sensor_mux_values = mt7986_mux_values,
 	.version = MTK_THERMAL_V3,
+	.apmixed_buffer_ctl_reg = APMIXED_SYS_TS_CON1,
+	.apmixed_buffer_ctl_mask = GENMASK(31, 6) | BIT(3),
+	.apmixed_buffer_ctl_set = BIT(0),
 };
 
 static bool mtk_thermal_temp_is_valid(int temp)
@@ -1197,7 +1200,7 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	struct thermal_zone_device *tzdev;
 	void __iomem *apmixed_base, *auxadc_base;
 
-	mt = devm_kzalloc(&pdev->dev, sizeof(*mt), GFP_KERNEL);
+	mt = devm_kzalloc_obj(&pdev->dev, *mt);
 	if (!mt)
 		return -ENOMEM;
 

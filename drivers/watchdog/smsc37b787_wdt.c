@@ -36,7 +36,7 @@
  *  mknod /dev/watchdog c 10 130
  *
  * For an example userspace keep-alive daemon, see:
- *   Documentation/watchdog/wdt.rst
+ *   samples/watchdog/watchdog-simple.c
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -55,6 +55,7 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 
 /* enable support for minutes as units? */
@@ -485,7 +486,7 @@ static long wb_smsc_wdt_ioctl(struct file *file,
 	}
 }
 
-/* -- Notifier funtions -----------------------------------------*/
+/* -- Notifier functions -----------------------------------------*/
 
 static int wb_smsc_wdt_notify_sys(struct notifier_block *this,
 					unsigned long code, void *unused)
@@ -502,7 +503,6 @@ static int wb_smsc_wdt_notify_sys(struct notifier_block *this,
 
 static const struct file_operations wb_smsc_wdt_fops = {
 	.owner	  = THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= wb_smsc_wdt_write,
 	.unlocked_ioctl	= wb_smsc_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -612,4 +612,4 @@ MODULE_PARM_DESC(timeout, "range is 1-255 units, default is 60");
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");

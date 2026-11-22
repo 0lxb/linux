@@ -259,7 +259,8 @@ static void butterfly_attach(struct parport *p)
 	 */
 
 	pp->info[0].max_speed_hz = 15 * 1000 * 1000;
-	strcpy(pp->info[0].modalias, "mtd_dataflash");
+	strscpy(pp->info[0].modalias, "mtd_dataflash",
+		sizeof(pp->info[0].modalias));
 	pp->info[0].platform_data = &flash;
 	pp->info[0].chip_select = 1;
 	pp->info[0].controller_data = pp;
@@ -315,7 +316,6 @@ static struct parport_driver butterfly_driver = {
 	.name =		"spi_butterfly",
 	.match_port =	butterfly_attach,
 	.detach =	butterfly_detach,
-	.devmodel = true,
 };
 module_parport_driver(butterfly_driver);
 

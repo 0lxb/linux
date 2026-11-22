@@ -104,7 +104,7 @@ static int iproc_nand_probe(struct platform_device *pdev)
 	struct iproc_nand_soc *priv;
 	struct brcmnand_soc *soc;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 	soc = &priv->soc;
@@ -134,7 +134,7 @@ MODULE_DEVICE_TABLE(of, iproc_nand_of_match);
 
 static struct platform_driver iproc_nand_driver = {
 	.probe			= iproc_nand_probe,
-	.remove_new		= brcmnand_remove,
+	.remove			= brcmnand_remove,
 	.driver = {
 		.name		= "iproc_nand",
 		.pm		= &brcmnand_pm_ops,

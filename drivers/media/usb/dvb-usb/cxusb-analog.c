@@ -817,8 +817,8 @@ static int cxusb_medion_v_start_streaming(struct vb2_queue *q,
 		 * doing a large continuous allocation when (if)
 		 * s-g isochronous USB transfers are supported
 		 */
-		streambuf = kmalloc(npackets * CXUSB_VIDEO_PKT_SIZE,
-				    GFP_KERNEL);
+		streambuf = kmalloc_array(npackets, CXUSB_VIDEO_PKT_SIZE,
+					  GFP_KERNEL);
 		if (!streambuf) {
 			if (i < 2) {
 				ret = -ENOMEM;
@@ -956,8 +956,6 @@ static const struct vb2_ops cxdev_video_qops = {
 	.start_streaming = cxusb_medion_v_start_streaming,
 	.stop_streaming = cxusb_medion_v_stop_streaming,
 	.buf_queue = cxusub_medion_v_buf_queue,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish
 };
 
 static const __u32 videocaps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_TUNER |
@@ -1033,7 +1031,8 @@ static int cxusb_medion_try_s_fmt_vid_cap(struct file *file,
 	subfmt.format.field = field;
 	subfmt.format.colorspace = V4L2_COLORSPACE_SMPTE170M;
 
-	ret = v4l2_subdev_call(cxdev->cx25840, pad, set_fmt, NULL, &subfmt);
+	ret = v4l2_subdev_call(cxdev->cx25840, pad, set_fmt, NULL, NULL,
+			       &subfmt);
 	if (ret != 0)
 		return ret;
 
@@ -1515,7 +1514,8 @@ int cxusb_medion_analog_init(struct dvb_usb_device *dvbdev)
 	subfmt.format.field = V4L2_FIELD_SEQ_TB;
 	subfmt.format.colorspace = V4L2_COLORSPACE_SMPTE170M;
 
-	ret = v4l2_subdev_call(cxdev->cx25840, pad, set_fmt, NULL, &subfmt);
+	ret = v4l2_subdev_call(cxdev->cx25840, pad, set_fmt, NULL, NULL,
+			       &subfmt);
 	if (ret != 0)
 		dev_warn(&dvbdev->udev->dev,
 			 "cx25840 format set failed (%d)\n", ret);

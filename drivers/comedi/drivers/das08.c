@@ -177,7 +177,6 @@ static int das08_ai_insn_read(struct comedi_device *dev,
 	int ret;
 
 	chan = CR_CHAN(insn->chanspec);
-	range = CR_RANGE(insn->chanspec);
 
 	/* clear crap */
 	inb(dev->iobase + DAS08_AI_LSB_REG);
@@ -453,17 +452,6 @@ int das08_common_attach(struct comedi_device *dev, unsigned long iobase)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(das08_common_attach);
-
-static int __init das08_init(void)
-{
-	return 0;
-}
-module_init(das08_init);
-
-static void __exit das08_exit(void)
-{
-}
-module_exit(das08_exit);
 
 MODULE_AUTHOR("Comedi https://www.comedi.org");
 MODULE_DESCRIPTION("Comedi common DAS08 support module");

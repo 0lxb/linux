@@ -119,8 +119,6 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 	struct clk *clk;
 	struct device_node *node;
 	struct mfd_cell *cell;
-	struct property *prop;
-	const __be32 *cur;
 	bool use_tsc = false, use_mag = false;
 	u32 val;
 	int err;
@@ -128,7 +126,7 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 	int readouts = 0, mag_tracks = 0;
 
 	/* Allocate memory for device */
-	tscadc = devm_kzalloc(&pdev->dev, sizeof(*tscadc), GFP_KERNEL);
+	tscadc = devm_kzalloc_obj(&pdev->dev, *tscadc);
 	if (!tscadc)
 		return -ENOMEM;
 
@@ -167,7 +165,7 @@ static	int ti_tscadc_probe(struct platform_device *pdev)
 	}
 
 	node = of_get_child_by_name(pdev->dev.of_node, "adc");
-	of_property_for_each_u32(node, "ti,adc-channels", prop, cur, val) {
+	of_property_for_each_u32(node, "ti,adc-channels", val) {
 		adc_channels++;
 		if (val > 7) {
 			dev_err(&pdev->dev, " PIN numbers are 0..7 (not %d)\n",
@@ -315,7 +313,7 @@ static int __maybe_unused ti_tscadc_can_wakeup(struct device *dev, void *data)
 	return device_may_wakeup(dev);
 }
 
-static int __maybe_unused tscadc_suspend(struct device *dev)
+static int tscadc_suspend(struct device *dev)
 {
 	struct ti_tscadc_dev *tscadc = dev_get_drvdata(dev);
 
@@ -333,7 +331,7 @@ static int __maybe_unused tscadc_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused tscadc_resume(struct device *dev)
+static int tscadc_resume(struct device *dev)
 {
 	struct ti_tscadc_dev *tscadc = dev_get_drvdata(dev);
 
@@ -347,7 +345,7 @@ static int __maybe_unused tscadc_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(tscadc_pm_ops, tscadc_suspend, tscadc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(tscadc_pm_ops, tscadc_suspend, tscadc_resume);
 
 static const struct ti_tscadc_data tscdata = {
 	.adc_feature_name = "TI-am335x-adc",
@@ -375,11 +373,11 @@ MODULE_DEVICE_TABLE(of, ti_tscadc_dt_ids);
 static struct platform_driver ti_tscadc_driver = {
 	.driver = {
 		.name   = "ti_am3359-tscadc",
-		.pm	= &tscadc_pm_ops,
+		.pm	= pm_sleep_ptr(&tscadc_pm_ops),
 		.of_match_table = ti_tscadc_dt_ids,
 	},
 	.probe	= ti_tscadc_probe,
-	.remove_new = ti_tscadc_remove,
+	.remove = ti_tscadc_remove,
 
 };
 

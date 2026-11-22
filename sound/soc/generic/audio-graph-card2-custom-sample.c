@@ -5,8 +5,8 @@
 // Copyright (C) 2020 Renesas Electronics Corp.
 // Copyright (C) 2020 Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
 //
+#include <linux/device.h>
 #include <linux/module.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <sound/graph_card.h>
 
@@ -144,7 +144,7 @@ static int custom_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	custom_priv = devm_kzalloc(dev, sizeof(*custom_priv), GFP_KERNEL);
+	custom_priv = devm_kzalloc_obj(dev, *custom_priv);
 	if (!custom_priv)
 		return -ENOMEM;
 
@@ -176,7 +176,7 @@ static struct platform_driver custom_card = {
 		.of_match_table = custom_of_match,
 	},
 	.probe	= custom_probe,
-	.remove_new = simple_util_remove,
+	.remove = simple_util_remove,
 };
 module_platform_driver(custom_card);
 

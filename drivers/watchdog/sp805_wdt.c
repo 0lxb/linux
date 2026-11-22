@@ -25,6 +25,7 @@
 #include <linux/moduleparam.h>
 #include <linux/pm.h>
 #include <linux/property.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -61,7 +62,6 @@
  * @clk: (optional) clock structure of wdt
  * @rate: (optional) clock rate when provided via properties
  * @adev: amba device structure of wdt
- * @status: current status of wdt
  * @load_val: load value to be set for current timeout
  */
 struct sp805_wdt {
@@ -127,7 +127,7 @@ static unsigned int wdt_timeleft(struct watchdog_device *wdd)
 
 	/*If the interrupt is inactive then time left is WDTValue + WDTLoad. */
 	if (!(readl_relaxed(wdt->base + WDTRIS) & INT_MASK))
-		load += wdt->load_val + 1;
+		load += (u64)wdt->load_val + 1;
 	spin_unlock(&wdt->lock);
 
 	return div_u64(load, wdt->rate);
@@ -232,10 +232,11 @@ static int
 sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	struct sp805_wdt *wdt;
+	struct reset_control *rst;
 	u64 rate = 0;
 	int ret = 0;
 
-	wdt = devm_kzalloc(&adev->dev, sizeof(*wdt), GFP_KERNEL);
+	wdt = devm_kzalloc_obj(&adev->dev, *wdt);
 	if (!wdt) {
 		ret = -ENOMEM;
 		goto err;
@@ -263,6 +264,12 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 		dev_err(&adev->dev, "no clock-frequency property\n");
 		return -ENODEV;
 	}
+
+	rst = devm_reset_control_get_optional_exclusive(&adev->dev, NULL);
+	if (IS_ERR(rst))
+		return dev_err_probe(&adev->dev, PTR_ERR(rst), "Can not get reset\n");
+
+	reset_control_deassert(rst);
 
 	wdt->adev = adev;
 	wdt->wdd.info = &wdt_info;
@@ -314,27 +321,29 @@ static void sp805_wdt_remove(struct amba_device *adev)
 	watchdog_set_drvdata(&wdt->wdd, NULL);
 }
 
-static int __maybe_unused sp805_wdt_suspend(struct device *dev)
+static int sp805_wdt_suspend(struct device *dev)
 {
 	struct sp805_wdt *wdt = dev_get_drvdata(dev);
 
-	if (watchdog_active(&wdt->wdd))
+	if (watchdog_active(&wdt->wdd) ||
+	    watchdog_hw_running(&wdt->wdd))
 		return wdt_disable(&wdt->wdd);
 
 	return 0;
 }
 
-static int __maybe_unused sp805_wdt_resume(struct device *dev)
+static int sp805_wdt_resume(struct device *dev)
 {
 	struct sp805_wdt *wdt = dev_get_drvdata(dev);
 
-	if (watchdog_active(&wdt->wdd))
+	if (watchdog_active(&wdt->wdd) ||
+	    watchdog_hw_running(&wdt->wdd))
 		return wdt_enable(&wdt->wdd);
 
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(sp805_wdt_dev_pm_ops, sp805_wdt_suspend,
+static DEFINE_SIMPLE_DEV_PM_OPS(sp805_wdt_dev_pm_ops, sp805_wdt_suspend,
 		sp805_wdt_resume);
 
 static const struct amba_id sp805_wdt_ids[] = {
@@ -354,7 +363,7 @@ MODULE_DEVICE_TABLE(amba, sp805_wdt_ids);
 static struct amba_driver sp805_wdt_driver = {
 	.drv = {
 		.name	= MODULE_NAME,
-		.pm	= &sp805_wdt_dev_pm_ops,
+		.pm	= pm_sleep_ptr(&sp805_wdt_dev_pm_ops),
 	},
 	.id_table	= sp805_wdt_ids,
 	.probe		= sp805_wdt_probe,

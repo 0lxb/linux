@@ -420,15 +420,11 @@ static struct virt_dma_desc *mtk_cqdma_find_active_desc(struct dma_chan *c,
 {
 	struct mtk_cqdma_vchan *cvc = to_cqdma_vchan(c);
 	struct virt_dma_desc *vd;
-	unsigned long flags;
 
-	spin_lock_irqsave(&cvc->pc->lock, flags);
 	list_for_each_entry(vd, &cvc->pc->queue, node)
 		if (vd->tx.cookie == cookie) {
-			spin_unlock_irqrestore(&cvc->pc->lock, flags);
 			return vd;
 		}
-	spin_unlock_irqrestore(&cvc->pc->lock, flags);
 
 	list_for_each_entry(vd, &cvc->vc.desc_issued, node)
 		if (vd->tx.cookie == cookie)
@@ -452,9 +448,11 @@ static enum dma_status mtk_cqdma_tx_status(struct dma_chan *c,
 	if (ret == DMA_COMPLETE || !txstate)
 		return ret;
 
-	spin_lock_irqsave(&cvc->vc.lock, flags);
+	spin_lock_irqsave(&cvc->pc->lock, flags);
+	spin_lock(&cvc->vc.lock);
 	vd = mtk_cqdma_find_active_desc(c, cookie);
-	spin_unlock_irqrestore(&cvc->vc.lock, flags);
+	spin_unlock(&cvc->vc.lock);
+	spin_unlock_irqrestore(&cvc->pc->lock, flags);
 
 	if (vd) {
 		cvd = to_cqdma_vdesc(vd);
@@ -503,12 +501,12 @@ mtk_cqdma_prep_dma_memcpy(struct dma_chan *c, dma_addr_t dest,
 	 * until all the child CVDs completed.
 	 */
 	nr_vd = DIV_ROUND_UP(len, MTK_CQDMA_MAX_LEN);
-	cvd = kcalloc(nr_vd, sizeof(*cvd), GFP_NOWAIT);
+	cvd = kzalloc_objs(*cvd, nr_vd, GFP_NOWAIT);
 	if (!cvd)
 		return NULL;
 
 	for (i = 0; i < nr_vd; ++i) {
-		cvd[i] = kzalloc(sizeof(*cvd[i]), GFP_NOWAIT);
+		cvd[i] = kzalloc_obj(*cvd[i], GFP_NOWAIT);
 		if (!cvd[i]) {
 			for (; i > 0; --i)
 				kfree(cvd[i - 1]);
@@ -518,7 +516,7 @@ mtk_cqdma_prep_dma_memcpy(struct dma_chan *c, dma_addr_t dest,
 		/* setup dma channel */
 		cvd[i]->ch = c;
 
-		/* setup sourece, destination, and length */
+		/* setup source, destination, and length */
 		tlen = (len > MTK_CQDMA_MAX_LEN) ? MTK_CQDMA_MAX_LEN : len;
 		cvd[i]->len = tlen;
 		cvd[i]->src = src;
@@ -617,7 +615,7 @@ static int mtk_cqdma_alloc_chan_resources(struct dma_chan *c)
 	u32 i, min_refcnt = U32_MAX, refcnt;
 	unsigned long flags;
 
-	/* allocate PC with the minimun refcount */
+	/* allocate PC with the minimum refcount */
 	for (i = 0; i < cqdma->dma_channels; ++i) {
 		refcnt = refcount_read(&cqdma->pc[i]->refcnt);
 		if (refcnt < min_refcnt) {
@@ -753,7 +751,7 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 	int err;
 	u32 i;
 
-	cqdma = devm_kzalloc(&pdev->dev, sizeof(*cqdma), GFP_KERNEL);
+	cqdma = devm_kzalloc_obj(&pdev->dev, *cqdma);
 	if (!cqdma)
 		return -ENOMEM;
 
@@ -802,15 +800,14 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 		cqdma->dma_channels = MTK_CQDMA_NR_PCHANS;
 	}
 
-	cqdma->pc = devm_kcalloc(&pdev->dev, cqdma->dma_channels,
-				 sizeof(*cqdma->pc), GFP_KERNEL);
+	cqdma->pc = devm_kzalloc_objs(&pdev->dev, *cqdma->pc,
+				      cqdma->dma_channels);
 	if (!cqdma->pc)
 		return -ENOMEM;
 
 	/* initialization for PCs */
 	for (i = 0; i < cqdma->dma_channels; ++i) {
-		cqdma->pc[i] = devm_kcalloc(&pdev->dev, 1,
-					    sizeof(**cqdma->pc), GFP_KERNEL);
+		cqdma->pc[i] = devm_kzalloc_objs(&pdev->dev, **cqdma->pc, 1);
 		if (!cqdma->pc[i])
 			return -ENOMEM;
 
@@ -838,8 +835,8 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 	}
 
 	/* allocate resource for VCs */
-	cqdma->vc = devm_kcalloc(&pdev->dev, cqdma->dma_requests,
-				 sizeof(*cqdma->vc), GFP_KERNEL);
+	cqdma->vc = devm_kzalloc_objs(&pdev->dev, *cqdma->vc,
+				      cqdma->dma_requests);
 	if (!cqdma->vc)
 		return -ENOMEM;
 
@@ -922,7 +919,7 @@ static void mtk_cqdma_remove(struct platform_device *pdev)
 
 static struct platform_driver mtk_cqdma_driver = {
 	.probe = mtk_cqdma_probe,
-	.remove_new = mtk_cqdma_remove,
+	.remove = mtk_cqdma_remove,
 	.driver = {
 		.name           = KBUILD_MODNAME,
 		.of_match_table = mtk_cqdma_match,

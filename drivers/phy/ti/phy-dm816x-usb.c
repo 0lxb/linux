@@ -177,7 +177,7 @@ static int dm816x_usb_phy_probe(struct platform_device *pdev)
 	struct usb_otg *otg;
 	int error;
 
-	phy = devm_kzalloc(&pdev->dev, sizeof(*phy), GFP_KERNEL);
+	phy = devm_kzalloc_obj(&pdev->dev, *phy);
 	if (!phy)
 		return -ENOMEM;
 
@@ -200,7 +200,7 @@ static int dm816x_usb_phy_probe(struct platform_device *pdev)
 	if (phy->usbphy_ctrl == 0x2c)
 		phy->instance = 1;
 
-	otg = devm_kzalloc(&pdev->dev, sizeof(*otg), GFP_KERNEL);
+	otg = devm_kzalloc_obj(&pdev->dev, *otg);
 	if (!otg)
 		return -ENOMEM;
 
@@ -259,7 +259,7 @@ static void dm816x_usb_phy_remove(struct platform_device *pdev)
 
 static struct platform_driver dm816x_usb_phy_driver = {
 	.probe		= dm816x_usb_phy_probe,
-	.remove_new	= dm816x_usb_phy_remove,
+	.remove		= dm816x_usb_phy_remove,
 	.driver		= {
 		.name	= "dm816x-usb-phy",
 		.pm	= &dm816x_usb_phy_pm_ops,
@@ -269,7 +269,6 @@ static struct platform_driver dm816x_usb_phy_driver = {
 
 module_platform_driver(dm816x_usb_phy_driver);
 
-MODULE_ALIAS("platform:dm816x_usb");
 MODULE_AUTHOR("Tony Lindgren <tony@atomide.com>");
 MODULE_DESCRIPTION("dm816x usb phy driver");
 MODULE_LICENSE("GPL v2");

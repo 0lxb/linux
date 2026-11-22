@@ -10,10 +10,5 @@ TEE Subsystem
    tee
    op-tee
    amd-tee
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`
+   ts-tee
+   qtee

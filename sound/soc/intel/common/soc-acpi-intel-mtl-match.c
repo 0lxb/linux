@@ -6,28 +6,18 @@
  *
  */
 
+#include <linux/soundwire/sdw_intel.h>
+#include <sound/sdca.h>
 #include <sound/soc-acpi.h>
 #include <sound/soc-acpi-intel-match.h>
+#include <sound/soc-acpi-intel-ssp-common.h>
+#include "sof-function-topology-lib.h"
+#include "soc-acpi-intel-sdca-quirks.h"
 #include "soc-acpi-intel-sdw-mockup-match.h"
-
-static const struct snd_soc_acpi_codecs mtl_max98357a_amp = {
-	.num_codecs = 1,
-	.codecs = {"MX98357A"}
-};
-
-static const struct snd_soc_acpi_codecs mtl_max98360a_amp = {
-	.num_codecs = 1,
-	.codecs = {"MX98360A"}
-};
-
-static const struct snd_soc_acpi_codecs mtl_rt1019p_amp = {
-	.num_codecs = 1,
-	.codecs = {"RTL1019"}
-};
 
 static const struct snd_soc_acpi_codecs mtl_rt5682_rt5682s_hp = {
 	.num_codecs = 2,
-	.codecs = {"10EC5682", "RTL5682"},
+	.codecs = {RT5682_ACPI_HID, RT5682S_ACPI_HID},
 };
 
 static const struct snd_soc_acpi_codecs mtl_essx_83x6 = {
@@ -40,33 +30,7 @@ static const struct snd_soc_acpi_codecs mtl_lt6911_hdmi = {
 	.codecs = {"INTC10B0"}
 };
 
-static const struct snd_soc_acpi_codecs mtl_rt5650_amp = {
-	.num_codecs = 1,
-	.codecs = {"10EC5650"}
-};
-
 struct snd_soc_acpi_mach snd_soc_acpi_intel_mtl_machines[] = {
-	{
-		.comp_ids = &mtl_rt5682_rt5682s_hp,
-		.drv_name = "mtl_mx98357_rt5682",
-		.machine_quirk = snd_soc_acpi_codec_list,
-		.quirk_data = &mtl_max98357a_amp,
-		.sof_tplg_filename = "sof-mtl-max98357a-rt5682.tplg",
-	},
-	{
-		.comp_ids = &mtl_rt5682_rt5682s_hp,
-		.drv_name = "mtl_mx98360_rt5682",
-		.machine_quirk = snd_soc_acpi_codec_list,
-		.quirk_data = &mtl_max98360a_amp,
-		.sof_tplg_filename = "sof-mtl-max98360a-rt5682.tplg",
-	},
-	{
-		.comp_ids = &mtl_rt5682_rt5682s_hp,
-		.drv_name = "mtl_rt5682_def",
-		.machine_quirk = snd_soc_acpi_codec_list,
-		.quirk_data = &mtl_rt1019p_amp,
-		.sof_tplg_filename = "sof-mtl-rt1019-rt5682.tplg",
-	},
 	{
 		.comp_ids = &mtl_essx_83x6,
 		.drv_name = "mtl_es83x6_c1_h02",
@@ -83,11 +47,49 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_mtl_machines[] = {
 					SND_SOC_ACPI_TPLG_INTEL_DMIC_NUMBER,
 	},
 	{
-		.id = "10EC5650",
-		.drv_name = "mtl_rt5682_def",
+		.comp_ids = &mtl_rt5682_rt5682s_hp,
+		.drv_name = "mtl_rt5682_c1_h02",
 		.machine_quirk = snd_soc_acpi_codec_list,
-		.quirk_data = &mtl_rt5650_amp,
-		.sof_tplg_filename = "sof-mtl-rt5650.tplg",
+		.quirk_data = &mtl_lt6911_hdmi,
+		.sof_tplg_filename = "sof-mtl-rt5682-ssp1-hdmi-ssp02.tplg",
+	},
+	/* place boards for each headphone codec: sof driver will complete the
+	 * tplg name and machine driver will detect the amp type
+	 */
+	{
+		.id = CS42L42_ACPI_HID,
+		.drv_name = "mtl_cs42l42_def",
+		.sof_tplg_filename = "sof-mtl", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_AMP_NAME |
+					SND_SOC_ACPI_TPLG_INTEL_CODEC_NAME,
+	},
+	{
+		.id = DA7219_ACPI_HID,
+		.drv_name = "mtl_da7219_def",
+		.sof_tplg_filename = "sof-mtl", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_AMP_NAME |
+					SND_SOC_ACPI_TPLG_INTEL_CODEC_NAME,
+	},
+	{
+		.id = NAU8825_ACPI_HID,
+		.drv_name = "mtl_nau8825_def",
+		.sof_tplg_filename = "sof-mtl", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_AMP_NAME |
+					SND_SOC_ACPI_TPLG_INTEL_CODEC_NAME,
+	},
+	{
+		.id = RT5650_ACPI_HID,
+		.drv_name = "mtl_rt5682_def",
+		.sof_tplg_filename = "sof-mtl", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_AMP_NAME |
+					SND_SOC_ACPI_TPLG_INTEL_CODEC_NAME,
+	},
+	{
+		.comp_ids = &mtl_rt5682_rt5682s_hp,
+		.drv_name = "mtl_rt5682_def",
+		.sof_tplg_filename = "sof-mtl", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_AMP_NAME |
+					SND_SOC_ACPI_TPLG_INTEL_CODEC_NAME,
 	},
 	/* place amp-only boards in the end of table */
 	{
@@ -120,6 +122,42 @@ static const struct snd_soc_acpi_endpoint spk_r_endpoint = {
 	.group_id = 1,
 };
 
+static const struct snd_soc_acpi_endpoint tac5xx2_endpoints[] = {
+	{ /* Playback Endpoint */
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Mic Capture Endpoint */
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* UAJ-HP with Mic Endpoint */
+		.num = 2,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint tas2883_endpoints[] = {
+	{ /* Playback Endpoint */
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Mic Capture Endpoint */
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
 static const struct snd_soc_acpi_endpoint rt712_endpoints[] = {
 	{
 		.num = 0,
@@ -129,6 +167,27 @@ static const struct snd_soc_acpi_endpoint rt712_endpoints[] = {
 	},
 	{
 		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint rt712_vb_endpoints[] = {
+	{
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{
+		.num = 2,
 		.aggregated = 0,
 		.group_position = 0,
 		.group_id = 0,
@@ -188,6 +247,15 @@ static const struct snd_soc_acpi_adr_device rt712_0_single_adr[] = {
 		.adr = 0x000030025D071201ull,
 		.num_endpoints = ARRAY_SIZE(rt712_endpoints),
 		.endpoints = rt712_endpoints,
+		.name_prefix = "rt712"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device rt712_vb_0_single_adr[] = {
+	{
+		.adr = 0x000030025D071201ull,
+		.num_endpoints = ARRAY_SIZE(rt712_vb_endpoints),
+		.endpoints = rt712_vb_endpoints,
 		.name_prefix = "rt712"
 	}
 };
@@ -288,6 +356,24 @@ static const struct snd_soc_acpi_adr_device rt1316_2_group2_adr[] = {
 	}
 };
 
+static const struct snd_soc_acpi_adr_device rt1316_3_single_adr[] = {
+	{
+		.adr = 0x000330025D131601ull,
+		.num_endpoints = 1,
+		.endpoints = &single_endpoint,
+		.name_prefix = "rt1316-1"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device rt1318_1_single_adr[] = {
+	{
+		.adr = 0x000130025D131801ull,
+		.num_endpoints = 1,
+		.endpoints = &single_endpoint,
+		.name_prefix = "rt1318-1"
+	}
+};
+
 static const struct snd_soc_acpi_adr_device rt1318_1_group1_adr[] = {
 	{
 		.adr = 0x000130025D131801ull,
@@ -324,7 +410,7 @@ static const struct snd_soc_acpi_adr_device rt714_1_adr[] = {
 	}
 };
 
-static const struct snd_soc_acpi_link_adr mtl_712_only[] = {
+static const struct snd_soc_acpi_link_adr mtl_712_l0_1712_l3[] = {
 	{
 		.mask = BIT(0),
 		.num_adr = ARRAY_SIZE(rt712_0_single_adr),
@@ -338,12 +424,230 @@ static const struct snd_soc_acpi_link_adr mtl_712_only[] = {
 	{}
 };
 
+static const struct snd_soc_acpi_link_adr mtl_712_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt712_0_single_adr),
+		.adr_d = rt712_0_single_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_712_vb_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt712_vb_0_single_adr),
+		.adr_d = rt712_vb_0_single_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_endpoint cs42l43_endpoints[] = {
+	{ /* Jack Playback Endpoint */
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* DMIC Capture Endpoint */
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Jack Capture Endpoint */
+		.num = 2,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Speaker Playback Endpoint */
+		.num = 3,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
 static const struct snd_soc_acpi_adr_device cs42l43_0_adr[] = {
 	{
 		.adr = 0x00003001FA424301ull,
-		.num_endpoints = 1,
-		.endpoints = &single_endpoint,
+		.num_endpoints = ARRAY_SIZE(cs42l43_endpoints),
+		.endpoints = cs42l43_endpoints,
 		.name_prefix = "cs42l43"
+	}
+};
+
+/* CS42L43 - speaker DAI aggregated with 4 amps */
+static const struct snd_soc_acpi_endpoint cs42l43_4amp_spkagg_endpoints[] = {
+	{ /* Jack Playback Endpoint */
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* DMIC Capture Endpoint */
+		.num = 1,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Jack Capture Endpoint */
+		.num = 2,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	{ /* Speaker Playback Endpoint */
+		.num = 3,
+		.aggregated = 1,
+		.group_position = 4,
+		.group_id = 1,
+	},
+};
+
+/* CS42L43 on link3 aggregated with 4 amps */
+static const struct snd_soc_acpi_adr_device cs42l43_l3_4amp_spkagg_adr[] = {
+	{
+		.adr = 0x00033001FA424301ull,
+		.num_endpoints = ARRAY_SIZE(cs42l43_4amp_spkagg_endpoints),
+		.endpoints = cs42l43_4amp_spkagg_endpoints,
+		.name_prefix = "cs42l43"
+	}
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_l_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 0,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 0,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_r_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 1,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 1,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_2_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 2,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 2,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_3_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 3,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 3,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_4_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 4,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 4,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_5_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 5,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 5,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_6_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 6,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 6,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_endpoint cs35l56_7_fb_endpoints[] = {
+	{ /* Speaker Playback Endpoint */
+		.num = 0,
+		.aggregated = 1,
+		.group_position = 7,
+		.group_id = 1,
+	},
+	{ /* Feedback Capture Endpoint */
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 7,
+		.group_id = 2,
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l56_0_adr[] = {
+	{
+		.adr = 0x00003301FA355601ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_l_endpoint,
+		.name_prefix = "AMP1"
+	},
+	{
+		.adr = 0x00003201FA355601ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_2_endpoint,
+		.name_prefix = "AMP2"
 	}
 };
 
@@ -352,13 +656,13 @@ static const struct snd_soc_acpi_adr_device cs35l56_1_adr[] = {
 		.adr = 0x00013701FA355601ull,
 		.num_endpoints = 1,
 		.endpoints = &spk_r_endpoint,
-		.name_prefix = "AMP8"
+		.name_prefix = "AMP3"
 	},
 	{
 		.adr = 0x00013601FA355601ull,
 		.num_endpoints = 1,
 		.endpoints = &spk_3_endpoint,
-		.name_prefix = "AMP7"
+		.name_prefix = "AMP4"
 	}
 };
 
@@ -377,17 +681,134 @@ static const struct snd_soc_acpi_adr_device cs35l56_2_adr[] = {
 	}
 };
 
+static const struct snd_soc_acpi_adr_device cs35l56_0_fb_adr[] = {
+	{
+		.adr = 0x00003301FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_l_fb_endpoints),
+		.endpoints = cs35l56_l_fb_endpoints,
+		.name_prefix = "AMP1"
+	},
+	{
+		.adr = 0x00003201FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_2_fb_endpoints),
+		.endpoints = cs35l56_2_fb_endpoints,
+		.name_prefix = "AMP2"
+	},
+	{
+		.adr = 0x00003101FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_4_fb_endpoints),
+		.endpoints = cs35l56_4_fb_endpoints,
+		.name_prefix = "AMP3"
+	},
+	{
+		.adr = 0x00003001FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_6_fb_endpoints),
+		.endpoints = cs35l56_6_fb_endpoints,
+		.name_prefix = "AMP4"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l56_1_fb_adr[] = {
+	{
+		.adr = 0x00013701FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_r_fb_endpoints),
+		.endpoints = cs35l56_r_fb_endpoints,
+		.name_prefix = "AMP8"
+	},
+	{
+		.adr = 0x00013601FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_3_fb_endpoints),
+		.endpoints = cs35l56_3_fb_endpoints,
+		.name_prefix = "AMP7"
+	},
+	{
+		.adr = 0x00013501FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_5_fb_endpoints),
+		.endpoints = cs35l56_5_fb_endpoints,
+		.name_prefix = "AMP6"
+	},
+	{
+		.adr = 0x00013401FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_7_fb_endpoints),
+		.endpoints = cs35l56_7_fb_endpoints,
+		.name_prefix = "AMP5"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l56_6amp_1_fb_adr[] = {
+	{
+		.adr = 0x00013701FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_r_fb_endpoints),
+		.endpoints = cs35l56_r_fb_endpoints,
+		.name_prefix = "AMP6"
+	},
+	{
+		.adr = 0x00013601FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_3_fb_endpoints),
+		.endpoints = cs35l56_3_fb_endpoints,
+		.name_prefix = "AMP5"
+	},
+	{
+		.adr = 0x00013501FA355601ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_5_fb_endpoints),
+		.endpoints = cs35l56_5_fb_endpoints,
+		.name_prefix = "AMP4"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l63_6amp_3_fb_adr[] = {
+	{
+		.adr = 0x00033001FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_l_fb_endpoints),
+		.endpoints = cs35l56_l_fb_endpoints,
+		.name_prefix = "AMP1"
+	},
+	{
+		.adr = 0x00033201FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_2_fb_endpoints),
+		.endpoints = cs35l56_2_fb_endpoints,
+		.name_prefix = "AMP3"
+	},
+	{
+		.adr = 0x00033401FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_4_fb_endpoints),
+		.endpoints = cs35l56_4_fb_endpoints,
+		.name_prefix = "AMP5"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l63_6amp_2_fb_adr[] = {
+	{
+		.adr = 0x00023101FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_r_fb_endpoints),
+		.endpoints = cs35l56_r_fb_endpoints,
+		.name_prefix = "AMP2"
+	},
+	{
+		.adr = 0x00023301FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_3_fb_endpoints),
+		.endpoints = cs35l56_3_fb_endpoints,
+		.name_prefix = "AMP4"
+	},
+	{
+		.adr = 0x00023501FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_5_fb_endpoints),
+		.endpoints = cs35l56_5_fb_endpoints,
+		.name_prefix = "AMP6"
+	},
+};
+
 static const struct snd_soc_acpi_adr_device cs35l56_2_r_adr[] = {
 	{
 		.adr = 0x00023201FA355601ull,
-		.num_endpoints = 1,
-		.endpoints = &spk_r_endpoint,
+		.num_endpoints = ARRAY_SIZE(cs35l56_r_fb_endpoints),
+		.endpoints = cs35l56_r_fb_endpoints,
 		.name_prefix = "AMP3"
 	},
 	{
 		.adr = 0x00023301FA355601ull,
-		.num_endpoints = 1,
-		.endpoints = &spk_3_endpoint,
+		.num_endpoints = ARRAY_SIZE(cs35l56_3_fb_endpoints),
+		.endpoints = cs35l56_3_fb_endpoints,
 		.name_prefix = "AMP4"
 	}
 
@@ -396,16 +817,34 @@ static const struct snd_soc_acpi_adr_device cs35l56_2_r_adr[] = {
 static const struct snd_soc_acpi_adr_device cs35l56_3_l_adr[] = {
 	{
 		.adr = 0x00033001fa355601ull,
-		.num_endpoints = 1,
-		.endpoints = &spk_l_endpoint,
+		.num_endpoints = ARRAY_SIZE(cs35l56_l_fb_endpoints),
+		.endpoints = cs35l56_l_fb_endpoints,
 		.name_prefix = "AMP1"
 	},
 	{
 		.adr = 0x00033101fa355601ull,
-		.num_endpoints = 1,
-		.endpoints = &spk_2_endpoint,
+		.num_endpoints = ARRAY_SIZE(cs35l56_2_fb_endpoints),
+		.endpoints = cs35l56_2_fb_endpoints,
 		.name_prefix = "AMP2"
 	}
+};
+
+static const struct snd_soc_acpi_adr_device cs35l63_1_fb_adr[] = {
+	{
+		.adr = 0x00013001FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_l_fb_endpoints),
+		.endpoints = cs35l56_l_fb_endpoints,
+		.name_prefix = "AMP1"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device cs35l63_3_fb_adr[] = {
+	{
+		.adr = 0x00033101FA356301ull,
+		.num_endpoints = ARRAY_SIZE(cs35l56_r_fb_endpoints),
+		.endpoints = cs35l56_r_fb_endpoints,
+		.name_prefix = "AMP2"
+	},
 };
 
 static const struct snd_soc_acpi_link_adr rt5682_link2_max98373_link0[] = {
@@ -508,6 +947,49 @@ static const struct snd_soc_acpi_link_adr mtl_rt713_l0_rt1316_l12_rt1713_l3[] = 
 	{}
 };
 
+static const struct snd_soc_acpi_link_adr mtl_rt713_l0_rt1318_l1_rt1713_l3[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt713_0_single_adr),
+		.adr_d = rt713_0_single_adr,
+	},
+	{
+		.mask = BIT(1),
+		.num_adr = ARRAY_SIZE(rt1318_1_single_adr),
+		.adr_d = rt1318_1_single_adr,
+	},
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(rt1713_3_single_adr),
+		.adr_d = rt1713_3_single_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_rt713_l0_rt1318_l12_rt1713_l3[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt713_0_single_adr),
+		.adr_d = rt713_0_single_adr,
+	},
+	{
+		.mask = BIT(1),
+		.num_adr = ARRAY_SIZE(rt1318_1_group1_adr),
+		.adr_d = rt1318_1_group1_adr,
+	},
+	{
+		.mask = BIT(2),
+		.num_adr = ARRAY_SIZE(rt1318_2_group1_adr),
+		.adr_d = rt1318_2_group1_adr,
+	},
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(rt1713_3_single_adr),
+		.adr_d = rt1713_3_single_adr,
+	},
+	{}
+};
+
 static const struct snd_soc_acpi_link_adr mtl_rt713_l0_rt1316_l12[] = {
 	{
 		.mask = BIT(0),
@@ -523,6 +1005,20 @@ static const struct snd_soc_acpi_link_adr mtl_rt713_l0_rt1316_l12[] = {
 		.mask = BIT(2),
 		.num_adr = ARRAY_SIZE(rt1316_2_group2_adr),
 		.adr_d = rt1316_2_group2_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_rt711_l0_rt1316_l3[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt711_sdca_0_adr),
+		.adr_d = rt711_sdca_0_adr,
+	},
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(rt1316_3_single_adr),
+		.adr_d = rt1316_3_single_adr,
 	},
 	{}
 };
@@ -551,6 +1047,114 @@ static const struct snd_soc_acpi_adr_device cs42l42_0_adr[] = {
 	}
 };
 
+static const struct snd_soc_acpi_adr_device tac5572_0_adr[] = {
+	{
+		.adr = 0x0000300102557201ull,
+		.num_endpoints = ARRAY_SIZE(tac5xx2_endpoints),
+		.endpoints = tac5xx2_endpoints,
+		.name_prefix = "tac5572"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device tac5672_0_adr[] = {
+	{
+		.adr = 0x0000300102567201ull,
+		.num_endpoints = ARRAY_SIZE(tac5xx2_endpoints),
+		.endpoints = tac5xx2_endpoints,
+		.name_prefix = "tac5672"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device tac5682_0_adr[] = {
+	{
+		.adr = 0x0000300102568201ull,
+		.num_endpoints = ARRAY_SIZE(tac5xx2_endpoints),
+		.endpoints = tac5xx2_endpoints,
+		.name_prefix = "tac5682"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device tas2783_0_adr[] = {
+	{
+		.adr = 0x00003c0102000001ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_l_endpoint,
+		.name_prefix = "tas2783-1"
+	},
+	{
+		.adr = 0x0000390102000001ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_r_endpoint,
+		.name_prefix = "tas2783-2"
+	},
+	{
+		.adr = 0x00003d0102000001ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_l_endpoint,
+		.name_prefix = "tas2783-3"
+	},
+	{
+		.adr = 0x00003a0102000001ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_r_endpoint,
+		.name_prefix = "tas2783-4"
+	},
+};
+
+static const struct snd_soc_acpi_adr_device tas2883_0_adr[] = {
+	{
+		.adr = 0x0000300102288301ull,
+		.num_endpoints = ARRAY_SIZE(tas2883_endpoints),
+		.endpoints = tas2883_endpoints,
+		.name_prefix = "tas2883"
+	}
+};
+
+static const struct snd_soc_acpi_link_adr tac5572_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(tac5572_0_adr),
+		.adr_d = tac5572_0_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr tac5672_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(tac5672_0_adr),
+		.adr_d = tac5672_0_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr tac5682_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(tac5682_0_adr),
+		.adr_d = tac5682_0_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr tas2783_link0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(tas2783_0_adr),
+		.adr_d = tas2783_0_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr tas2883_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(tas2883_0_adr),
+		.adr_d = tas2883_0_adr,
+	},
+	{}
+};
+
 static const struct snd_soc_acpi_link_adr cs42l42_link0_max98363_link2[] = {
 	/* Expected order: jack -> amp */
 	{
@@ -562,6 +1166,15 @@ static const struct snd_soc_acpi_link_adr cs42l42_link0_max98363_link2[] = {
 		.mask = BIT(2),
 		.num_adr = ARRAY_SIZE(mx8363_2_adr),
 		.adr_d = mx8363_2_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_cs42l43_l0[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(cs42l43_0_adr),
+		.adr_d = cs42l43_0_adr,
 	},
 	{}
 };
@@ -605,7 +1218,144 @@ static const struct snd_soc_acpi_link_adr cs42l43_link0_cs35l56_link2_link3[] = 
 	{}
 };
 
+static const struct snd_soc_acpi_link_adr cs42l43_link3_cs35l56_x4_link0_link1_spkagg[] = {
+	/* Expected order: jack -> amp */
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(cs42l43_l3_4amp_spkagg_adr),
+		.adr_d = cs42l43_l3_4amp_spkagg_adr,
+	},
+	{
+		.mask = BIT(1),
+		.num_adr = 2,
+		.adr_d = cs35l56_1_adr,
+	},
+	{
+		.mask = BIT(0),
+		.num_adr = 2,
+		.adr_d = cs35l56_0_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_cs35l56_x8_link0_link1_fb[] = {
+	{
+		.mask = BIT(1),
+		.num_adr = ARRAY_SIZE(cs35l56_1_fb_adr),
+		.adr_d = cs35l56_1_fb_adr,
+	},
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(cs35l56_0_fb_adr),
+		.adr_d = cs35l56_0_fb_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_cs35l56_x6_link0_link1_fb[] = {
+	{
+		.mask = BIT(1),
+		.num_adr = ARRAY_SIZE(cs35l56_6amp_1_fb_adr),
+		.adr_d = cs35l56_6amp_1_fb_adr,
+	},
+	{
+		.mask = BIT(0),
+		/* First 3 amps in cs35l56_0_fb_adr */
+		.num_adr = 3,
+		.adr_d = cs35l56_0_fb_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_cs35l63_x6_link2_link3_fb[] = {
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(cs35l63_6amp_3_fb_adr),
+		.adr_d = cs35l63_6amp_3_fb_adr,
+	},
+	{
+		.mask = BIT(2),
+		.num_adr = ARRAY_SIZE(cs35l63_6amp_2_fb_adr),
+		.adr_d = cs35l63_6amp_2_fb_adr,
+	},
+	{}
+};
+
+static const struct snd_soc_acpi_link_adr mtl_cs35l63_x2_link1_link3_fb[] = {
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(cs35l63_3_fb_adr),
+		.adr_d = cs35l63_3_fb_adr,
+	},
+	{
+		.mask = BIT(1),
+		.num_adr = ARRAY_SIZE(cs35l63_1_fb_adr),
+		.adr_d = cs35l63_1_fb_adr,
+	},
+	{}
+};
+
 /* this table is used when there is no I2S codec present */
+
+/*
+ * Senary SN624x on Meteor Lake: one multi-function device on link 0.
+ * Separate mach entries per part ID (adr_d[] is AND, not OR). ADR version
+ * nibble 0x3 matches the silicon SoundWire version. Amp endpoint is
+ * aggregated like the generic SOC_SDW_DAI_TYPE_AMP shape from
+ * find_acpi_adr_device().
+ */
+static const struct snd_soc_acpi_endpoint sn624x_endpoints[] = {
+	/* Jack */
+	{
+		.num = 0,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+	/* Amp */
+	{
+		.num = 1,
+		.aggregated = 1,
+		.group_position = 1,
+		.group_id = 1,
+	},
+	/* DMIC */
+	{
+		.num = 2,
+		.aggregated = 0,
+		.group_position = 0,
+		.group_id = 0,
+	},
+};
+
+#define SN624X_MTL_SINGLE_ADR(_sym, _adr)				\
+static const struct snd_soc_acpi_adr_device _sym[] = {			\
+	{								\
+		.adr = (_adr),						\
+		.num_endpoints = ARRAY_SIZE(sn624x_endpoints),		\
+		.endpoints = sn624x_endpoints,				\
+		.name_prefix = "sn624x",				\
+	},								\
+}
+
+#define SN624X_MTL_LINK(_sym, _adr_arr)					\
+static const struct snd_soc_acpi_link_adr _sym[] = {			\
+	{								\
+		.mask = BIT(0),						\
+		.num_adr = ARRAY_SIZE(_adr_arr),			\
+		.adr_d = _adr_arr,					\
+	},								\
+	{}								\
+}
+
+SN624X_MTL_SINGLE_ADR(sn6242_single_adr, 0x0000300496624201ull);
+SN624X_MTL_SINGLE_ADR(sn6244_single_adr, 0x0000300496624401ull);
+SN624X_MTL_SINGLE_ADR(sn6245_single_adr, 0x0000300496624501ull);
+
+SN624X_MTL_LINK(mtl_link_sn6242, sn6242_single_adr);
+SN624X_MTL_LINK(mtl_link_sn6244, sn6244_single_adr);
+SN624X_MTL_LINK(mtl_link_sn6245, sn6245_single_adr);
+
 struct snd_soc_acpi_mach snd_soc_acpi_intel_mtl_sdw_machines[] = {
 	/* mockup tests need to be first */
 	{
@@ -627,71 +1377,215 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_mtl_sdw_machines[] = {
 		.sof_tplg_filename = "sof-mtl-rt715-rt711-rt1308-mono.tplg",
 	},
 	{
+		.link_mask = BIT(0),
+		.links = tac5572_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-tac5572.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = tac5672_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-tac5672.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = tac5682_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-tac5682.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = tas2783_link0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-tas2783.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = tas2883_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-tas2883.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
 		.link_mask = GENMASK(3, 0),
 		.links = mtl_rt713_l0_rt1316_l12_rt1713_l3,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt713-l0-rt1316-l12-rt1713-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = GENMASK(3, 0),
+		.links = mtl_rt713_l0_rt1318_l12_rt1713_l3,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-rt713-l0-rt1318-l12-rt1713-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0) | BIT(1) | BIT(3),
+		.links = mtl_rt713_l0_rt1318_l1_rt1713_l3,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-rt713-l0-rt1318-l1-rt1713-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = GENMASK(2, 0),
 		.links = mtl_rt713_l0_rt1316_l12,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt713-l0-rt1316-l12.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(3) | BIT(0),
-		.links = mtl_712_only,
+		.links = mtl_712_l0_1712_l3,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt712-l0-rt1712-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_712_vb_l0,
+		.drv_name = "sof_sdw",
+		.machine_check = snd_soc_acpi_intel_sdca_is_device_rt712_vb,
+		.sof_tplg_filename = "sof-mtl-rt712-vb-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_712_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-rt712-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = GENMASK(2, 0),
 		.links = mtl_sdw_rt1318_l12_rt714_l0,
 		.drv_name = "sof_sdw",
-		.sof_tplg_filename = "sof-mtl-rt1318-l12-rt714-l0.tplg"
+		.sof_tplg_filename = "sof-mtl-rt1318-l12-rt714-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(0) | BIT(2) | BIT(3),
 		.links = cs42l43_link0_cs35l56_link2_link3,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-cs42l43-l0-cs35l56-l23.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0) | BIT(1) | BIT(3),
+		.links = cs42l43_link3_cs35l56_x4_link0_link1_spkagg,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs42l43-l3-cs35l56-l01-spkagg.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = GENMASK(2, 0),
 		.links = mtl_cs42l43_cs35l56,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-cs42l43-l0-cs35l56-l12.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0) | BIT(1),
+		.links = mtl_cs35l56_x8_link0_link1_fb,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs35l56-l01-fb8.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0) | BIT(1),
+		.links = mtl_cs35l56_x6_link0_link1_fb,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs35l56-l01-fb6.tplg"
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_cs42l43_l0,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs42l43-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(1) | BIT(3),
+		.links = mtl_cs35l63_x2_link1_link3_fb,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs35l56-l01-fb8.tplg",
+	},
+	{
+		.link_mask = BIT(2) | BIT(3),
+		.links = mtl_cs35l63_x6_link2_link3_fb,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-cs35l56-l01-fb6.tplg",
 	},
 	{
 		.link_mask = GENMASK(3, 0),
 		.links = mtl_3_in_1_sdca,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt711-l0-rt1316-l23-rt714-l1.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = 0x9, /* 2 active links required */
+		.links = mtl_rt711_l0_rt1316_l3,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-rt711-l0-rt1316-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(0),
 		.links = mtl_rt722_only,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt722-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(0),
 		.links = mtl_rvp,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-rt711.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(0) | BIT(2),
 		.links = rt5682_link2_max98373_link0,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-sdw-rt5682-l2-max98373-l0.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(0) | BIT(2),
 		.links = cs42l42_link0_max98363_link2,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-mtl-sdw-cs42l42-l0-max98363-l2.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_link_sn6242,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-dummy.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_link_sn6244,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-dummy.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
+	},
+	{
+		.link_mask = BIT(0),
+		.links = mtl_link_sn6245,
+		.drv_name = "sof_sdw",
+		.sof_tplg_filename = "sof-mtl-dummy.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{},
 };
 EXPORT_SYMBOL_GPL(snd_soc_acpi_intel_mtl_sdw_machines);
+
+MODULE_IMPORT_NS("SND_SOC_ACPI_INTEL_SDCA_QUIRKS");

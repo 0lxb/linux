@@ -4,6 +4,8 @@
 * Author: Tianping.Fang <tianping.fang@mediatek.com>
 */
 
+#include <linux/array_size.h>
+#include <linux/bitfield.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/mt6397/core.h>
@@ -14,7 +16,6 @@
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/mfd/mt6397/rtc.h>
-#include <linux/mod_devicetable.h>
 
 static int mtk_rtc_write_trigger(struct mt6397_rtc *rtc)
 {
@@ -75,6 +76,7 @@ static int __mtk_rtc_read_time(struct mt6397_rtc *rtc,
 	tm->tm_min = data[RTC_OFFSET_MIN];
 	tm->tm_hour = data[RTC_OFFSET_HOUR];
 	tm->tm_mday = data[RTC_OFFSET_DOM];
+	tm->tm_wday = data[RTC_OFFSET_DOW];
 	tm->tm_mon = data[RTC_OFFSET_MTH] & RTC_TC_MTH_MASK;
 	tm->tm_year = data[RTC_OFFSET_YEAR];
 
@@ -86,9 +88,8 @@ exit:
 
 static int mtk_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
-	time64_t time;
 	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
-	int days, sec, ret;
+	int sec, ret;
 
 	do {
 		ret = __mtk_rtc_read_time(rtc, tm, &sec);
@@ -96,21 +97,9 @@ static int mtk_rtc_read_time(struct device *dev, struct rtc_time *tm)
 			goto exit;
 	} while (sec < tm->tm_sec);
 
-	/* HW register use 7 bits to store year data, minus
-	 * RTC_MIN_YEAR_OFFSET before write year data to register, and plus
-	 * RTC_MIN_YEAR_OFFSET back after read year from register
-	 */
-	tm->tm_year += RTC_MIN_YEAR_OFFSET;
-
-	/* HW register start mon from one, but tm_mon start from zero. */
+	/* HW register start mon/wday from one, but tm_mon/tm_wday start from zero. */
 	tm->tm_mon--;
-	time = rtc_tm_to_time64(tm);
-
-	/* rtc_tm_to_time64 covert Gregorian date to seconds since
-	 * 01-01-1970 00:00:00, and this date is Thursday.
-	 */
-	days = div_s64(time, 86400);
-	tm->tm_wday = (days + 4) % 7;
+	tm->tm_wday--;
 
 exit:
 	return ret;
@@ -122,13 +111,14 @@ static int mtk_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	int ret;
 	u16 data[RTC_OFFSET_COUNT];
 
-	tm->tm_year -= RTC_MIN_YEAR_OFFSET;
 	tm->tm_mon++;
+	tm->tm_wday++;
 
 	data[RTC_OFFSET_SEC] = tm->tm_sec;
 	data[RTC_OFFSET_MIN] = tm->tm_min;
 	data[RTC_OFFSET_HOUR] = tm->tm_hour;
 	data[RTC_OFFSET_DOM] = tm->tm_mday;
+	data[RTC_OFFSET_DOW] = tm->tm_wday;
 	data[RTC_OFFSET_MTH] = tm->tm_mon;
 	data[RTC_OFFSET_YEAR] = tm->tm_year;
 
@@ -178,7 +168,6 @@ static int mtk_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	tm->tm_mon = data[RTC_OFFSET_MTH] & RTC_AL_MTH_MASK;
 	tm->tm_year = data[RTC_OFFSET_YEAR] & RTC_AL_YEA_MASK;
 
-	tm->tm_year += RTC_MIN_YEAR_OFFSET;
 	tm->tm_mon--;
 
 	return 0;
@@ -194,7 +183,6 @@ static int mtk_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	int ret;
 	u16 data[RTC_OFFSET_COUNT];
 
-	tm->tm_year -= RTC_MIN_YEAR_OFFSET;
 	tm->tm_mon++;
 
 	mutex_lock(&rtc->lock);
@@ -257,14 +245,95 @@ static const struct rtc_class_ops mtk_rtc_ops = {
 	.set_alarm  = mtk_rtc_set_alarm,
 };
 
+/*
+ * The spare byte of each of these registers, in the order a board addresses
+ * them as RTC_NEW_SPARE0 to RTC_NEW_SPARE3.
+ */
+static const u32 mtk_rtc_spare_reg[] = {
+	RTC_AL_HOU, RTC_AL_DOM, RTC_AL_DOW, RTC_AL_MTH,
+};
+
+static int mtk_rtc_nvram_read(void *priv, unsigned int offset, void *val,
+			      size_t bytes)
+{
+	struct mt6397_rtc *rtc = priv;
+	u8 *buf = val;
+	u32 data;
+	int ret = 0;
+
+	if (offset >= ARRAY_SIZE(mtk_rtc_spare_reg) ||
+	    bytes > ARRAY_SIZE(mtk_rtc_spare_reg) - offset)
+		return -EINVAL;
+
+	mutex_lock(&rtc->lock);
+
+	while (bytes--) {
+		ret = regmap_read(rtc->regmap,
+				  rtc->addr_base + mtk_rtc_spare_reg[offset++],
+				  &data);
+		if (ret)
+			break;
+
+		*buf++ = FIELD_GET(RTC_SPARE_MASK, data);
+	}
+
+	mutex_unlock(&rtc->lock);
+
+	return ret;
+}
+
+static int mtk_rtc_nvram_write(void *priv, unsigned int offset, void *val,
+			       size_t bytes)
+{
+	struct mt6397_rtc *rtc = priv;
+	u8 *buf = val;
+	int ret = 0;
+
+	if (offset >= ARRAY_SIZE(mtk_rtc_spare_reg) ||
+	    bytes > ARRAY_SIZE(mtk_rtc_spare_reg) - offset)
+		return -EINVAL;
+
+	mutex_lock(&rtc->lock);
+
+	while (bytes--) {
+		ret = regmap_update_bits(rtc->regmap,
+					 rtc->addr_base + mtk_rtc_spare_reg[offset++],
+					 RTC_SPARE_MASK,
+					 FIELD_PREP(RTC_SPARE_MASK, *buf++));
+		if (ret)
+			goto out;
+	}
+
+	/*
+	 * None of it reaches the always-on domain until the write trigger,
+	 * which commits every pending alarm register at once -- so this runs
+	 * under the same lock the alarm paths take, rather than landing in
+	 * the middle of one of them.
+	 */
+	ret = mtk_rtc_write_trigger(rtc);
+out:
+	mutex_unlock(&rtc->lock);
+
+	return ret;
+}
+
 static int mtk_rtc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct mt6397_chip *mt6397_chip = dev_get_drvdata(pdev->dev.parent);
+	struct nvmem_config nvmem_cfg = {
+		.name = "mt6397_rtc_spare",
+		.word_size = 1,
+		.stride = 1,
+		.size = ARRAY_SIZE(mtk_rtc_spare_reg),
+		.type = NVMEM_TYPE_BATTERY_BACKED,
+		.reg_read = mtk_rtc_nvram_read,
+		.reg_write = mtk_rtc_nvram_write,
+	};
 	struct mt6397_rtc *rtc;
 	int ret;
 
-	rtc = devm_kzalloc(&pdev->dev, sizeof(struct mt6397_rtc), GFP_KERNEL);
+	rtc = devm_kzalloc_obj(&pdev->dev, struct mt6397_rtc);
 	if (!rtc)
 		return -ENOMEM;
 
@@ -299,11 +368,21 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	rtc->rtc_dev->ops = &mtk_rtc_ops;
+	rtc->rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_1900;
+	rtc->rtc_dev->range_max = mktime64(2027, 12, 31, 23, 59, 59);
+	rtc->rtc_dev->start_secs = mktime64(1968, 1, 2, 0, 0, 0);
+	rtc->rtc_dev->set_start_time = true;
 
-	return devm_rtc_register_device(rtc->rtc_dev);
+	ret = devm_rtc_register_device(rtc->rtc_dev);
+	if (ret)
+		return ret;
+
+	nvmem_cfg.priv = rtc;
+
+	return devm_rtc_nvmem_register(rtc->rtc_dev, &nvmem_cfg);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -341,6 +420,7 @@ static const struct mtk_rtc_data mt6397_rtc_data = {
 
 static const struct of_device_id mt6397_rtc_of_match[] = {
 	{ .compatible = "mediatek,mt6323-rtc", .data = &mt6397_rtc_data },
+	{ .compatible = "mediatek,mt6357-rtc", .data = &mt6358_rtc_data },
 	{ .compatible = "mediatek,mt6358-rtc", .data = &mt6358_rtc_data },
 	{ .compatible = "mediatek,mt6397-rtc", .data = &mt6397_rtc_data },
 	{ }

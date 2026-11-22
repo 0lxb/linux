@@ -192,8 +192,7 @@ static int mlxreg_led_config(struct mlxreg_led_priv_data *priv)
 	int err;
 
 	for (i = 0; i < led_pdata->counter; i++, data++) {
-		led_data = devm_kzalloc(&priv->pdev->dev, sizeof(*led_data),
-					GFP_KERNEL);
+		led_data = devm_kzalloc_obj(&priv->pdev->dev, *led_data);
 		if (!led_data)
 			return -ENOMEM;
 
@@ -256,6 +255,7 @@ static int mlxreg_led_probe(struct platform_device *pdev)
 {
 	struct mlxreg_core_platform_data *led_pdata;
 	struct mlxreg_led_priv_data *priv;
+	int err;
 
 	led_pdata = dev_get_platdata(&pdev->dev);
 	if (!led_pdata) {
@@ -263,22 +263,18 @@ static int mlxreg_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
-	mutex_init(&priv->access_lock);
+	err = devm_mutex_init(&pdev->dev, &priv->access_lock);
+	if (err)
+		return err;
+
 	priv->pdev = pdev;
 	priv->pdata = led_pdata;
 
 	return mlxreg_led_config(priv);
-}
-
-static void mlxreg_led_remove(struct platform_device *pdev)
-{
-	struct mlxreg_led_priv_data *priv = dev_get_drvdata(&pdev->dev);
-
-	mutex_destroy(&priv->access_lock);
 }
 
 static struct platform_driver mlxreg_led_driver = {
@@ -286,7 +282,6 @@ static struct platform_driver mlxreg_led_driver = {
 	    .name = "leds-mlxreg",
 	},
 	.probe = mlxreg_led_probe,
-	.remove_new = mlxreg_led_remove,
 };
 
 module_platform_driver(mlxreg_led_driver);

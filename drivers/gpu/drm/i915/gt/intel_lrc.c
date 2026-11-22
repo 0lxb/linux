@@ -3,6 +3,8 @@
  * Copyright © 2014 Intel Corporation
  */
 
+#include <drm/drm_print.h>
+
 #include "gem/i915_gem_lmem.h"
 
 #include "gen8_engine_cs.h"
@@ -546,47 +548,6 @@ static const u8 gen12_rcs_offsets[] = {
 	END
 };
 
-static const u8 xehp_rcs_offsets[] = {
-	NOP(1),
-	LRI(13, POSTED),
-	REG16(0x244),
-	REG(0x034),
-	REG(0x030),
-	REG(0x038),
-	REG(0x03c),
-	REG(0x168),
-	REG(0x140),
-	REG(0x110),
-	REG(0x1c0),
-	REG(0x1c4),
-	REG(0x1c8),
-	REG(0x180),
-	REG16(0x2b4),
-
-	NOP(5),
-	LRI(9, POSTED),
-	REG16(0x3a8),
-	REG16(0x28c),
-	REG16(0x288),
-	REG16(0x284),
-	REG16(0x280),
-	REG16(0x27c),
-	REG16(0x278),
-	REG16(0x274),
-	REG16(0x270),
-
-	LRI(3, POSTED),
-	REG(0x1b0),
-	REG16(0x5a8),
-	REG16(0x5ac),
-
-	NOP(6),
-	LRI(1, 0),
-	REG(0x0c8),
-
-	END
-};
-
 static const u8 dg2_rcs_offsets[] = {
 	NOP(1),
 	LRI(15, POSTED),
@@ -695,8 +656,6 @@ static const u8 *reg_offsets(const struct intel_engine_cs *engine)
 			return mtl_rcs_offsets;
 		else if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 			return dg2_rcs_offsets;
-		else if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
-			return xehp_rcs_offsets;
 		else if (GRAPHICS_VER(engine->i915) >= 12)
 			return gen12_rcs_offsets;
 		else if (GRAPHICS_VER(engine->i915) >= 11)
@@ -719,7 +678,7 @@ static const u8 *reg_offsets(const struct intel_engine_cs *engine)
 
 static int lrc_ring_mi_mode(const struct intel_engine_cs *engine)
 {
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 		return 0x70;
 	else if (GRAPHICS_VER(engine->i915) >= 12)
 		return 0x60;
@@ -733,7 +692,7 @@ static int lrc_ring_mi_mode(const struct intel_engine_cs *engine)
 
 static int lrc_ring_bb_offset(const struct intel_engine_cs *engine)
 {
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 		return 0x80;
 	else if (GRAPHICS_VER(engine->i915) >= 12)
 		return 0x70;
@@ -748,7 +707,7 @@ static int lrc_ring_bb_offset(const struct intel_engine_cs *engine)
 
 static int lrc_ring_gpr0(const struct intel_engine_cs *engine)
 {
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 		return 0x84;
 	else if (GRAPHICS_VER(engine->i915) >= 12)
 		return 0x74;
@@ -794,8 +753,7 @@ static int lrc_ring_indirect_offset(const struct intel_engine_cs *engine)
 
 static int lrc_ring_cmd_buf_cctl(const struct intel_engine_cs *engine)
 {
-
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 		/*
 		 * Note that the CSFE context has a dummy slot for CMD_BUF_CCTL
 		 * simply to match the RCS context image layout.
@@ -863,8 +821,10 @@ static bool ctx_needs_runalone(const struct intel_context *ce)
 	bool ctx_is_protected = false;
 
 	/*
-	 * On MTL and newer platforms, protected contexts require setting
-	 * the LRC run-alone bit or else the encryption will not happen.
+	 * Wa_14019159160 - Case 2.
+	 * On some platforms, protected contexts require setting
+	 * the LRC run-alone bit or else the encryption/decryption will not happen.
+	 * NOTE: Case 2 only applies to PXP use-case of said workaround.
 	 */
 	if (GRAPHICS_VER_FULL(ce->engine->i915) >= IP_VER(12, 70) &&
 	    (ce->engine->class == COMPUTE_CLASS || ce->engine->class == RENDER_CLASS)) {
@@ -886,15 +846,16 @@ static void init_common_regs(u32 * const regs,
 	u32 ctl;
 	int loc;
 
-	ctl = _MASKED_BIT_ENABLE(CTX_CTRL_INHIBIT_SYN_CTX_SWITCH);
-	ctl |= _MASKED_BIT_DISABLE(CTX_CTRL_ENGINE_CTX_RESTORE_INHIBIT);
+	ctl = REG_MASKED_FIELD_ENABLE(CTX_CTRL_INHIBIT_SYN_CTX_SWITCH);
+	ctl |= REG_MASKED_FIELD_DISABLE(CTX_CTRL_ENGINE_CTX_RESTORE_INHIBIT);
 	if (inhibit)
 		ctl |= CTX_CTRL_ENGINE_CTX_RESTORE_INHIBIT;
 	if (GRAPHICS_VER(engine->i915) < 11)
-		ctl |= _MASKED_BIT_DISABLE(CTX_CTRL_ENGINE_CTX_SAVE_INHIBIT |
-					   CTX_CTRL_RS_CTX_ENABLE);
+		ctl |= REG_MASKED_FIELD_DISABLE(CTX_CTRL_ENGINE_CTX_SAVE_INHIBIT |
+						CTX_CTRL_RS_CTX_ENABLE);
+	/* Wa_14019159160 - Case 2.*/
 	if (ctx_needs_runalone(ce))
-		ctl |= _MASKED_BIT_ENABLE(GEN12_CTX_CTRL_RUNALONE_MODE);
+		ctl |= REG_MASKED_FIELD_ENABLE(GEN12_CTX_CTRL_RUNALONE_MODE);
 	regs[CTX_CONTEXT_CONTROL] = ctl;
 
 	regs[CTX_TIMESTAMP] = ce->stats.runtime.last;
@@ -1060,9 +1021,8 @@ void lrc_init_state(struct intel_context *ce,
 
 	set_redzone(state, engine);
 
-	if (engine->default_state) {
-		shmem_read(engine->default_state, 0,
-			   state, engine->context_size);
+	if (ce->default_state) {
+		shmem_read(ce->default_state, 0, state, engine->context_size);
 		__set_bit(CONTEXT_VALID_BIT, &ce->flags);
 		inhibit = false;
 	}
@@ -1173,6 +1133,9 @@ int lrc_alloc(struct intel_context *ce, struct intel_engine_cs *engine)
 	int err;
 
 	GEM_BUG_ON(ce->state);
+
+	if (!intel_context_has_own_state(ce))
+		ce->default_state = engine->default_state;
 
 	vma = __lrc_alloc_state(ce, engine);
 	if (IS_ERR(vma))
@@ -1381,7 +1344,7 @@ gen12_invalidate_state_cache(u32 *cs)
 {
 	*cs++ = MI_LOAD_REGISTER_IMM(1);
 	*cs++ = i915_mmio_reg_offset(GEN12_CS_DEBUG_MODE2);
-	*cs++ = _MASKED_BIT_ENABLE(INSTRUCTION_STATE_CACHE_INVALIDATE);
+	*cs++ = REG_MASKED_FIELD_ENABLE(INSTRUCTION_STATE_CACHE_INVALIDATE);
 	return cs;
 }
 
@@ -1773,22 +1736,19 @@ static u32 *gen9_init_indirectctx_bb(struct intel_engine_cs *engine, u32 *batch)
 		/* WaDisableGatherAtSetShaderCommonSlice:skl,bxt,kbl,glk */
 		{
 			COMMON_SLICE_CHICKEN2,
-			__MASKED_FIELD(GEN9_DISABLE_GATHER_AT_SET_SHADER_COMMON_SLICE,
-				       0),
+			REG_MASKED_FIELD_DISABLE(GEN9_DISABLE_GATHER_AT_SET_SHADER_COMMON_SLICE),
 		},
 
 		/* BSpec: 11391 */
 		{
 			FF_SLICE_CHICKEN,
-			__MASKED_FIELD(FF_SLICE_CHICKEN_CL_PROVOKING_VERTEX_FIX,
-				       FF_SLICE_CHICKEN_CL_PROVOKING_VERTEX_FIX),
+			REG_MASKED_FIELD_ENABLE(FF_SLICE_CHICKEN_CL_PROVOKING_VERTEX_FIX),
 		},
 
 		/* BSpec: 11299 */
 		{
 			_3D_CHICKEN3,
-			__MASKED_FIELD(_3D_CHICKEN_SF_PROVOKING_VERTEX_FIX,
-				       _3D_CHICKEN_SF_PROVOKING_VERTEX_FIX),
+			REG_MASKED_FIELD_ENABLE(_3D_CHICKEN_SF_PROVOKING_VERTEX_FIX),
 		}
 	};
 
@@ -1947,10 +1907,6 @@ retry:
 
 	__i915_gem_object_flush_map(wa_ctx->vma->obj, 0, batch_ptr - batch);
 	__i915_gem_object_release_map(wa_ctx->vma->obj);
-
-	/* Verify that we can handle failure to setup the wa_ctx */
-	if (!err)
-		err = i915_inject_probe_error(engine->i915, -ENODEV);
 
 err_unpin:
 	if (err)

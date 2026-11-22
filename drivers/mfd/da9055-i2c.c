@@ -19,7 +19,7 @@ static int da9055_i2c_probe(struct i2c_client *i2c)
 	struct da9055 *da9055;
 	int ret;
 
-	da9055 = devm_kzalloc(&i2c->dev, sizeof(struct da9055), GFP_KERNEL);
+	da9055 = devm_kzalloc_obj(&i2c->dev, struct da9055);
 	if (!da9055)
 		return -ENOMEM;
 
@@ -54,7 +54,7 @@ static void da9055_i2c_remove(struct i2c_client *i2c)
  * and CODEC, which must be different to operate together.
  */
 static const struct i2c_device_id da9055_i2c_id[] = {
-	{"da9055-pmic", 0},
+	{ "da9055-pmic" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, da9055_i2c_id);

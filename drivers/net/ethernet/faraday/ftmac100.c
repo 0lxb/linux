@@ -18,7 +18,6 @@
 #include <linux/io.h>
 #include <linux/mii.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/netdevice.h>
 #include <linux/platform_device.h>
 
@@ -1092,7 +1091,7 @@ static int ftmac100_change_mtu(struct net_device *netdev, int mtu)
 	}
 	iowrite32(maccr, priv->base + FTMAC100_OFFSET_MACCR);
 
-	netdev->mtu = mtu;
+	WRITE_ONCE(netdev->mtu, mtu);
 
 	return 0;
 }
@@ -1243,7 +1242,7 @@ static const struct of_device_id ftmac100_of_ids[] = {
 
 static struct platform_driver ftmac100_driver = {
 	.probe		= ftmac100_probe,
-	.remove_new	= ftmac100_remove,
+	.remove		= ftmac100_remove,
 	.driver		= {
 		.name	= DRV_NAME,
 		.of_match_table = ftmac100_of_ids

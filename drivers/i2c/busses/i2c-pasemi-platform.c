@@ -51,8 +51,7 @@ static int pasemi_platform_i2c_probe(struct platform_device *pdev)
 	int error;
 	int irq_num;
 
-	data = devm_kzalloc(dev, sizeof(struct pasemi_platform_i2c_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, struct pasemi_platform_i2c_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -104,7 +103,7 @@ static struct platform_driver pasemi_platform_i2c_driver = {
 		.of_match_table		= pasemi_platform_i2c_of_match,
 	},
 	.probe	= pasemi_platform_i2c_probe,
-	.remove_new = pasemi_platform_i2c_remove,
+	.remove = pasemi_platform_i2c_remove,
 };
 module_platform_driver(pasemi_platform_i2c_driver);
 

@@ -99,7 +99,7 @@ struct tb_cap_extended_long {
 } __packed;
 
 /**
- * struct tb_cap_any - Structure capable of hold every capability
+ * struct tb_cap_any - Structure capable of holding every capability
  * @basic: Basic capability
  * @extended_short: Vendor specific capability
  * @extended_long: Vendor specific extended capability
@@ -182,8 +182,7 @@ struct tb_regs_switch_header {
 	/* DWORD 4 */
 	u32 plug_events_delay:8; /*
 				  * RW, pause between plug events in
-				  * milliseconds. Writing 0x00 is interpreted
-				  * as 255ms.
+				  * milliseconds.
 				  */
 	u32 cmuv:8;
 	u32 __unknown4:8;
@@ -194,6 +193,8 @@ struct tb_regs_switch_header {
 #define USB4_VERSION_MAJOR_MASK			GENMASK(7, 5)
 
 #define ROUTER_CS_1				0x01
+#define ROUTER_CS_3				0x03
+#define ROUTER_CS_3_V				BIT(31)
 #define ROUTER_CS_4				0x04
 /* Used with the router cmuv field */
 #define ROUTER_CS_4_CMUV_V1			0x10
@@ -214,6 +215,7 @@ struct tb_regs_switch_header {
 #define ROUTER_CS_6_WOPS			BIT(2)
 #define ROUTER_CS_6_WOUS			BIT(3)
 #define ROUTER_CS_6_HCI				BIT(18)
+#define ROUTER_CS_6_RR				BIT(24)
 #define ROUTER_CS_6_CR				BIT(25)
 #define ROUTER_CS_7				0x07
 #define ROUTER_CS_9				0x09
@@ -389,6 +391,7 @@ struct tb_regs_port_header {
 #define PORT_CS_18_CSA				BIT(22)
 #define PORT_CS_18_TIP				BIT(24)
 #define PORT_CS_19				0x13
+#define PORT_CS_19_DPR				BIT(0)
 #define PORT_CS_19_PC				BIT(3)
 #define PORT_CS_19_PID				BIT(4)
 #define PORT_CS_19_WOC				BIT(16)
@@ -470,9 +473,24 @@ struct tb_regs_port_header {
 
 /* PCIe adapter registers */
 #define ADP_PCIE_CS_0				0x00
+#define ADP_PCIE_CS_0_LTSSM_MASK		GENMASK(28, 25)
 #define ADP_PCIE_CS_0_PE			BIT(31)
 #define ADP_PCIE_CS_1				0x01
 #define ADP_PCIE_CS_1_EE			BIT(0)
+
+enum tb_pcie_ltssm_state {
+	USB4_PCIE_LTSSM_DETECT,
+	USB4_PCIE_LTSSM_POLLING,
+	USB4_PCIE_LTSSM_CONFIG,
+	USB4_PCIE_LTSSM_CONFIG_IDLE,
+	USB4_PCIE_LTSSM_RECOVERY,
+	USB4_PCIE_LTSSM_RECOVERY_IDLE,
+	USB4_PCIE_LTSSM_L0,
+	USB4_PCIE_LTSSM_L1,
+	USB4_PCIE_LTSSM_L2,
+	USB4_PCIE_LTSSM_DISABLED,
+	USB4_PCIE_LTSSM_HOT_RESET,
+};
 
 /* USB adapter registers */
 #define ADP_USB3_CS_0				0x00
@@ -531,8 +549,8 @@ struct tb_regs_hop {
 
 /*
  * Used for Titan Ridge only. Bits are part of the same register: TMU_ADP_CS_6
- * (see above) as in USB4 spec, but these specific bits used for Titan Ridge
- * only and reserved in USB4 spec.
+ * (see above) as in USB4 spec, but these specific bits are used for Titan Ridge
+ * only and are reserved in USB4 spec.
  */
 #define TMU_ADP_CS_6_DISABLE_TMU_OBJ_MASK	GENMASK(3, 2)
 #define TMU_ADP_CS_6_DISABLE_TMU_OBJ_CL1	BIT(2)
@@ -584,6 +602,9 @@ struct tb_regs_hop {
 #define TB_LC_POWER				0x740
 
 /* Link controller registers */
+#define TB_LC_PORT_MODE				0x26
+#define TB_LC_PORT_MODE_DPR			BIT(0)
+
 #define TB_LC_CS_42				0x2a
 #define TB_LC_CS_42_USB_PLUGGED			BIT(31)
 

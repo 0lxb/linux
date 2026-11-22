@@ -22,6 +22,7 @@
 #include "ste-db8500.dtsi"
 #include "ste-ab8500.dtsi"
 #include "ste-dbx5x0-pinctrl.dtsi"
+#include "ste-ux500-samsung.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/input/input.h>
@@ -451,13 +452,17 @@
 			no-sdio;
 			no-sd;
 			vmmc-supply = <&ldo_3v3_reg>;
+			vqmmc-supply = <&ab8500_buck_vsmps2>;
 			pinctrl-names = "default", "sleep";
 			/*
-			 * GPIO130 will be set to input no pull-up resulting in a resistor
-			 * pulling the reset high and taking the memory out of reset.
+			 * This muxing excludes the feedback clock on GPIO130
+			 * which is instead used for reset of the eMMC.
+			 * GPIO130 will be set to input no pull-up resulting in
+			 * a resistor pulling the reset high and taking the
+			 * memory out of reset.
 			 */
-			pinctrl-0 = <&mc2_a_1_default>;
-			pinctrl-1 = <&mc2_a_1_sleep>;
+			pinctrl-0 = <&mc2_a_2_default>;
+			pinctrl-1 = <&mc2_a_2_sleep>;
 			status = "okay";
 		};
 
@@ -475,8 +480,9 @@
 				/* BT_WAKE on GPIO199 */
 				device-wakeup-gpios = <&gpio6 7 GPIO_ACTIVE_HIGH>;
 				/* BT_HOST_WAKE on GPIO97 */
-				/* FIXME: convert to interrupt */
-				host-wakeup-gpios = <&gpio3 1 GPIO_ACTIVE_HIGH>;
+				interrupt-parent = <&gpio3>;
+				interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+				interrupt-names = "host-wakeup";
 				/* BT_RST_N on GPIO209 */
 				reset-gpios = <&gpio6 17 GPIO_ACTIVE_LOW>;
 				pinctrl-names = "default";
@@ -498,7 +504,7 @@
 				/* GPS_ON_OFF on GPIO86 */
 				enable-gpios = <&gpio2 22 GPIO_ACTIVE_HIGH>;
 				/* GPS_1V8 (VSMPS2) */
-				vddio-supply = <&db8500_vsmps2_reg>;
+				vddio-supply = <&ab8500_buck_vsmps2>;
 				pinctrl-names = "default";
 				pinctrl-0 = <&bcm4751_codina_default>;
 			};
@@ -644,6 +650,7 @@
 				touchscreen-size-y = <800>;
 				pinctrl-names = "default";
 				pinctrl-0 = <&tsp_default>;
+				linux,keycodes = <KEY_MENU>, <KEY_BACK>;
 			};
 		};
 
@@ -659,6 +666,26 @@
 			};
 		};
 	};
+};
+
+&samsung_playback_cpu {
+	dai-format = "dsp_b";
+	dai-tdm-slot-num = <16>;
+	dai-tdm-slot-tx-mask = <0 1 0 1>;
+};
+
+&samsung_codec_playback {
+	dai-tdm-slot-num = <16>;
+	dai-tdm-slot-tx-mask = <0 1 0 1>;
+};
+
+&samsung_capture_cpu {
+	dai-format = "dsp_b";
+	dai-tdm-slot-num = <16>;
+};
+
+&samsung_codec_capture {
+	dai-tdm-slot-num = <16>;
 };
 
 &pinctrl {
@@ -677,14 +704,14 @@
 	sdi2 {
 		/*
 		 * This will make the resistor mounted in R0.0 pull up
-		 * the reset line and take the eMMC out of reset. On
-		 * R0.4 variants, GPIO130 should be set in GPIO mode and
-		 * pulled down. (Not connected.)
+		 * the reset line and take the eMMC out of reset so set to
+		 * GPIO input mode, no pull-up. On R0.4 variants, GPIO130
+		 * could be set in GPIO mode and pulled down. (Not connected.)
 		 */
-		mc2_a_1_default {
-			default_cfg2 {
-				pins = "GPIO130_C8"; /* FBCLK */
-				ste,config = <&in_nopull>;
+		mc2_a_2_default {
+			default_cfg3 {
+				pins = "GPIO130_C8"; /* RST_N */
+				ste,config = <&gpio_in_nopull>;
 			};
 		};
 	};

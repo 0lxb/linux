@@ -169,15 +169,15 @@ static int sama5d2_piobu_get(struct gpio_chip *chip, unsigned int pin)
 /*
  * sama5d2_piobu_set() - gpiochip set
  */
-static void sama5d2_piobu_set(struct gpio_chip *chip, unsigned int pin,
-			      int value)
+static int sama5d2_piobu_set(struct gpio_chip *chip, unsigned int pin,
+			     int value)
 {
 	if (!value)
 		value = PIOBU_LOW;
 	else
 		value = PIOBU_HIGH;
 
-	sama5d2_piobu_write_value(chip, pin, PIOBU_SOD, value);
+	return sama5d2_piobu_write_value(chip, pin, PIOBU_SOD, value);
 }
 
 static int sama5d2_piobu_probe(struct platform_device *pdev)
@@ -185,21 +185,21 @@ static int sama5d2_piobu_probe(struct platform_device *pdev)
 	struct sama5d2_piobu *piobu;
 	int ret, i;
 
-	piobu = devm_kzalloc(&pdev->dev, sizeof(*piobu), GFP_KERNEL);
+	piobu = devm_kzalloc_obj(&pdev->dev, *piobu);
 	if (!piobu)
 		return -ENOMEM;
 
 	piobu->chip.label = pdev->name;
 	piobu->chip.parent = &pdev->dev;
-	piobu->chip.owner = THIS_MODULE,
-	piobu->chip.get_direction = sama5d2_piobu_get_direction,
-	piobu->chip.direction_input = sama5d2_piobu_direction_input,
-	piobu->chip.direction_output = sama5d2_piobu_direction_output,
-	piobu->chip.get = sama5d2_piobu_get,
-	piobu->chip.set = sama5d2_piobu_set,
-	piobu->chip.base = -1,
-	piobu->chip.ngpio = PIOBU_NUM,
-	piobu->chip.can_sleep = 0,
+	piobu->chip.owner = THIS_MODULE;
+	piobu->chip.get_direction = sama5d2_piobu_get_direction;
+	piobu->chip.direction_input = sama5d2_piobu_direction_input;
+	piobu->chip.direction_output = sama5d2_piobu_direction_output;
+	piobu->chip.get = sama5d2_piobu_get;
+	piobu->chip.set = sama5d2_piobu_set;
+	piobu->chip.base = -1;
+	piobu->chip.ngpio = PIOBU_NUM;
+	piobu->chip.can_sleep = 0;
 
 	piobu->regmap = syscon_node_to_regmap(pdev->dev.of_node);
 	if (IS_ERR(piobu->regmap)) {

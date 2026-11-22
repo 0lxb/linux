@@ -144,6 +144,8 @@ my %selects;
 my %prompts;
 my %objects;
 my %config2kfile;
+my %defaults;
+my %types;
 my $var;
 my $iflevel = 0;
 my @ifdeps;
@@ -220,8 +222,10 @@ sub read_kconfig {
 	    $depends{$config} = $1;
 	} elsif ($state eq "DEP" && /^\s*depends\s+on\s+(.*)$/) {
 	    $depends{$config} .= " " . $1;
-	} elsif ($state eq "DEP" && /^\s*def(_(bool|tristate)|ault)\s+(\S.*)$/) {
+	} elsif ($state ne "NONE" && /^\s*def(_(bool|tristate)|ault)\s+(\S.*)$/) {
 	    my $dep = $3;
+            $defaults{$config} = 1;
+	    $types{$config} = $2 if (defined($2));
 	    if ($dep !~ /^\s*(y|m|n)\s*$/) {
 		$dep =~ s/.*\sif\s+//;
 		$depends{$config} .= " " . $dep;
@@ -238,7 +242,13 @@ sub read_kconfig {
 	    }
 
 	# configs without prompts must be selected
-	} elsif ($state ne "NONE" && /^\s*(tristate\s+\S|prompt\b)/) {
+	} elsif ($state ne "NONE" && /^\s*(bool|boolean)(\s+\S.*)?$/) {
+	    $types{$config} = "bool";
+	    $prompts{$config} = 1 if (defined($2));
+	} elsif ($state ne "NONE" && /^\s*tristate(\s+\S.*)?$/) {
+	    $types{$config} = "tristate";
+	    $prompts{$config} = 1 if (defined($1));
+	} elsif ($state ne "NONE" && /^\s*prompt\b/) {
 	    # note if the config has a prompt
 	    $prompts{$config} = 1;
 
@@ -413,7 +423,7 @@ foreach my $module (keys(%modules)) {
 	}
     } else {
 	# Most likely, someone has a custom (binary?) module loaded.
-	print STDERR "$module config not found!!\n";
+	print STDERR "$module config not found!\n";
     }
 }
 
@@ -503,7 +513,7 @@ sub parse_config_selects
 
 	    # Check if something other than a module selects this config
 	    if (defined($orig_configs{$conf}) && $orig_configs{$conf} ne "m") {
-		dprint "$conf (non module) selects config, we are good\n";
+		dprint "$conf (non module) selects $config, we are good\n";
 		# we are good with this
 		return;
 	    }
@@ -523,8 +533,16 @@ sub parse_config_selects
 
     # If no possible config selected this, then something happened.
     if (!defined($next_config)) {
-	print STDERR "WARNING: $config is required, but nothing in the\n";
-	print STDERR "  current config selects it.\n";
+
+	# Some config options have no prompt, and nothing selects them, but
+	# they stay turned on once the final checks for the configs
+	# are done. These configs have a default option, so turn off the
+	# warnings for configs with default options.
+	if (!defined($defaults{$config})) {
+	    print STDERR "WARNING: $config is required, but nothing in the\n";
+	    print STDERR "  current config selects it.\n";
+	}
+
 	return;
     }
 
@@ -697,7 +715,15 @@ foreach my $module (keys(%modules)) {
 	}
 	print STDERR "module $module did not have configs";
 	foreach my $conf (@arr) {
-	    print STDERR " " , $conf;
+	    my $c = $conf;
+	    $c =~ s/^CONFIG_//;
+	    if (!$localyesconfig && defined($types{$c}) && $types{$c} eq "bool") {
+		print STDERR " $conf (boolean, not supported with =m)";
+	    } elsif (defined($types{$c})) {
+		print STDERR " $conf ($types{$c})";
+	    } else {
+		print STDERR " " , $conf;
+	    }
 	}
 	print STDERR "\n";
     }

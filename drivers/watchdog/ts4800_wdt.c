@@ -12,13 +12,14 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
-	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+	__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /* possible feed values */
 #define TS4800_WDT_FEED_2S       0x1
@@ -128,7 +129,7 @@ static int ts4800_wdt_probe(struct platform_device *pdev)
 	}
 
 	/* allocate memory for watchdog struct */
-	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
+	wdt = devm_kzalloc_obj(dev, *wdt);
 	if (!wdt) {
 		of_node_put(syscon_np);
 		return -ENOMEM;
@@ -200,5 +201,6 @@ static struct platform_driver ts4800_wdt_driver = {
 module_platform_driver(ts4800_wdt_driver);
 
 MODULE_AUTHOR("Damien Riegel <damien.riegel@savoirfairelinux.com>");
+MODULE_DESCRIPTION("Watchdog driver for TS-4800 based boards");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:ts4800_wdt");

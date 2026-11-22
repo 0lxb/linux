@@ -9,8 +9,8 @@ contribution to the display code, and for that, we say thank you :)
 
 This page summarizes some of the issues you can help with; keep in mind that
 this is a static page, and it is always a good idea to try to reach developers
-in the amdgfx or some of the maintainers. Finally, this page follows the DRM
-way of creating a TODO list; for more information, check
+on the amd-gfx mailing list or some of the maintainers. Finally, this page
+follows the DRM way of creating a TODO list; for more information, check
 'Documentation/gpu/todo.rst'.
 
 Gitlab issues
@@ -135,7 +135,7 @@ Enable underlay
 ---------------
 
 AMD display has this feature called underlay (which you can read more about at
-'Documentation/GPU/amdgpu/display/mpo-overview.rst') which is intended to
+'Documentation/gpu/amdgpu/display/mpo-overview.rst') which is intended to
 save power when playing a video. The basic idea is to put a video in the
 underlay plane at the bottom and the desktop in the plane above it with a hole
 in the video area. This feature is enabled in ChromeOS, and from our data

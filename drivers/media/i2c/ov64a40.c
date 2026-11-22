@@ -10,7 +10,6 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -18,7 +17,6 @@
 #include <media/v4l2-cci.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
-#include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
@@ -2991,7 +2989,6 @@ static int ov64a40_start_streaming(struct ov64a40 *ov64a40,
 	return 0;
 
 error_power_off:
-	pm_runtime_mark_last_busy(ov64a40->dev);
 	pm_runtime_put_autosuspend(ov64a40->dev);
 
 	return ret;
@@ -3001,7 +2998,6 @@ static int ov64a40_stop_streaming(struct ov64a40 *ov64a40,
 				  struct v4l2_subdev_state *state)
 {
 	cci_update_bits(ov64a40->cci, OV64A40_REG_SMIA, BIT(0), 0, NULL);
-	pm_runtime_mark_last_busy(ov64a40->dev);
 	pm_runtime_put_autosuspend(ov64a40->dev);
 
 	__v4l2_ctrl_grab(ov64a40->link_freq, false);
@@ -3110,6 +3106,7 @@ static int ov64a40_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int ov64a40_get_selection(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -3141,6 +3138,7 @@ static int ov64a40_get_selection(struct v4l2_subdev *sd,
 }
 
 static int ov64a40_set_format(struct v4l2_subdev *sd,
+			      const struct v4l2_subdev_client_info *ci,
 			      struct v4l2_subdev_state *state,
 			      struct v4l2_subdev_format *fmt)
 {
@@ -3200,13 +3198,7 @@ static const struct v4l2_subdev_pad_ops ov64a40_pad_ops = {
 	.get_selection = ov64a40_get_selection,
 };
 
-static const struct v4l2_subdev_core_ops ov64a40_core_ops = {
-	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
-	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
-};
-
 static const struct v4l2_subdev_ops ov64a40_subdev_ops = {
-	.core = &ov64a40_core_ops,
 	.video = &ov64a40_video_ops,
 	.pad = &ov64a40_pad_ops,
 };
@@ -3336,10 +3328,8 @@ static int ov64a40_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
-	if (pm_status > 0) {
-		pm_runtime_mark_last_busy(ov64a40->dev);
+	if (pm_status > 0)
 		pm_runtime_put_autosuspend(ov64a40->dev);
-	}
 
 	return ret;
 }
@@ -3544,7 +3534,7 @@ static int ov64a40_probe(struct i2c_client *client)
 	u32 xclk_freq;
 	int ret;
 
-	ov64a40 = devm_kzalloc(&client->dev, sizeof(*ov64a40), GFP_KERNEL);
+	ov64a40 = devm_kzalloc_obj(&client->dev, *ov64a40);
 	if (!ov64a40)
 		return -ENOMEM;
 
@@ -3557,7 +3547,7 @@ static int ov64a40_probe(struct i2c_client *client)
 		return PTR_ERR(ov64a40->cci);
 	}
 
-	ov64a40->xclk = devm_clk_get(&client->dev, NULL);
+	ov64a40->xclk = devm_v4l2_sensor_clk_get(&client->dev, NULL);
 	if (IS_ERR(ov64a40->xclk))
 		return dev_err_probe(&client->dev, PTR_ERR(ov64a40->xclk),
 				     "Failed to get clock\n");
@@ -3605,8 +3595,7 @@ static int ov64a40_probe(struct i2c_client *client)
 
 	/* Initialize subdev */
 	ov64a40->sd.internal_ops = &ov64a40_internal_ops;
-	ov64a40->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE
-			  | V4L2_SUBDEV_FL_HAS_EVENTS;
+	ov64a40->sd.flags = V4L2_SUBDEV_FL_HAS_DEVNODE;
 	ov64a40->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
 	ov64a40->pad.flags = MEDIA_PAD_FL_SOURCE;
@@ -3630,7 +3619,6 @@ static int ov64a40_probe(struct i2c_client *client)
 		goto error_subdev_cleanup;
 	}
 
-	pm_runtime_mark_last_busy(&client->dev);
 	pm_runtime_put_autosuspend(&client->dev);
 
 	return 0;

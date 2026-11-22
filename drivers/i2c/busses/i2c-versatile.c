@@ -66,7 +66,7 @@ static int i2c_versatile_probe(struct platform_device *dev)
 	struct i2c_versatile *i2c;
 	int ret;
 
-	i2c = devm_kzalloc(&dev->dev, sizeof(struct i2c_versatile), GFP_KERNEL);
+	i2c = devm_kzalloc_obj(&dev->dev, struct i2c_versatile);
 	if (!i2c)
 		return -ENOMEM;
 
@@ -109,7 +109,7 @@ MODULE_DEVICE_TABLE(of, i2c_versatile_match);
 
 static struct platform_driver i2c_versatile_driver = {
 	.probe		= i2c_versatile_probe,
-	.remove_new	= i2c_versatile_remove,
+	.remove		= i2c_versatile_remove,
 	.driver		= {
 		.name	= "versatile-i2c",
 		.of_match_table = i2c_versatile_match,

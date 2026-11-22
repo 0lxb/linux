@@ -144,7 +144,7 @@ static int hi3519_clk_probe(struct platform_device *pdev)
 {
 	struct hi3519_crg_data *crg;
 
-	crg = devm_kmalloc(&pdev->dev, sizeof(*crg), GFP_KERNEL);
+	crg = devm_kmalloc_obj(&pdev->dev, *crg);
 	if (!crg)
 		return -ENOMEM;
 
@@ -179,7 +179,7 @@ MODULE_DEVICE_TABLE(of, hi3519_clk_match_table);
 
 static struct platform_driver hi3519_clk_driver = {
 	.probe          = hi3519_clk_probe,
-	.remove_new	= hi3519_clk_remove,
+	.remove		= hi3519_clk_remove,
 	.driver         = {
 		.name   = "hi3519-clk",
 		.of_match_table = hi3519_clk_match_table,

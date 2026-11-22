@@ -15,12 +15,9 @@
 #include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/tty.h>
-#include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
-#include <linux/uaccess.h>
-#include <linux/atomic.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
 
@@ -104,7 +101,7 @@ struct garmin_packet {
 	int               seq;
 	/* the real size of the data array, always > 0 */
 	int               size;
-	__u8              data[];
+	__u8              data[] __counted_by(size);
 };
 
 /* structure used to keep the current state of the driver */
@@ -267,8 +264,7 @@ static int pkt_add(struct garmin_data *garmin_data_p,
 
 	/* process only packets containing data ... */
 	if (data_length) {
-		pkt = kmalloc(sizeof(struct garmin_packet)+data_length,
-								GFP_ATOMIC);
+		pkt = kmalloc_flex(*pkt, data, data_length, GFP_ATOMIC);
 		if (!pkt)
 			return 0;
 
@@ -750,11 +746,7 @@ static int nat_receive(struct garmin_data *garmin_data_p,
 			len = GARMIN_PKTHDR_LENGTH;
 
 		if (len >= GPS_IN_BUFSIZ) {
-			/* seems to be an invalid packet, ignore rest
-			   of input */
-			dev_dbg(&garmin_data_p->port->dev,
-				"%s - packet size too large: %d\n",
-				__func__, len);
+			/* should never end up here given the dlen check below */
 			garmin_data_p->insize = 0;
 			count = 0;
 			result = -EINVPKT;
@@ -773,8 +765,17 @@ static int nat_receive(struct garmin_data *garmin_data_p,
 
 		/* do we have a complete packet ? */
 		if (garmin_data_p->insize >= GARMIN_PKTHDR_LENGTH) {
-			len = GARMIN_PKTHDR_LENGTH+
-			   getDataLength(garmin_data_p->inbuffer);
+			u32 dlen = getDataLength(garmin_data_p->inbuffer);
+
+			if (dlen >= GPS_IN_BUFSIZ - GARMIN_PKTHDR_LENGTH) {
+				/* invalid packet, ignore rest of input */
+				dev_dbg(&garmin_data_p->port->dev, "%s - invalid length: %u\n",
+					__func__, dlen);
+				garmin_data_p->insize = 0;
+				result = -EINVPKT;
+				break;
+			}
+			len = GARMIN_PKTHDR_LENGTH + dlen;
 			if (garmin_data_p->insize >= len) {
 				garmin_write_bulk(garmin_data_p->port,
 						   garmin_data_p->inbuffer,
@@ -822,10 +823,9 @@ static void priv_status_resp(struct usb_serial_port *port)
  * Garmin specific driver functions
  ******************************************************************************/
 
-static int process_resetdev_request(struct usb_serial_port *port)
+static void process_resetdev_request(struct usb_serial_port *port)
 {
 	unsigned long flags;
-	int status;
 	struct garmin_data *garmin_data_p = usb_get_serial_port_data(port);
 
 	spin_lock_irqsave(&garmin_data_p->lock, flags);
@@ -834,13 +834,8 @@ static int process_resetdev_request(struct usb_serial_port *port)
 	garmin_data_p->serial_num = 0;
 	spin_unlock_irqrestore(&garmin_data_p->lock, flags);
 
-	usb_kill_urb(port->interrupt_in_urb);
-	dev_dbg(&port->dev, "%s - usb_reset_device\n", __func__);
-	status = usb_reset_device(port->serial->dev);
-	if (status)
-		dev_dbg(&port->dev, "%s - usb_reset_device failed: %d\n",
-			__func__, status);
-	return status;
+	dev_dbg(&port->dev, "%s - usb_queue_reset_device\n", __func__);
+	usb_queue_reset_device(port->serial->interface);
 }
 
 
@@ -1358,7 +1353,8 @@ static void garmin_unthrottle(struct tty_struct *tty)
  */
 static void timeout_handler(struct timer_list *t)
 {
-	struct garmin_data *garmin_data_p = from_timer(garmin_data_p, t, timer);
+	struct garmin_data *garmin_data_p = timer_container_of(garmin_data_p,
+						               t, timer);
 
 	/* send the next queued packet to the tty port */
 	if (garmin_data_p->mode == MODE_NATIVE)
@@ -1373,7 +1369,7 @@ static int garmin_port_probe(struct usb_serial_port *port)
 	int status;
 	struct garmin_data *garmin_data_p;
 
-	garmin_data_p = kzalloc(sizeof(struct garmin_data), GFP_KERNEL);
+	garmin_data_p = kzalloc_obj(struct garmin_data);
 	if (!garmin_data_p)
 		return -ENOMEM;
 
@@ -1413,7 +1409,6 @@ static void garmin_port_remove(struct usb_serial_port *port)
 /* All of the device info needed */
 static struct usb_serial_driver garmin_device = {
 	.driver = {
-		.owner       = THIS_MODULE,
 		.name        = "garmin_gps",
 	},
 	.description         = "Garmin GPS usb/tty",

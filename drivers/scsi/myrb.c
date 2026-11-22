@@ -16,7 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/raid_class.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -112,9 +112,8 @@ static bool myrb_create_mempools(struct pci_dev *pdev, struct myrb_hba *cb)
 		return false;
 	}
 
-	snprintf(cb->work_q_name, sizeof(cb->work_q_name),
-		 "myrb_wq_%d", cb->host->host_no);
-	cb->work_q = create_singlethread_workqueue(cb->work_q_name);
+	cb->work_q = alloc_ordered_workqueue("myrb_wq_%d", WQ_MEM_RECLAIM,
+					     cb->host->host_no);
 	if (!cb->work_q) {
 		dma_pool_destroy(cb->dcdb_pool);
 		cb->dcdb_pool = NULL;
@@ -315,17 +314,19 @@ static void myrb_get_event(struct myrb_hba *cb, unsigned int event)
 		scsi_normalize_sense(ev_buf->sense, 32, &sshdr);
 
 		if (sshdr.sense_key == VENDOR_SPECIFIC &&
-		    sshdr.asc == 0x80 &&
-		    sshdr.ascq < ARRAY_SIZE(myrb_event_msg))
+		    scsi_sense_asc(&sshdr) == 0x80 &&
+		    scsi_sense_ascq(&sshdr) < ARRAY_SIZE(myrb_event_msg))
 			shost_printk(KERN_CRIT, cb->host,
 				     "Physical drive %d:%d: %s\n",
 				     ev_buf->channel, ev_buf->target,
-				     myrb_event_msg[sshdr.ascq]);
+				     myrb_event_msg[scsi_sense_ascq(&sshdr)]);
 		else
 			shost_printk(KERN_CRIT, cb->host,
 				     "Physical drive %d:%d: Sense: %X/%02X/%02X\n",
 				     ev_buf->channel, ev_buf->target,
-				     sshdr.sense_key, sshdr.asc, sshdr.ascq);
+				     sshdr.sense_key,
+				     scsi_sense_asc(&sshdr),
+				     scsi_sense_ascq(&sshdr));
 	}
 
 	dma_free_coherent(&cb->pdev->dev, sizeof(struct myrb_log_entry),
@@ -892,7 +893,7 @@ static bool myrb_enable_mmio(struct myrb_hba *cb, mbox_mmio_init_t mmio_init_fn)
 		status = mmio_init_fn(pdev, base, &mbox);
 		if (status != MYRB_STATUS_SUCCESS) {
 			dev_err(&pdev->dev,
-				"Failed to enable mailbox, statux %02X\n",
+				"Failed to enable mailbox, status %02X\n",
 				status);
 			return false;
 		}
@@ -1261,8 +1262,8 @@ static int myrb_host_reset(struct scsi_cmnd *scmd)
 	return SUCCESS;
 }
 
-static int myrb_pthru_queuecommand(struct Scsi_Host *shost,
-		struct scsi_cmnd *scmd)
+static enum scsi_qc_status myrb_pthru_queuecommand(struct Scsi_Host *shost,
+						   struct scsi_cmnd *scmd)
 {
 	struct request *rq = scsi_cmd_to_rq(scmd);
 	struct myrb_hba *cb = shost_priv(shost);
@@ -1399,7 +1400,7 @@ myrb_mode_sense(struct myrb_hba *cb, struct scsi_cmnd *scmd,
 static void myrb_request_sense(struct myrb_hba *cb,
 		struct scsi_cmnd *scmd)
 {
-	scsi_build_sense(scmd, 0, NO_SENSE, 0, 0);
+	scsi_set_sense(scmd, 0, NO_SENSE, NO_ADDITIONAL_SENSE_INFORMATION);
 	scsi_sg_copy_from_buffer(scmd, scmd->sense_buffer,
 				 SCSI_SENSE_BUFFERSIZE);
 }
@@ -1417,8 +1418,8 @@ static void myrb_read_capacity(struct myrb_hba *cb, struct scsi_cmnd *scmd,
 	scsi_sg_copy_from_buffer(scmd, data, 8);
 }
 
-static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
-		struct scsi_cmnd *scmd)
+static enum scsi_qc_status myrb_ldev_queuecommand(struct Scsi_Host *shost,
+						  struct scsi_cmnd *scmd)
 {
 	struct myrb_hba *cb = shost_priv(shost);
 	struct myrb_cmdblk *cmd_blk = scsi_cmd_priv(scmd);
@@ -1447,8 +1448,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		return 0;
 	case INQUIRY:
 		if (scmd->cmnd[1] & 1) {
-			/* Illegal request, invalid field in CDB */
-			scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x24, 0);
+			scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+				       INVALID_FIELD_IN_CDB);
 		} else {
 			myrb_inquiry(cb, scmd);
 			scmd->result = (DID_OK << 16);
@@ -1462,8 +1463,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 	case MODE_SENSE:
 		if ((scmd->cmnd[2] & 0x3F) != 0x3F &&
 		    (scmd->cmnd[2] & 0x3F) != 0x08) {
-			/* Illegal request, invalid field in CDB */
-			scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x24, 0);
+			scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+				       INVALID_FIELD_IN_CDB);
 		} else {
 			myrb_mode_sense(cb, scmd, ldev_info);
 			scmd->result = (DID_OK << 16);
@@ -1473,15 +1474,15 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 	case READ_CAPACITY:
 		if ((scmd->cmnd[1] & 1) ||
 		    (scmd->cmnd[8] & 1)) {
-			/* Illegal request, invalid field in CDB */
-			scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x24, 0);
+			scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+				       INVALID_FIELD_IN_CDB);
 			scsi_done(scmd);
 			return 0;
 		}
 		lba = get_unaligned_be32(&scmd->cmnd[2]);
 		if (lba) {
-			/* Illegal request, invalid field in CDB */
-			scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x24, 0);
+			scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+				       INVALID_FIELD_IN_CDB);
 			scsi_done(scmd);
 			return 0;
 		}
@@ -1494,8 +1495,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		return 0;
 	case SEND_DIAGNOSTIC:
 		if (scmd->cmnd[1] != 0x04) {
-			/* Illegal request, invalid field in CDB */
-			scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x24, 0);
+			scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+				       INVALID_FIELD_IN_CDB);
 		} else {
 			/* Assume good status */
 			scmd->result = (DID_OK << 16);
@@ -1504,8 +1505,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		return 0;
 	case READ_6:
 		if (ldev_info->state == MYRB_DEVICE_WO) {
-			/* Data protect, attempt to read invalid data */
-			scsi_build_sense(scmd, 0, DATA_PROTECT, 0x21, 0x06);
+			scsi_set_sense(scmd, 0, DATA_PROTECT,
+				       ATTEMPT_TO_READ_INVALID_DATA);
 			scsi_done(scmd);
 			return 0;
 		}
@@ -1518,8 +1519,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		break;
 	case READ_10:
 		if (ldev_info->state == MYRB_DEVICE_WO) {
-			/* Data protect, attempt to read invalid data */
-			scsi_build_sense(scmd, 0, DATA_PROTECT, 0x21, 0x06);
+			scsi_set_sense(scmd, 0, DATA_PROTECT,
+				       ATTEMPT_TO_READ_INVALID_DATA);
 			scsi_done(scmd);
 			return 0;
 		}
@@ -1532,8 +1533,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		break;
 	case READ_12:
 		if (ldev_info->state == MYRB_DEVICE_WO) {
-			/* Data protect, attempt to read invalid data */
-			scsi_build_sense(scmd, 0, DATA_PROTECT, 0x21, 0x06);
+			scsi_set_sense(scmd, 0, DATA_PROTECT,
+				       ATTEMPT_TO_READ_INVALID_DATA);
 			scsi_done(scmd);
 			return 0;
 		}
@@ -1545,8 +1546,8 @@ static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
 		block_cnt = get_unaligned_be32(&scmd->cmnd[6]);
 		break;
 	default:
-		/* Illegal request, invalid opcode */
-		scsi_build_sense(scmd, 0, ILLEGAL_REQUEST, 0x20, 0);
+		scsi_set_sense(scmd, 0, ILLEGAL_REQUEST,
+			       INVALID_COMMAND_OP_CODE);
 		scsi_done(scmd);
 		return 0;
 	}
@@ -1604,8 +1605,8 @@ submit:
 	return 0;
 }
 
-static int myrb_queuecommand(struct Scsi_Host *shost,
-		struct scsi_cmnd *scmd)
+static enum scsi_qc_status myrb_queuecommand(struct Scsi_Host *shost,
+					     struct scsi_cmnd *scmd)
 {
 	struct scsi_device *sdev = scmd->device;
 
@@ -1620,7 +1621,7 @@ static int myrb_queuecommand(struct Scsi_Host *shost,
 	return myrb_pthru_queuecommand(shost, scmd);
 }
 
-static int myrb_ldev_slave_alloc(struct scsi_device *sdev)
+static int myrb_ldev_sdev_init(struct scsi_device *sdev)
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
 	struct myrb_ldev_info *ldev_info;
@@ -1628,10 +1629,8 @@ static int myrb_ldev_slave_alloc(struct scsi_device *sdev)
 	enum raid_level level;
 
 	ldev_info = cb->ldev_info_buf + ldev_num;
-	if (!ldev_info)
-		return -ENXIO;
 
-	sdev->hostdata = kzalloc(sizeof(*ldev_info), GFP_KERNEL);
+	sdev->hostdata = kzalloc_obj(*ldev_info);
 	if (!sdev->hostdata)
 		return -ENOMEM;
 	dev_dbg(&sdev->sdev_gendev,
@@ -1666,7 +1665,7 @@ static int myrb_ldev_slave_alloc(struct scsi_device *sdev)
 	return 0;
 }
 
-static int myrb_pdev_slave_alloc(struct scsi_device *sdev)
+static int myrb_pdev_sdev_init(struct scsi_device *sdev)
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
 	struct myrb_pdev_state *pdev_info;
@@ -1675,7 +1674,7 @@ static int myrb_pdev_slave_alloc(struct scsi_device *sdev)
 	if (sdev->id > MYRB_MAX_TARGETS)
 		return -ENXIO;
 
-	pdev_info = kzalloc(sizeof(*pdev_info), GFP_KERNEL);
+	pdev_info = kzalloc_obj(*pdev_info);
 	if (!pdev_info)
 		return -ENOMEM;
 
@@ -1702,7 +1701,7 @@ static int myrb_pdev_slave_alloc(struct scsi_device *sdev)
 	return 0;
 }
 
-static int myrb_slave_alloc(struct scsi_device *sdev)
+static int myrb_sdev_init(struct scsi_device *sdev)
 {
 	if (sdev->channel > myrb_logical_channel(sdev->host))
 		return -ENXIO;
@@ -1711,12 +1710,13 @@ static int myrb_slave_alloc(struct scsi_device *sdev)
 		return -ENXIO;
 
 	if (sdev->channel == myrb_logical_channel(sdev->host))
-		return myrb_ldev_slave_alloc(sdev);
+		return myrb_ldev_sdev_init(sdev);
 
-	return myrb_pdev_slave_alloc(sdev);
+	return myrb_pdev_sdev_init(sdev);
 }
 
-static int myrb_slave_configure(struct scsi_device *sdev)
+static int myrb_sdev_configure(struct scsi_device *sdev,
+			       struct queue_limits *lim)
 {
 	struct myrb_ldev_info *ldev_info;
 
@@ -1742,12 +1742,12 @@ static int myrb_slave_configure(struct scsi_device *sdev)
 	return 0;
 }
 
-static void myrb_slave_destroy(struct scsi_device *sdev)
+static void myrb_sdev_destroy(struct scsi_device *sdev)
 {
 	kfree(sdev->hostdata);
 }
 
-static int myrb_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+static int myrb_biosparam(struct scsi_device *sdev, struct gendisk *unused,
 		sector_t capacity, int geom[])
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
@@ -1775,9 +1775,9 @@ static ssize_t raid_state_show(struct device *dev,
 
 		name = myrb_devstate_name(ldev_info->state);
 		if (name)
-			ret = snprintf(buf, 32, "%s\n", name);
+			ret = snprintf(buf, 64, "%s\n", name);
 		else
-			ret = snprintf(buf, 32, "Invalid (%02X)\n",
+			ret = snprintf(buf, 64, "Invalid (%02X)\n",
 				       ldev_info->state);
 	} else {
 		struct myrb_pdev_state *pdev_info = sdev->hostdata;
@@ -1796,9 +1796,9 @@ static ssize_t raid_state_show(struct device *dev,
 		else
 			name = myrb_devstate_name(pdev_info->state);
 		if (name)
-			ret = snprintf(buf, 32, "%s\n", name);
+			ret = snprintf(buf, 64, "%s\n", name);
 		else
-			ret = snprintf(buf, 32, "Invalid (%02X)\n",
+			ret = snprintf(buf, 64, "Invalid (%02X)\n",
 				       pdev_info->state);
 	}
 	return ret;
@@ -1886,11 +1886,11 @@ static ssize_t raid_level_show(struct device *dev,
 
 		name = myrb_raidlevel_name(ldev_info->raid_level);
 		if (!name)
-			return snprintf(buf, 32, "Invalid (%02X)\n",
+			return snprintf(buf, 64, "Invalid (%02X)\n",
 					ldev_info->state);
-		return snprintf(buf, 32, "%s\n", name);
+		return snprintf(buf, 64, "%s\n", name);
 	}
-	return snprintf(buf, 32, "Physical Drive\n");
+	return snprintf(buf, 64, "Physical Drive\n");
 }
 static DEVICE_ATTR_RO(raid_level);
 
@@ -1903,15 +1903,15 @@ static ssize_t rebuild_show(struct device *dev,
 	unsigned char status;
 
 	if (sdev->channel < myrb_logical_channel(sdev->host))
-		return snprintf(buf, 32, "physical device - not rebuilding\n");
+		return snprintf(buf, 64, "physical device - not rebuilding\n");
 
 	status = myrb_get_rbld_progress(cb, &rbld_buf);
 
 	if (rbld_buf.ldev_num != sdev->id ||
 	    status != MYRB_STATUS_SUCCESS)
-		return snprintf(buf, 32, "not rebuilding\n");
+		return snprintf(buf, 64, "not rebuilding\n");
 
-	return snprintf(buf, 32, "rebuilding block %u of %u\n",
+	return snprintf(buf, 64, "rebuilding block %u of %u\n",
 			rbld_buf.ldev_size - rbld_buf.blocks_left,
 			rbld_buf.ldev_size);
 }
@@ -2209,9 +2209,9 @@ static const struct scsi_host_template myrb_template = {
 	.proc_name		= "myrb",
 	.queuecommand		= myrb_queuecommand,
 	.eh_host_reset_handler	= myrb_host_reset,
-	.slave_alloc		= myrb_slave_alloc,
-	.slave_configure	= myrb_slave_configure,
-	.slave_destroy		= myrb_slave_destroy,
+	.sdev_init		= myrb_sdev_init,
+	.sdev_configure		= myrb_sdev_configure,
+	.sdev_destroy		= myrb_sdev_destroy,
 	.bios_param		= myrb_biosparam,
 	.cmd_size		= sizeof(struct myrb_cmdblk),
 	.shost_groups		= myrb_shost_groups,
@@ -2330,20 +2330,19 @@ static void myrb_handle_scsi(struct myrb_hba *cb, struct myrb_cmdblk *cmd_blk,
 		dev_dbg(&scmd->device->sdev_gendev,
 			"Bad Data Encountered\n");
 		if (scmd->sc_data_direction == DMA_FROM_DEVICE)
-			/* Unrecovered read error */
-			scsi_build_sense(scmd, 0, MEDIUM_ERROR, 0x11, 0);
+			scsi_set_sense(scmd, 0, MEDIUM_ERROR,
+					 UNRECOVERED_READ_ERROR);
 		else
-			/* Write error */
-			scsi_build_sense(scmd, 0, MEDIUM_ERROR, 0x0C, 0);
+			scsi_set_sense(scmd, 0, MEDIUM_ERROR, SSC_WRITE_ERROR);
 		break;
 	case MYRB_STATUS_IRRECOVERABLE_DATA_ERROR:
 		scmd_printk(KERN_ERR, scmd, "Irrecoverable Data Error\n");
 		if (scmd->sc_data_direction == DMA_FROM_DEVICE)
-			/* Unrecovered read error, auto-reallocation failed */
-			scsi_build_sense(scmd, 0, MEDIUM_ERROR, 0x11, 0x04);
+			scsi_set_sense(scmd, 0, MEDIUM_ERROR,
+				UNRECOVERED_READ_ERROR_AUTO_REALLOCATE_FAILED);
 		else
-			/* Write error, auto-reallocation failed */
-			scsi_build_sense(scmd, 0, MEDIUM_ERROR, 0x0C, 0x02);
+			scsi_set_sense(scmd, 0, MEDIUM_ERROR,
+				       WRITE_ERROR_AUTO_REALLOCATION_FAILED);
 		break;
 	case MYRB_STATUS_LDRV_NONEXISTENT_OR_OFFLINE:
 		dev_dbg(&scmd->device->sdev_gendev,
@@ -2353,8 +2352,8 @@ static void myrb_handle_scsi(struct myrb_hba *cb, struct myrb_cmdblk *cmd_blk,
 	case MYRB_STATUS_ACCESS_BEYOND_END_OF_LDRV:
 		dev_dbg(&scmd->device->sdev_gendev,
 			    "Attempt to Access Beyond End of Logical Drive");
-		/* Logical block address out of range */
-		scsi_build_sense(scmd, 0, NOT_READY, 0x21, 0);
+		scsi_set_sense(scmd, 0, NOT_READY,
+			       LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE);
 		break;
 	case MYRB_STATUS_DEVICE_NONRESPONSIVE:
 		dev_dbg(&scmd->device->sdev_gendev, "Device nonresponsive\n");

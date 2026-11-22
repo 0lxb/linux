@@ -141,7 +141,7 @@ static int int3406_thermal_probe(struct platform_device *pdev)
 	if (!ACPI_HANDLE(&pdev->dev))
 		return -ENODEV;
 
-	d = devm_kzalloc(&pdev->dev, sizeof(*d), GFP_KERNEL);
+	d = devm_kzalloc_obj(&pdev->dev, *d);
 	if (!d)
 		return -ENOMEM;
 	d->handle = ACPI_HANDLE(&pdev->dev);
@@ -195,7 +195,7 @@ MODULE_DEVICE_TABLE(acpi, int3406_thermal_match);
 
 static struct platform_driver int3406_thermal_driver = {
 	.probe = int3406_thermal_probe,
-	.remove_new = int3406_thermal_remove,
+	.remove = int3406_thermal_remove,
 	.driver = {
 		   .name = "int3406 thermal",
 		   .acpi_match_table = int3406_thermal_match,

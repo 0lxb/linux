@@ -6,11 +6,13 @@
 //
 // Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
 
+#include <linux/array_size.h>
 #include <linux/device.h>
 #include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
+#include <linux/overflow.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -19,6 +21,7 @@
 
 struct regmap_irq_chip_data {
 	struct mutex lock;
+	struct lock_class_key lock_key;
 	struct irq_chip irq_chip;
 
 	struct regmap *map;
@@ -33,6 +36,7 @@ struct regmap_irq_chip_data {
 	void *status_reg_buf;
 	unsigned int *main_status_buf;
 	unsigned int *status_buf;
+	unsigned int *prev_status_buf;
 	unsigned int *mask_buf;
 	unsigned int *mask_buf_def;
 	unsigned int *wake_buf;
@@ -193,10 +197,10 @@ static void regmap_irq_sync_unlock(struct irq_data *data)
 	/* If we've changed our wakeup count propagate it to the parent */
 	if (d->wake_count < 0)
 		for (i = d->wake_count; i < 0; i++)
-			irq_set_irq_wake(d->irq, 0);
+			disable_irq_wake(d->irq);
 	else if (d->wake_count > 0)
 		for (i = 0; i < d->wake_count; i++)
-			irq_set_irq_wake(d->irq, 1);
+			enable_irq_wake(d->irq);
 
 	d->wake_count = 0;
 
@@ -292,6 +296,26 @@ static int regmap_irq_set_wake(struct irq_data *data, unsigned int on)
 	return 0;
 }
 
+static int regmap_irq_reqres(struct irq_data *data)
+{
+	struct regmap_irq_chip_data *d = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t hwirq = irqd_to_hwirq(data);
+
+	if (d->chip->irq_reqres)
+		return d->chip->irq_reqres(d->chip->irq_drv_data, hwirq);
+
+	return 0;
+}
+
+static void regmap_irq_relres(struct irq_data *data)
+{
+	struct regmap_irq_chip_data *d = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t hwirq = irqd_to_hwirq(data);
+
+	if (d->chip->irq_relres)
+		d->chip->irq_relres(d->chip->irq_drv_data, hwirq);
+}
+
 static const struct irq_chip regmap_irq_chip = {
 	.irq_bus_lock		= regmap_irq_lock,
 	.irq_bus_sync_unlock	= regmap_irq_sync_unlock,
@@ -299,14 +323,16 @@ static const struct irq_chip regmap_irq_chip = {
 	.irq_enable		= regmap_irq_enable,
 	.irq_set_type		= regmap_irq_set_type,
 	.irq_set_wake		= regmap_irq_set_wake,
+	.irq_request_resources  = regmap_irq_reqres,
+	.irq_release_resources  = regmap_irq_relres,
 };
 
 static inline int read_sub_irq_data(struct regmap_irq_chip_data *data,
 					   unsigned int b)
 {
 	const struct regmap_irq_chip *chip = data->chip;
+	const struct regmap_irq_sub_irq_map *subreg;
 	struct regmap *map = data->map;
-	struct regmap_irq_sub_irq_map *subreg;
 	unsigned int reg;
 	int i, ret = 0;
 
@@ -332,26 +358,12 @@ static inline int read_sub_irq_data(struct regmap_irq_chip_data *data,
 	return ret;
 }
 
-static irqreturn_t regmap_irq_thread(int irq, void *d)
+static int read_irq_data(struct regmap_irq_chip_data *data)
 {
-	struct regmap_irq_chip_data *data = d;
 	const struct regmap_irq_chip *chip = data->chip;
 	struct regmap *map = data->map;
 	int ret, i;
-	bool handled = false;
 	u32 reg;
-
-	if (chip->handle_pre_irq)
-		chip->handle_pre_irq(chip->irq_drv_data);
-
-	if (chip->runtime_pm) {
-		ret = pm_runtime_get_sync(map->dev);
-		if (ret < 0) {
-			dev_err(map->dev, "IRQ thread failed to resume: %d\n",
-				ret);
-			goto exit;
-		}
-	}
 
 	/*
 	 * Read only registers with active IRQs if the chip has 'main status
@@ -364,14 +376,11 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 		memset32(data->status_buf, GENMASK(31, 0), chip->num_regs);
 	} else if (chip->num_main_regs) {
 		unsigned int max_main_bits;
-		unsigned long size;
-
-		size = chip->num_regs * sizeof(unsigned int);
 
 		max_main_bits = (chip->num_main_status_bits) ?
 				 chip->num_main_status_bits : chip->num_regs;
 		/* Clear the status buf as we don't read all status regs */
-		memset(data->status_buf, 0, size);
+		memset32(data->status_buf, 0, chip->num_regs);
 
 		/* We could support bulk read for main status registers
 		 * but I don't expect to see devices with really many main
@@ -382,29 +391,25 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 			reg = data->get_irq_reg(data, chip->main_status, i);
 			ret = regmap_read(map, reg, &data->main_status_buf[i]);
 			if (ret) {
-				dev_err(map->dev,
-					"Failed to read IRQ status %d\n",
-					ret);
-				goto exit;
+				dev_err(map->dev, "Failed to read IRQ status %d\n", ret);
+				return ret;
 			}
 		}
 
 		/* Read sub registers with active IRQs */
 		for (i = 0; i < chip->num_main_regs; i++) {
-			unsigned int b;
+			unsigned int b, index;
 			const unsigned long mreg = data->main_status_buf[i];
 
 			for_each_set_bit(b, &mreg, map->format.val_bytes * 8) {
-				if (i * map->format.val_bytes * 8 + b >
-				    max_main_bits)
+				index = i * map->format.val_bytes * 8 + b;
+				if (index >= max_main_bits)
 					break;
-				ret = read_sub_irq_data(data, b);
+				ret = read_sub_irq_data(data, index);
 
 				if (ret != 0) {
-					dev_err(map->dev,
-						"Failed to read IRQ status %d\n",
-						ret);
-					goto exit;
+					dev_err(map->dev, "Failed to read IRQ status %d\n", ret);
+					return ret;
 				}
 			}
 
@@ -421,9 +426,8 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 				       data->status_reg_buf,
 				       chip->num_regs);
 		if (ret != 0) {
-			dev_err(map->dev, "Failed to read IRQ status: %d\n",
-				ret);
-			goto exit;
+			dev_err(map->dev, "Failed to read IRQ status: %d\n", ret);
+			return ret;
 		}
 
 		for (i = 0; i < data->chip->num_regs; i++) {
@@ -439,7 +443,7 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 				break;
 			default:
 				BUG();
-				goto exit;
+				return -EIO;
 			}
 		}
 
@@ -450,10 +454,8 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 			ret = regmap_read(map, reg, &data->status_buf[i]);
 
 			if (ret != 0) {
-				dev_err(map->dev,
-					"Failed to read IRQ status: %d\n",
-					ret);
-				goto exit;
+				dev_err(map->dev, "Failed to read IRQ status: %d\n", ret);
+				return ret;
 			}
 		}
 	}
@@ -461,6 +463,42 @@ static irqreturn_t regmap_irq_thread(int irq, void *d)
 	if (chip->status_invert)
 		for (i = 0; i < data->chip->num_regs; i++)
 			data->status_buf[i] = ~data->status_buf[i];
+
+	return 0;
+}
+
+static irqreturn_t regmap_irq_thread(int irq, void *d)
+{
+	struct regmap_irq_chip_data *data = d;
+	const struct regmap_irq_chip *chip = data->chip;
+	struct regmap *map = data->map;
+	int ret, i;
+	bool handled = false;
+	u32 reg;
+
+	if (chip->handle_pre_irq)
+		chip->handle_pre_irq(chip->irq_drv_data);
+
+	if (chip->runtime_pm) {
+		ret = pm_runtime_get_sync(map->dev);
+		if (ret < 0) {
+			dev_err(map->dev, "IRQ thread failed to resume: %d\n", ret);
+			goto exit;
+		}
+	}
+
+	ret = read_irq_data(data);
+	if (ret < 0)
+		goto exit;
+
+	if (chip->status_is_level) {
+		for (i = 0; i < data->chip->num_regs; i++) {
+			unsigned int val = data->status_buf[i];
+
+			data->status_buf[i] ^= data->prev_status_buf[i];
+			data->prev_status_buf[i] = val;
+		}
+	}
 
 	/*
 	 * Ignore masked IRQs and ack if we need to; we ack early so
@@ -514,12 +552,16 @@ exit:
 		return IRQ_NONE;
 }
 
+static struct lock_class_key regmap_irq_lock_class;
+static struct lock_class_key regmap_irq_request_class;
+
 static int regmap_irq_map(struct irq_domain *h, unsigned int virq,
 			  irq_hw_number_t hw)
 {
 	struct regmap_irq_chip_data *data = h->host_data;
 
 	irq_set_chip_data(virq, data);
+	irq_set_lockdep_class(virq, &regmap_irq_lock_class, &regmap_irq_request_class);
 	irq_set_chip(virq, &data->irq_chip);
 	irq_set_nested_thread(virq, 1);
 	irq_set_parent(virq, data->irq);
@@ -608,6 +650,30 @@ int regmap_irq_set_type_config_simple(unsigned int **buf, unsigned int type,
 }
 EXPORT_SYMBOL_GPL(regmap_irq_set_type_config_simple);
 
+static int regmap_irq_create_domain(struct fwnode_handle *fwnode, int irq_base,
+				    const struct regmap_irq_chip *chip,
+				    struct regmap_irq_chip_data *d)
+{
+	struct irq_domain_info info = {
+		.fwnode = fwnode,
+		.size = chip->num_irqs,
+		.hwirq_max = chip->num_irqs,
+		.virq_base = irq_base,
+		.ops = &regmap_domain_ops,
+		.host_data = d,
+		.name_suffix = chip->domain_suffix,
+	};
+
+	d->domain = irq_domain_instantiate(&info);
+	if (IS_ERR(d->domain)) {
+		dev_err(d->map->dev, "Failed to create IRQ domain\n");
+		return PTR_ERR(d->domain);
+	}
+
+	return 0;
+}
+
+
 /**
  * regmap_add_irq_chip_fwnode() - Use standard regmap IRQ controller handling
  *
@@ -662,48 +728,49 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 		}
 	}
 
-	d = kzalloc(sizeof(*d), GFP_KERNEL);
+	d = kzalloc_obj(*d);
 	if (!d)
 		return -ENOMEM;
 
 	if (chip->num_main_regs) {
-		d->main_status_buf = kcalloc(chip->num_main_regs,
-					     sizeof(*d->main_status_buf),
-					     GFP_KERNEL);
+		d->main_status_buf = kzalloc_objs(*d->main_status_buf,
+						  chip->num_main_regs);
 
 		if (!d->main_status_buf)
 			goto err_alloc;
 	}
 
-	d->status_buf = kcalloc(chip->num_regs, sizeof(*d->status_buf),
-				GFP_KERNEL);
+	d->status_buf = kzalloc_objs(*d->status_buf, chip->num_regs);
 	if (!d->status_buf)
 		goto err_alloc;
 
-	d->mask_buf = kcalloc(chip->num_regs, sizeof(*d->mask_buf),
-			      GFP_KERNEL);
+	if (chip->status_is_level) {
+		d->prev_status_buf = kzalloc_objs(*d->prev_status_buf,
+						  chip->num_regs);
+		if (!d->prev_status_buf)
+			goto err_alloc;
+	}
+
+	d->mask_buf = kzalloc_objs(*d->mask_buf, chip->num_regs);
 	if (!d->mask_buf)
 		goto err_alloc;
 
-	d->mask_buf_def = kcalloc(chip->num_regs, sizeof(*d->mask_buf_def),
-				  GFP_KERNEL);
+	d->mask_buf_def = kzalloc_objs(*d->mask_buf_def, chip->num_regs);
 	if (!d->mask_buf_def)
 		goto err_alloc;
 
 	if (chip->wake_base) {
-		d->wake_buf = kcalloc(chip->num_regs, sizeof(*d->wake_buf),
-				      GFP_KERNEL);
+		d->wake_buf = kzalloc_objs(*d->wake_buf, chip->num_regs);
 		if (!d->wake_buf)
 			goto err_alloc;
 	}
 
 	if (chip->type_in_mask) {
-		d->type_buf_def = kcalloc(chip->num_regs,
-					  sizeof(*d->type_buf_def), GFP_KERNEL);
+		d->type_buf_def = kzalloc_objs(*d->type_buf_def, chip->num_regs);
 		if (!d->type_buf_def)
 			goto err_alloc;
 
-		d->type_buf = kcalloc(chip->num_regs, sizeof(*d->type_buf), GFP_KERNEL);
+		d->type_buf = kzalloc_objs(*d->type_buf, chip->num_regs);
 		if (!d->type_buf)
 			goto err_alloc;
 	}
@@ -712,15 +779,14 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 		/*
 		 * Create config_buf[num_config_bases][num_config_regs]
 		 */
-		d->config_buf = kcalloc(chip->num_config_bases,
-					sizeof(*d->config_buf), GFP_KERNEL);
+		d->config_buf = kzalloc_objs(*d->config_buf,
+					     chip->num_config_bases);
 		if (!d->config_buf)
 			goto err_alloc;
 
 		for (i = 0; i < chip->num_config_bases; i++) {
-			d->config_buf[i] = kcalloc(chip->num_config_regs,
-						   sizeof(**d->config_buf),
-						   GFP_KERNEL);
+			d->config_buf[i] = kzalloc_objs(**d->config_buf,
+							chip->num_config_regs);
 			if (!d->config_buf[i])
 				goto err_alloc;
 		}
@@ -751,7 +817,13 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 			goto err_alloc;
 	}
 
-	mutex_init(&d->lock);
+	/*
+	 * If one regmap-irq is the parent of another then we'll try
+	 * to lock the child with the parent locked, use an explicit
+	 * lock_key so lockdep can figure out what's going on.
+	 */
+	lockdep_register_key(&d->lock_key);
+	mutex_init_with_key(&d->lock, &d->lock_key);
 
 	for (i = 0; i < chip->num_irqs; i++)
 		d->mask_buf_def[chip->irqs[i].reg_offset / map->reg_stride]
@@ -766,7 +838,7 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 						     d->mask_buf[i],
 						     chip->irq_drv_data);
 			if (ret)
-				goto err_alloc;
+				goto err_mutex;
 		}
 
 		if (chip->mask_base && !chip->handle_mask_sync) {
@@ -777,7 +849,7 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 			if (ret) {
 				dev_err(map->dev, "Failed to set masks in 0x%x: %d\n",
 					reg, ret);
-				goto err_alloc;
+				goto err_mutex;
 			}
 		}
 
@@ -788,7 +860,7 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 			if (ret) {
 				dev_err(map->dev, "Failed to set masks in 0x%x: %d\n",
 					reg, ret);
-				goto err_alloc;
+				goto err_mutex;
 			}
 		}
 
@@ -798,14 +870,14 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 		/* Ack masked but set interrupts */
 		if (d->chip->no_status) {
 			/* no status register so default to all active */
-			d->status_buf[i] = GENMASK(31, 0);
+			d->status_buf[i] = UINT_MAX;
 		} else {
 			reg = d->get_irq_reg(d, d->chip->status_base, i);
 			ret = regmap_read(map, reg, &d->status_buf[i]);
 			if (ret != 0) {
 				dev_err(map->dev, "Failed to read IRQ status: %d\n",
 					ret);
-				goto err_alloc;
+				goto err_mutex;
 			}
 		}
 
@@ -829,7 +901,7 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 			if (ret != 0) {
 				dev_err(map->dev, "Failed to ack 0x%x: %d\n",
 					reg, ret);
-				goto err_alloc;
+				goto err_mutex;
 			}
 		}
 	}
@@ -851,23 +923,24 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 			if (ret != 0) {
 				dev_err(map->dev, "Failed to set masks in 0x%x: %d\n",
 					reg, ret);
-				goto err_alloc;
+				goto err_mutex;
 			}
 		}
 	}
 
-	if (irq_base)
-		d->domain = irq_domain_create_legacy(fwnode, chip->num_irqs,
-						     irq_base, 0,
-						     &regmap_domain_ops, d);
-	else
-		d->domain = irq_domain_create_linear(fwnode, chip->num_irqs,
-						     &regmap_domain_ops, d);
-	if (!d->domain) {
-		dev_err(map->dev, "Failed to create IRQ domain\n");
-		ret = -ENOMEM;
-		goto err_alloc;
+	/* Store current levels */
+	if (chip->status_is_level) {
+		ret = read_irq_data(d);
+		if (ret < 0)
+			goto err_mutex;
+
+		memcpy(d->prev_status_buf, d->status_buf,
+		       array_size(d->chip->num_regs, sizeof(d->prev_status_buf[0])));
 	}
+
+	ret = regmap_irq_create_domain(fwnode, irq_base, chip, d);
+	if (ret)
+		goto err_mutex;
 
 	ret = request_threaded_irq(irq, NULL, regmap_irq_thread,
 				   irq_flags | IRQF_ONESHOT,
@@ -883,14 +956,19 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 	return 0;
 
 err_domain:
-	/* Should really dispose of the domain but... */
+	irq_domain_remove(d->domain);
+err_mutex:
+	mutex_destroy(&d->lock);
+	lockdep_unregister_key(&d->lock_key);
 err_alloc:
 	kfree(d->type_buf);
 	kfree(d->type_buf_def);
 	kfree(d->wake_buf);
 	kfree(d->mask_buf_def);
 	kfree(d->mask_buf);
+	kfree(d->main_status_buf);
 	kfree(d->status_buf);
+	kfree(d->prev_status_buf);
 	kfree(d->status_reg_buf);
 	if (d->config_buf) {
 		for (i = 0; i < chip->num_config_bases; i++)
@@ -965,13 +1043,17 @@ void regmap_del_irq_chip(int irq, struct regmap_irq_chip_data *d)
 	kfree(d->wake_buf);
 	kfree(d->mask_buf_def);
 	kfree(d->mask_buf);
+	kfree(d->main_status_buf);
 	kfree(d->status_reg_buf);
 	kfree(d->status_buf);
+	kfree(d->prev_status_buf);
 	if (d->config_buf) {
 		for (i = 0; i < d->chip->num_config_bases; i++)
 			kfree(d->config_buf[i]);
 		kfree(d->config_buf);
 	}
+	mutex_destroy(&d->lock);
+	lockdep_unregister_key(&d->lock_key);
 	kfree(d);
 }
 EXPORT_SYMBOL_GPL(regmap_del_irq_chip);

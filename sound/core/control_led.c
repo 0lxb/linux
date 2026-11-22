@@ -53,6 +53,7 @@ struct snd_ctl_led_ctl {
 
 static DEFINE_MUTEX(snd_ctl_led_mutex);
 static bool snd_ctl_led_card_valid[SNDRV_CARDS];
+static struct led_trigger *snd_ctl_ledtrig_audio[NUM_AUDIO_LEDS];
 static struct snd_ctl_led snd_ctl_leds[MAX_LED] = {
 	{
 		.name = "speaker",
@@ -157,7 +158,7 @@ static void snd_ctl_led_set_state(struct snd_card *card, unsigned int access,
 			UPDATE_ROUTE(route, snd_ctl_led_get(lctl));
 		}
 		if (!found && kctl && card) {
-			lctl = kzalloc(sizeof(*lctl), GFP_KERNEL);
+			lctl = kzalloc_obj(*lctl);
 			if (lctl) {
 				lctl->card = card;
 				lctl->access = access;
@@ -174,8 +175,11 @@ static void snd_ctl_led_set_state(struct snd_card *card, unsigned int access,
 	case MODE_FOLLOW_ROUTE:	if (route >= 0) route ^= 1; break;
 	case MODE_FOLLOW_MUTE:	/* noop */ break;
 	}
-	if (route >= 0)
-		ledtrig_audio_set(led->trigger_type, route ? LED_OFF : LED_ON);
+	if (route >= 0) {
+		struct led_trigger *trig = snd_ctl_ledtrig_audio[led->trigger_type];
+
+		led_trigger_event(trig, route ? LED_OFF : LED_ON);
+	}
 }
 
 static struct snd_ctl_led_ctl *snd_ctl_led_find(struct snd_kcontrol *kctl, unsigned int ioff)
@@ -236,23 +240,23 @@ static void snd_ctl_led_notify(struct snd_card *card, unsigned int mask,
 	}
 }
 
-DEFINE_FREE(snd_card_unref, struct snd_card *, if (_T) snd_card_unref(_T))
-
 static int snd_ctl_led_set_id(int card_number, struct snd_ctl_elem_id *id,
 			      unsigned int group, bool set)
 {
-	struct snd_card *card __free(snd_card_unref) = NULL;
 	struct snd_kcontrol *kctl;
 	struct snd_kcontrol_volatile *vd;
 	unsigned int ioff, access, new_access;
+	struct snd_card *card __free(snd_card_unref) =
+		snd_card_ref(card_number);
 
-	card = snd_card_ref(card_number);
 	if (!card)
 		return -ENXIO;
 	guard(rwsem_write)(&card->controls_rwsem);
-	kctl = snd_ctl_find_id_locked(card, id);
+	kctl = snd_ctl_find_id(card, id);
 	if (!kctl)
 		return -ENOENT;
+	if (!kctl->info || !kctl->get)
+		return -EINVAL;
 	ioff = snd_ctl_get_ioff(kctl, id);
 	vd = &kctl->vd[ioff];
 	access = vd->access & SNDRV_CTL_ELEM_ACCESS_LED_MASK;
@@ -285,29 +289,26 @@ static void snd_ctl_led_ctl_destroy(struct snd_ctl_led_ctl *lctl)
 static void snd_ctl_led_clean(struct snd_card *card)
 {
 	unsigned int group;
+	struct snd_ctl_led_ctl *lctl, *_lctl;
 	struct snd_ctl_led *led;
-	struct snd_ctl_led_ctl *lctl;
 
 	for (group = 0; group < MAX_LED; group++) {
 		led = &snd_ctl_leds[group];
-repeat:
-		list_for_each_entry(lctl, &led->controls, list)
-			if (!card || lctl->card == card) {
+		list_for_each_entry_safe(lctl, _lctl, &led->controls, list)
+			if (!card || lctl->card == card)
 				snd_ctl_led_ctl_destroy(lctl);
-				goto repeat;
-			}
 	}
 }
 
 static int snd_ctl_led_reset(int card_number, unsigned int group)
 {
-	struct snd_card *card __free(snd_card_unref) = NULL;
+	struct snd_ctl_led_ctl *lctl, *_lctl;
 	struct snd_ctl_led *led;
-	struct snd_ctl_led_ctl *lctl;
 	struct snd_kcontrol_volatile *vd;
 	bool change = false;
+	struct snd_card *card __free(snd_card_unref) =
+		snd_card_ref(card_number);
 
-	card = snd_card_ref(card_number);
 	if (!card)
 		return -ENXIO;
 
@@ -315,14 +316,12 @@ static int snd_ctl_led_reset(int card_number, unsigned int group)
 		if (!snd_ctl_led_card_valid[card_number])
 			return -ENXIO;
 		led = &snd_ctl_leds[group];
-repeat:
-		list_for_each_entry(lctl, &led->controls, list)
+		list_for_each_entry_safe(lctl, _lctl, &led->controls, list)
 			if (lctl->card == card) {
 				vd = &lctl->kctl->vd[lctl->index_offset];
 				vd->access &= ~group_to_access(group);
 				snd_ctl_led_ctl_destroy(lctl);
 				change = true;
-				goto repeat;
 			}
 	}
 	if (change)
@@ -425,8 +424,9 @@ static ssize_t brightness_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct snd_ctl_led *led = container_of(dev, struct snd_ctl_led, dev);
+	struct led_trigger *trig = snd_ctl_ledtrig_audio[led->trigger_type];
 
-	return sysfs_emit(buf, "%u\n", ledtrig_audio_get(led->trigger_type));
+	return sysfs_emit(buf, "%u\n", led_trigger_get_brightness(trig));
 }
 
 static DEVICE_ATTR_RW(mode);
@@ -563,12 +563,43 @@ static ssize_t set_led_id(struct snd_ctl_led_card *led_card, const char *buf, si
 	return count;
 }
 
+/*
+ * snd_ctl_led_disconnect() removes these files with card->controls_rwsem
+ * held. so don't let the removal wait for a callback that takes it.
+ */
+static struct kernfs_node *snd_ctl_led_sysfs_enter(struct device *dev,
+						   struct device_attribute *attr)
+{
+	struct kernfs_node *kn;
+
+	if (!try_module_get(THIS_MODULE))
+		return NULL;
+	kn = sysfs_break_active_protection(&dev->kobj, &attr->attr);
+	if (!kn)
+		module_put(THIS_MODULE);
+	return kn;
+}
+
+static void snd_ctl_led_sysfs_exit(struct kernfs_node *kn)
+{
+	sysfs_unbreak_active_protection(kn);
+	module_put(THIS_MODULE);
+}
+
 static ssize_t attach_store(struct device *dev,
 			    struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
 	struct snd_ctl_led_card *led_card = container_of(dev, struct snd_ctl_led_card, dev);
-	return set_led_id(led_card, buf, count, true);
+	struct kernfs_node *kn;
+	ssize_t ret;
+
+	kn = snd_ctl_led_sysfs_enter(dev, attr);
+	if (!kn)
+		return -ENODEV;
+	ret = set_led_id(led_card, buf, count, true);
+	snd_ctl_led_sysfs_exit(kn);
+	return ret;
 }
 
 static ssize_t detach_store(struct device *dev,
@@ -576,7 +607,15 @@ static ssize_t detach_store(struct device *dev,
 			    const char *buf, size_t count)
 {
 	struct snd_ctl_led_card *led_card = container_of(dev, struct snd_ctl_led_card, dev);
-	return set_led_id(led_card, buf, count, false);
+	struct kernfs_node *kn;
+	ssize_t ret;
+
+	kn = snd_ctl_led_sysfs_enter(dev, attr);
+	if (!kn)
+		return -ENODEV;
+	ret = set_led_id(led_card, buf, count, false);
+	snd_ctl_led_sysfs_exit(kn);
+	return ret;
 }
 
 static ssize_t reset_store(struct device *dev,
@@ -594,15 +633,13 @@ static ssize_t reset_store(struct device *dev,
 	return count;
 }
 
-static ssize_t list_show(struct device *dev,
-			 struct device_attribute *attr, char *buf)
+static ssize_t snd_ctl_led_list(struct snd_ctl_led_card *led_card, char *buf)
 {
-	struct snd_ctl_led_card *led_card = container_of(dev, struct snd_ctl_led_card, dev);
-	struct snd_card *card __free(snd_card_unref) = NULL;
 	struct snd_ctl_led_ctl *lctl;
 	size_t l = 0;
+	struct snd_card *card __free(snd_card_unref) =
+		snd_card_ref(led_card->number);
 
-	card = snd_card_ref(led_card->number);
 	if (!card)
 		return -ENXIO;
 	guard(rwsem_read)(&card->controls_rwsem);
@@ -618,6 +655,21 @@ static ssize_t list_show(struct device *dev,
 		}
 	}
 	return l;
+}
+
+static ssize_t list_show(struct device *dev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct snd_ctl_led_card *led_card = container_of(dev, struct snd_ctl_led_card, dev);
+	struct kernfs_node *kn;
+	ssize_t ret;
+
+	kn = snd_ctl_led_sysfs_enter(dev, attr);
+	if (!kn)
+		return -ENODEV;
+	ret = snd_ctl_led_list(led_card, buf);
+	snd_ctl_led_sysfs_exit(kn);
+	return ret;
 }
 
 static DEVICE_ATTR_WO(attach);
@@ -653,7 +705,7 @@ static void snd_ctl_led_sysfs_add(struct snd_card *card)
 
 	for (group = 0; group < MAX_LED; group++) {
 		led = &snd_ctl_leds[group];
-		led_card = kzalloc(sizeof(*led_card), GFP_KERNEL);
+		led_card = kzalloc_obj(*led_card);
 		if (!led_card)
 			goto cerr2;
 		led_card->number = card->number;
@@ -668,16 +720,22 @@ static void snd_ctl_led_sysfs_add(struct snd_card *card)
 			goto cerr;
 		led->cards[card->number] = led_card;
 		snprintf(link_name, sizeof(link_name), "led-%s", led->name);
-		WARN(sysfs_create_link(&card->ctl_dev->kobj, &led_card->dev.kobj, link_name),
-			"can't create symlink to controlC%i device\n", card->number);
-		WARN(sysfs_create_link(&led_card->dev.kobj, &card->card_dev.kobj, "card"),
-			"can't create symlink to card%i\n", card->number);
+		if (sysfs_create_link(&card->ctl_dev->kobj, &led_card->dev.kobj,
+				      link_name))
+			dev_err(card->dev,
+				"%s: can't create symlink to controlC%i device\n",
+				 __func__, card->number);
+		if (sysfs_create_link(&led_card->dev.kobj, &card->card_dev.kobj,
+				      "card"))
+			dev_err(card->dev,
+				"%s: can't create symlink to card%i\n",
+				__func__, card->number);
 
 		continue;
 cerr:
 		put_device(&led_card->dev);
 cerr2:
-		printk(KERN_ERR "snd_ctl_led: unable to add card%d", card->number);
+		dev_err(card->dev, "snd_ctl_led: unable to add card%d", card->number);
 	}
 }
 
@@ -716,6 +774,9 @@ static int __init snd_ctl_led_init(void)
 	struct snd_ctl_led *led;
 	unsigned int group;
 
+	led_trigger_register_simple("audio-mute", &snd_ctl_ledtrig_audio[LED_AUDIO_MUTE]);
+	led_trigger_register_simple("audio-micmute", &snd_ctl_ledtrig_audio[LED_AUDIO_MICMUTE]);
+
 	device_initialize(&snd_ctl_led_dev);
 	snd_ctl_led_dev.class = &sound_class;
 	snd_ctl_led_dev.release = snd_ctl_led_dev_release;
@@ -749,18 +810,17 @@ static int __init snd_ctl_led_init(void)
 static void __exit snd_ctl_led_exit(void)
 {
 	struct snd_ctl_led *led;
-	struct snd_card *card;
 	unsigned int group, card_number;
 
 	snd_ctl_disconnect_layer(&snd_ctl_led_lops);
 	for (card_number = 0; card_number < SNDRV_CARDS; card_number++) {
 		if (!snd_ctl_led_card_valid[card_number])
 			continue;
-		card = snd_card_ref(card_number);
-		if (card) {
+		struct snd_card *card __free(snd_card_unref) =
+			snd_card_ref(card_number);
+
+		if (card)
 			snd_ctl_led_sysfs_remove(card);
-			snd_card_unref(card);
-		}
 	}
 	for (group = 0; group < MAX_LED; group++) {
 		led = &snd_ctl_leds[group];
@@ -768,7 +828,13 @@ static void __exit snd_ctl_led_exit(void)
 	}
 	device_unregister(&snd_ctl_led_dev);
 	snd_ctl_led_clean(NULL);
+
+	led_trigger_unregister_simple(snd_ctl_ledtrig_audio[LED_AUDIO_MUTE]);
+	led_trigger_unregister_simple(snd_ctl_ledtrig_audio[LED_AUDIO_MICMUTE]);
 }
 
 module_init(snd_ctl_led_init)
 module_exit(snd_ctl_led_exit)
+
+MODULE_ALIAS("ledtrig:audio-mute");
+MODULE_ALIAS("ledtrig:audio-micmute");

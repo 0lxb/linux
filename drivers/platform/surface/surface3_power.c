@@ -40,7 +40,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define SURFACE_3_POLL_INTERVAL		(2 * HZ)
 #define SURFACE_3_STRLEN		10
@@ -454,8 +454,7 @@ static int mshw0011_install_space_handler(struct i2c_client *client)
 	if (!adev)
 		return -ENODEV;
 
-	data = kzalloc(sizeof(struct mshw0011_handler_data),
-			    GFP_KERNEL);
+	data = kzalloc_obj(struct mshw0011_handler_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -511,7 +510,7 @@ static int mshw0011_probe(struct i2c_client *client)
 	struct mshw0011_data *data;
 	int error, mask;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 

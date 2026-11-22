@@ -252,7 +252,7 @@ static int set_capture_size(struct go7007 *go, struct v4l2_format *fmt, int try)
 		go->encoder_h_halve = 0;
 		go->encoder_v_halve = 0;
 		go->encoder_subsample = 0;
-		call_all(&go->v4l2_dev, pad, set_fmt, NULL, &format);
+		call_all(&go->v4l2_dev, pad, set_fmt, NULL, NULL, &format);
 	} else {
 		if (width <= sensor_width / 4) {
 			go->encoder_h_halve = 1;
@@ -452,8 +452,6 @@ static const struct vb2_ops go7007_video_qops = {
 	.buf_finish     = go7007_buf_finish,
 	.start_streaming = go7007_start_streaming,
 	.stop_streaming = go7007_stop_streaming,
-	.wait_prepare   = vb2_ops_wait_prepare,
-	.wait_finish    = vb2_ops_wait_finish,
 };
 
 static int vidioc_g_parm(struct file *filp, void *priv,

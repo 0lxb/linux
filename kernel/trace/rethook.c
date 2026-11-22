@@ -108,7 +108,7 @@ struct rethook *rethook_alloc(void *data, rethook_handler_t handler,
 	if (!handler || num <= 0 || size < sizeof(struct rethook_node))
 		return ERR_PTR(-EINVAL);
 
-	rh = kzalloc(sizeof(struct rethook), GFP_KERNEL);
+	rh = kzalloc_obj(struct rethook);
 	if (!rh)
 		return ERR_PTR(-ENOMEM);
 
@@ -166,14 +166,16 @@ struct rethook_node *rethook_try_get(struct rethook *rh)
 	if (unlikely(!handler))
 		return NULL;
 
+#if defined(CONFIG_FTRACE_VALIDATE_RCU_IS_WATCHING) || defined(CONFIG_KPROBE_EVENTS_ON_NOTRACE)
 	/*
 	 * This expects the caller will set up a rethook on a function entry.
 	 * When the function returns, the rethook will eventually be reclaimed
 	 * or released in the rethook_recycle() with call_rcu().
-	 * This means the caller must be run in the RCU-availabe context.
+	 * This means the caller must be run in the RCU-available context.
 	 */
 	if (unlikely(!rcu_is_watching()))
 		return NULL;
+#endif
 
 	return (struct rethook_node *)objpool_pop(&rh->pool);
 }
@@ -248,7 +250,7 @@ unsigned long rethook_find_ret_addr(struct task_struct *tsk, unsigned long frame
 	if (WARN_ON_ONCE(!cur))
 		return 0;
 
-	if (WARN_ON_ONCE(tsk != current && task_is_running(tsk)))
+	if (tsk != current && task_is_running(tsk))
 		return 0;
 
 	do {

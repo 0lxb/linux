@@ -135,7 +135,7 @@ static int uniphier_pcie_wait_rc(struct uniphier_pcie *pcie)
 	return 0;
 }
 
-static int uniphier_pcie_link_up(struct dw_pcie *pci)
+static bool uniphier_pcie_link_up(struct dw_pcie *pci)
 {
 	struct uniphier_pcie *pcie = to_uniphier_pcie(pci);
 	u32 val, mask;
@@ -279,7 +279,7 @@ static int uniphier_pcie_config_intx_irq(struct dw_pcie_rp *pp)
 		goto out_put_node;
 	}
 
-	pcie->intx_irq_domain = irq_domain_add_linear(np_intc, PCI_NUM_INTX,
+	pcie->intx_irq_domain = irq_domain_create_linear(of_fwnode_handle(np_intc), PCI_NUM_INTX,
 						&uniphier_intx_domain_ops, pp);
 	if (!pcie->intx_irq_domain) {
 		dev_err(pci->dev, "Failed to get INTx domain\n");
@@ -360,7 +360,7 @@ static int uniphier_pcie_probe(struct platform_device *pdev)
 	struct uniphier_pcie *pcie;
 	int ret;
 
-	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
+	pcie = devm_kzalloc_obj(dev, *pcie);
 	if (!pcie)
 		return -ENOMEM;
 

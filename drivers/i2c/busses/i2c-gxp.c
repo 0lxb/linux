@@ -4,7 +4,6 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -184,11 +183,11 @@ static int gxp_i2c_unreg_slave(struct i2c_client *slave)
 #endif
 
 static const struct i2c_algorithm gxp_i2c_algo = {
-	.master_xfer   = gxp_i2c_master_xfer,
+	.xfer = gxp_i2c_master_xfer,
 	.functionality = gxp_i2c_func,
 #if IS_ENABLED(CONFIG_I2C_SLAVE)
-	.reg_slave     = gxp_i2c_reg_slave,
-	.unreg_slave   = gxp_i2c_unreg_slave,
+	.reg_slave = gxp_i2c_reg_slave,
+	.unreg_slave = gxp_i2c_unreg_slave,
 #endif
 };
 
@@ -523,8 +522,7 @@ static int gxp_i2c_probe(struct platform_device *pdev)
 		regmap_update_bits(i2cg_map, GXP_I2CINTEN, 0x00000FFF, 0);
 	}
 
-	drvdata = devm_kzalloc(&pdev->dev, sizeof(*drvdata),
-			       GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(&pdev->dev, *drvdata);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -552,7 +550,7 @@ static int gxp_i2c_probe(struct platform_device *pdev)
 	rc = devm_request_irq(&pdev->dev, drvdata->irq, gxp_i2c_irq_handler,
 			      IRQF_SHARED, gxp_i2c_name[drvdata->engine], drvdata);
 	if (rc < 0)
-		return dev_err_probe(&pdev->dev, rc, "irq request failed\n");
+		return rc;
 
 	i2c_parse_fw_timings(&pdev->dev, &drvdata->t, true);
 
@@ -595,7 +593,7 @@ MODULE_DEVICE_TABLE(of, gxp_i2c_of_match);
 
 static struct platform_driver gxp_i2c_driver = {
 	.probe	= gxp_i2c_probe,
-	.remove_new = gxp_i2c_remove,
+	.remove = gxp_i2c_remove,
 	.driver = {
 		.name = "gxp-i2c",
 		.of_match_table = gxp_i2c_of_match,

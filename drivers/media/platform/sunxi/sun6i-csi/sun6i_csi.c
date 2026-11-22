@@ -322,7 +322,7 @@ static int sun6i_csi_probe(struct platform_device *platform_dev)
 	struct device *dev = &platform_dev->dev;
 	int ret;
 
-	csi_dev = devm_kzalloc(dev, sizeof(*csi_dev), GFP_KERNEL);
+	csi_dev = devm_kzalloc_obj(dev, *csi_dev);
 	if (!csi_dev)
 		return -ENOMEM;
 
@@ -423,7 +423,7 @@ MODULE_DEVICE_TABLE(of, sun6i_csi_of_match);
 
 static struct platform_driver sun6i_csi_platform_driver = {
 	.probe	= sun6i_csi_probe,
-	.remove_new = sun6i_csi_remove,
+	.remove = sun6i_csi_remove,
 	.driver	= {
 		.name		= SUN6I_CSI_NAME,
 		.of_match_table	= sun6i_csi_of_match,

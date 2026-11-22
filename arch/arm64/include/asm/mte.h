@@ -8,7 +8,7 @@
 #include <asm/compiler.h>
 #include <asm/mte-def.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/bitfield.h>
 #include <linux/kasan-enabled.h>
@@ -23,9 +23,7 @@ unsigned long mte_copy_tags_from_user(void *to, const void __user *from,
 				      unsigned long n);
 unsigned long mte_copy_tags_to_user(void __user *to, void *from,
 				    unsigned long n);
-int mte_save_tags(struct page *page);
 void mte_save_page_tags(const void *page_addr, void *tag_storage);
-void mte_restore_tags(swp_entry_t entry, struct page *page);
 void mte_restore_page_tags(void *page_addr, const void *tag_storage);
 void mte_invalidate_tags(int type, pgoff_t offset);
 void mte_invalidate_tags_area(int type);
@@ -41,17 +39,21 @@ void mte_free_tag_storage(char *storage);
 
 static inline void set_page_mte_tagged(struct page *page)
 {
+	VM_WARN_ON_ONCE(folio_test_hugetlb(page_folio(page)));
+
 	/*
 	 * Ensure that the tags written prior to this function are visible
 	 * before the page flags update.
 	 */
 	smp_wmb();
-	set_bit(PG_mte_tagged, &page->flags);
+	set_bit(PG_mte_tagged, &page->flags.f);
 }
 
 static inline bool page_mte_tagged(struct page *page)
 {
-	bool ret = test_bit(PG_mte_tagged, &page->flags);
+	bool ret = test_bit(PG_mte_tagged, &page->flags.f);
+
+	VM_WARN_ON_ONCE(folio_test_hugetlb(page_folio(page)));
 
 	/*
 	 * If the page is tagged, ensure ordering with a likely subsequent
@@ -76,7 +78,9 @@ static inline bool page_mte_tagged(struct page *page)
  */
 static inline bool try_page_mte_tagging(struct page *page)
 {
-	if (!test_and_set_bit(PG_mte_lock, &page->flags))
+	VM_WARN_ON_ONCE(folio_test_hugetlb(page_folio(page)));
+
+	if (!test_and_set_bit(PG_mte_lock, &page->flags.f))
 		return true;
 
 	/*
@@ -84,7 +88,7 @@ static inline bool try_page_mte_tagging(struct page *page)
 	 * already. Check if the PG_mte_tagged flag has been set or wait
 	 * otherwise.
 	 */
-	smp_cond_load_acquire(&page->flags, VAL & (1UL << PG_mte_tagged));
+	smp_cond_load_acquire(&page->flags.f, VAL & (1UL << PG_mte_tagged));
 
 	return false;
 }
@@ -157,6 +161,67 @@ static inline int mte_ptrace_copy_tags(struct task_struct *child,
 
 #endif /* CONFIG_ARM64_MTE */
 
+#if defined(CONFIG_HUGETLB_PAGE) && defined(CONFIG_ARM64_MTE)
+static inline void folio_set_hugetlb_mte_tagged(struct folio *folio)
+{
+	VM_WARN_ON_ONCE(!folio_test_hugetlb(folio));
+
+	/*
+	 * Ensure that the tags written prior to this function are visible
+	 * before the folio flags update.
+	 */
+	smp_wmb();
+	set_bit(PG_mte_tagged, &folio->flags.f);
+
+}
+
+static inline bool folio_test_hugetlb_mte_tagged(struct folio *folio)
+{
+	bool ret = test_bit(PG_mte_tagged, &folio->flags.f);
+
+	VM_WARN_ON_ONCE(!folio_test_hugetlb(folio));
+
+	/*
+	 * If the folio is tagged, ensure ordering with a likely subsequent
+	 * read of the tags.
+	 */
+	if (ret)
+		smp_rmb();
+	return ret;
+}
+
+static inline bool folio_try_hugetlb_mte_tagging(struct folio *folio)
+{
+	VM_WARN_ON_ONCE(!folio_test_hugetlb(folio));
+
+	if (!test_and_set_bit(PG_mte_lock, &folio->flags.f))
+		return true;
+
+	/*
+	 * The tags are either being initialised or may have been initialised
+	 * already. Check if the PG_mte_tagged flag has been set or wait
+	 * otherwise.
+	 */
+	smp_cond_load_acquire(&folio->flags.f, VAL & (1UL << PG_mte_tagged));
+
+	return false;
+}
+#else
+static inline void folio_set_hugetlb_mte_tagged(struct folio *folio)
+{
+}
+
+static inline bool folio_test_hugetlb_mte_tagged(struct folio *folio)
+{
+	return false;
+}
+
+static inline bool folio_try_hugetlb_mte_tagging(struct folio *folio)
+{
+	return false;
+}
+#endif
+
 static inline void mte_disable_tco_entry(struct task_struct *task)
 {
 	if (!system_supports_mte())
@@ -182,7 +247,10 @@ void mte_check_tfsr_el1(void);
 
 static inline void mte_check_tfsr_entry(void)
 {
-	if (!system_supports_mte())
+	if (!kasan_hw_tags_enabled())
+		return;
+
+	if (!system_uses_mte_async_or_asymm_mode())
 		return;
 
 	mte_check_tfsr_el1();
@@ -190,7 +258,10 @@ static inline void mte_check_tfsr_entry(void)
 
 static inline void mte_check_tfsr_exit(void)
 {
-	if (!system_supports_mte())
+	if (!kasan_hw_tags_enabled())
+		return;
+
+	if (!system_uses_mte_async_or_asymm_mode())
 		return;
 
 	/*
@@ -215,5 +286,5 @@ static inline void mte_check_tfsr_exit(void)
 }
 #endif /* CONFIG_KASAN_HW_TAGS */
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 #endif /* __ASM_MTE_H  */

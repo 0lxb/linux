@@ -12,7 +12,6 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <sound/pcm_params.h>
@@ -573,10 +572,10 @@ static int cs53l30_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	u8 aspcfg = 0, aspctl1 = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		aspcfg |= CS53L30_ASP_MS;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		break;
 	default:
 		return -EINVAL;
@@ -650,8 +649,9 @@ static int cs53l30_pcm_hw_params(struct snd_pcm_substream *substream,
 static int cs53l30_set_bias_level(struct snd_soc_component *component,
 				  enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct cs53l30_private *priv = snd_soc_component_get_drvdata(component);
+	enum snd_soc_bias_level bias_level = snd_soc_dapm_get_bias_level(dapm);
 	unsigned int reg;
 	int i, inter_max_check, ret;
 
@@ -659,12 +659,12 @@ static int cs53l30_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_ON:
 		break;
 	case SND_SOC_BIAS_PREPARE:
-		if (dapm->bias_level == SND_SOC_BIAS_STANDBY)
+		if (bias_level == SND_SOC_BIAS_STANDBY)
 			regmap_update_bits(priv->regmap, CS53L30_PWRCTL,
 					   CS53L30_PDN_LP_MASK, 0);
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (dapm->bias_level == SND_SOC_BIAS_OFF) {
+		if (bias_level == SND_SOC_BIAS_OFF) {
 			ret = clk_prepare_enable(priv->mclk);
 			if (ret) {
 				dev_err(component->dev,
@@ -738,24 +738,6 @@ static int cs53l30_set_tristate(struct snd_soc_dai *dai, int tristate)
 
 	return regmap_update_bits(priv->regmap, CS53L30_ASP_CTL1,
 				  CS53L30_ASP_3ST_MASK, val);
-}
-
-static unsigned int const cs53l30_src_rates[] = {
-	8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000
-};
-
-static const struct snd_pcm_hw_constraint_list src_constraints = {
-	.count = ARRAY_SIZE(cs53l30_src_rates),
-	.list = cs53l30_src_rates,
-};
-
-static int cs53l30_pcm_startup(struct snd_pcm_substream *substream,
-			       struct snd_soc_dai *dai)
-{
-	snd_pcm_hw_constraint_list(substream->runtime, 0,
-				   SNDRV_PCM_HW_PARAM_RATE, &src_constraints);
-
-	return 0;
 }
 
 /*
@@ -844,20 +826,28 @@ static int cs53l30_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 	return 0;
 }
 
-/* SNDRV_PCM_RATE_KNOT -> 12000, 24000 Hz, limit with constraint list */
-#define CS53L30_RATES (SNDRV_PCM_RATE_8000_48000 | SNDRV_PCM_RATE_KNOT)
+#define CS53L30_RATES (SNDRV_PCM_RATE_8000_48000 |	\
+		       SNDRV_PCM_RATE_12000 |		\
+		       SNDRV_PCM_RATE_24000)
 
 #define CS53L30_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
 			SNDRV_PCM_FMTBIT_S24_LE)
 
+static const u64 cs53l30_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_IF;
+
 static const struct snd_soc_dai_ops cs53l30_ops = {
-	.startup = cs53l30_pcm_startup,
 	.hw_params = cs53l30_pcm_hw_params,
 	.set_fmt = cs53l30_set_dai_fmt,
 	.set_sysclk = cs53l30_set_sysclk,
 	.set_tristate = cs53l30_set_tristate,
 	.set_tdm_slot = cs53l30_set_dai_tdm_slot,
 	.mute_stream = cs53l30_mute_stream,
+	.auto_selectable_formats        = &cs53l30_selectable_formats,
+	.num_auto_selectable_formats    = 1,
 };
 
 static struct snd_soc_dai_driver cs53l30_dai = {
@@ -876,7 +866,7 @@ static struct snd_soc_dai_driver cs53l30_dai = {
 static int cs53l30_component_probe(struct snd_soc_component *component)
 {
 	struct cs53l30_private *priv = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	if (priv->use_sdout2)
 		snd_soc_dapm_add_routes(dapm, cs53l30_dapm_routes_sdout2,
@@ -901,7 +891,7 @@ static const struct snd_soc_component_driver cs53l30_driver = {
 	.endianness		= 1,
 };
 
-static struct regmap_config cs53l30_regmap = {
+static const struct regmap_config cs53l30_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
@@ -926,7 +916,7 @@ static int cs53l30_i2c_probe(struct i2c_client *client)
 	int ret = 0, i, devid;
 	u8 val;
 
-	cs53l30 = devm_kzalloc(dev, sizeof(*cs53l30), GFP_KERNEL);
+	cs53l30 = devm_kzalloc_obj(dev, *cs53l30);
 	if (!cs53l30)
 		return -ENOMEM;
 
@@ -1050,7 +1040,6 @@ static void cs53l30_i2c_remove(struct i2c_client *client)
 			       cs53l30->supplies);
 }
 
-#ifdef CONFIG_PM
 static int cs53l30_runtime_suspend(struct device *dev)
 {
 	struct cs53l30_private *cs53l30 = dev_get_drvdata(dev);
@@ -1089,11 +1078,9 @@ static int cs53l30_runtime_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops cs53l30_runtime_pm = {
-	SET_RUNTIME_PM_OPS(cs53l30_runtime_suspend, cs53l30_runtime_resume,
-			   NULL)
+	RUNTIME_PM_OPS(cs53l30_runtime_suspend, cs53l30_runtime_resume, NULL)
 };
 
 static const struct of_device_id cs53l30_of_match[] = {
@@ -1104,8 +1091,8 @@ static const struct of_device_id cs53l30_of_match[] = {
 MODULE_DEVICE_TABLE(of, cs53l30_of_match);
 
 static const struct i2c_device_id cs53l30_id[] = {
-	{ "cs53l30", 0 },
-	{}
+	{ .name = "cs53l30" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, cs53l30_id);
@@ -1114,7 +1101,7 @@ static struct i2c_driver cs53l30_i2c_driver = {
 	.driver = {
 		.name = "cs53l30",
 		.of_match_table = cs53l30_of_match,
-		.pm = &cs53l30_runtime_pm,
+		.pm = pm_ptr(&cs53l30_runtime_pm),
 	},
 	.id_table = cs53l30_id,
 	.probe = cs53l30_i2c_probe,

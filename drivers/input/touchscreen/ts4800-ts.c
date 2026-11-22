@@ -110,18 +110,17 @@ static int ts4800_parse_dt(struct platform_device *pdev,
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
-	struct device_node *syscon_np;
 	u32 reg, bit;
 	int error;
 
-	syscon_np = of_parse_phandle(np, "syscon", 0);
+	struct device_node *syscon_np __free(device_node) =
+		of_parse_phandle(np, "syscon", 0);
 	if (!syscon_np) {
 		dev_err(dev, "no syscon property\n");
 		return -ENODEV;
 	}
 
 	ts->regmap = syscon_node_to_regmap(syscon_np);
-	of_node_put(syscon_np);
 	if (IS_ERR(ts->regmap)) {
 		dev_err(dev, "cannot get parent's regmap\n");
 		return PTR_ERR(ts->regmap);
@@ -152,7 +151,7 @@ static int ts4800_ts_probe(struct platform_device *pdev)
 	struct ts4800_ts *ts;
 	int error;
 
-	ts = devm_kzalloc(&pdev->dev, sizeof(*ts), GFP_KERNEL);
+	ts = devm_kzalloc_obj(&pdev->dev, *ts);
 	if (!ts)
 		return -ENOMEM;
 

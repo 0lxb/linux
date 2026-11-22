@@ -57,8 +57,7 @@ static u32 get_bus_freq(void)
 	/* get platform freq by its clock name */
 	pltclk = clk_get(NULL, "cg-pll0-div1");
 	if (IS_ERR(pltclk)) {
-		pr_err("%s: can't get bus frequency %ld\n",
-		       __func__, PTR_ERR(pltclk));
+		pr_err("%s: can't get bus frequency %pe\n", __func__, pltclk);
 		return PTR_ERR(pltclk);
 	}
 
@@ -168,7 +167,7 @@ static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	if (!np)
 		return -ENODEV;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc_obj(*data);
 	if (!data)
 		goto err_np;
 
@@ -181,11 +180,11 @@ static int qoriq_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	hwclk = __clk_get_hw(policy->clk);
 	count = clk_hw_get_num_parents(hwclk);
 
-	data->pclk = kcalloc(count, sizeof(struct clk *), GFP_KERNEL);
+	data->pclk = kzalloc_objs(struct clk *, count);
 	if (!data->pclk)
 		goto err_nomem2;
 
-	table = kcalloc(count + 1, sizeof(*table), GFP_KERNEL);
+	table = kzalloc_objs(*table, count + 1);
 	if (!table)
 		goto err_pclk;
 
@@ -225,7 +224,7 @@ err_np:
 	return -ENODEV;
 }
 
-static int qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static void qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct cpu_data *data = policy->driver_data;
 
@@ -233,8 +232,6 @@ static int qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	kfree(data->table);
 	kfree(data);
 	policy->driver_data = NULL;
-
-	return 0;
 }
 
 static int qoriq_cpufreq_target(struct cpufreq_policy *policy,
@@ -256,7 +253,6 @@ static struct cpufreq_driver qoriq_cpufreq_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= qoriq_cpufreq_target,
 	.get		= cpufreq_generic_get,
-	.attr		= cpufreq_generic_attr,
 };
 
 static const struct of_device_id qoriq_cpufreq_blacklist[] = {
@@ -298,7 +294,7 @@ static struct platform_driver qoriq_cpufreq_platform_driver = {
 		.name = "qoriq-cpufreq",
 	},
 	.probe = qoriq_cpufreq_probe,
-	.remove_new = qoriq_cpufreq_remove,
+	.remove = qoriq_cpufreq_remove,
 };
 module_platform_driver(qoriq_cpufreq_platform_driver);
 

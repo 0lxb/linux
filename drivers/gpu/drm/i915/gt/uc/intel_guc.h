@@ -204,6 +204,8 @@ struct intel_guc {
 	struct guc_mmio_reg *ads_regset;
 	/** @ads_golden_ctxt_size: size of the golden contexts in the ADS */
 	u32 ads_golden_ctxt_size;
+	/** @ads_waklv_size: size of workaround KLVs */
+	u32 ads_waklv_size;
 	/** @ads_capture_size: size of register lists in the ADS used for error capture */
 	u32 ads_capture_size;
 
@@ -293,7 +295,7 @@ struct intel_guc {
 	 */
 	struct work_struct dead_guc_worker;
 	/**
-	 * @last_dead_guc_jiffies: timestamp of previous 'dead guc' occurrance
+	 * @last_dead_guc_jiffies: timestamp of previous 'dead guc' occurrence
 	 * used to prevent a fundamentally broken system from continuously
 	 * reloading the GuC.
 	 */
@@ -360,7 +362,7 @@ static inline int intel_guc_send_busy_loop(struct intel_guc *guc,
 {
 	int err;
 	unsigned int sleep_period_ms = 1;
-	bool not_atomic = !in_atomic() && !irqs_disabled();
+	bool not_atomic = !in_atomic() && !irqs_disabled() && !rcu_preempt_depth();
 
 	/*
 	 * FIXME: Have caller pass in if we are in an atomic context to avoid

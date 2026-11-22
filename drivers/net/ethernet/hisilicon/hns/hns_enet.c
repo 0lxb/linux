@@ -1230,7 +1230,7 @@ static void hns_nic_update_stats(struct net_device *netdev)
 	h->dev->ops->update_stats(h, &netdev->stats);
 }
 
-/* set mac addr if it is configed. or leave it to the AE driver */
+/* set mac addr if it is configured. or leave it to the AE driver */
 static void hns_init_mac_addr(struct net_device *ndev)
 {
 	struct hns_nic_priv *priv = netdev_priv(ndev);
@@ -1402,7 +1402,7 @@ static void hns_nic_net_down(struct net_device *ndev)
 	if (test_and_set_bit(NIC_STATE_DOWN, &priv->state))
 		return;
 
-	(void)del_timer_sync(&priv->service_timer);
+	(void) timer_delete_sync(&priv->service_timer);
 	netif_tx_stop_all_queues(ndev);
 	netif_carrier_off(ndev);
 	netif_tx_disable(ndev);
@@ -1777,7 +1777,7 @@ static int hns_nic_change_mtu(struct net_device *ndev, int new_mtu)
 	}
 
 	/* finally, set new mtu to netdevice */
-	ndev->mtu = new_mtu;
+	WRITE_ONCE(ndev->mtu, new_mtu);
 
 out:
 	if (if_running) {
@@ -1992,7 +1992,7 @@ static void hns_nic_dump(struct hns_nic_priv *priv)
 	if (ops->get_regs_len && ops->get_regs) {
 		reg_num = ops->get_regs_len(priv->ae_handle);
 		reg_num = (reg_num + 3ul) & ~3ul;
-		data = kcalloc(reg_num, sizeof(u32), GFP_KERNEL);
+		data = kzalloc_objs(u32, reg_num);
 		if (data) {
 			ops->get_regs(priv->ae_handle, data);
 			for (i = 0; i < reg_num; i += 4)
@@ -2075,7 +2075,7 @@ static void hns_nic_task_schedule(struct hns_nic_priv *priv)
 
 static void hns_nic_service_timer(struct timer_list *t)
 {
-	struct hns_nic_priv *priv = from_timer(priv, t, service_timer);
+	struct hns_nic_priv *priv = timer_container_of(priv, t, service_timer);
 
 	(void)mod_timer(&priv->service_timer, jiffies + SERVICE_TIMER_HZ);
 
@@ -2317,7 +2317,7 @@ static int hns_nic_dev_probe(struct platform_device *pdev)
 		ret = device_property_read_u32(dev, "port-id", &port_id);
 		if (ret)
 			goto out_read_prop_fail;
-		/* for old dts, we need to caculate the port offset */
+		/* for old dts, we need to calculate the port offset */
 		port_id = port_id < HNS_SRV_OFFSET ? port_id + HNS_DEBUG_OFFSET
 			: port_id - HNS_SRV_OFFSET;
 	}
@@ -2439,7 +2439,7 @@ static struct platform_driver hns_nic_dev_driver = {
 		.acpi_match_table = ACPI_PTR(hns_enet_acpi_match),
 	},
 	.probe = hns_nic_dev_probe,
-	.remove_new = hns_nic_dev_remove,
+	.remove = hns_nic_dev_remove,
 };
 
 module_platform_driver(hns_nic_dev_driver);

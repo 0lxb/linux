@@ -168,7 +168,7 @@ static int intel_pch_thermal_probe(struct pci_dev *pdev,
 	u8 tsel;
 	int err;
 
-	ptd = devm_kzalloc(&pdev->dev, sizeof(*ptd), GFP_KERNEL);
+	ptd = devm_kzalloc_obj(&pdev->dev, *ptd);
 	if (!ptd)
 		return -ENOMEM;
 
@@ -269,7 +269,6 @@ static void intel_pch_thermal_remove(struct pci_dev *pdev)
 
 	thermal_zone_device_unregister(ptd->tzd);
 	iounmap(ptd->hw_base);
-	pci_set_drvdata(pdev, NULL);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 }
@@ -297,6 +296,11 @@ static int intel_pch_thermal_suspend_noirq(struct device *device)
 
 	/* Get the PCH current temperature value */
 	pch_cur_temp = GET_PCH_TEMP(WPT_TEMP_TSR & readw(ptd->hw_base + WPT_TEMP));
+
+	if (pch_cur_temp >= pch_thr_temp)
+		dev_warn(&ptd->pdev->dev,
+			"CPU-PCH current temp [%dC] higher than the threshold temp [%dC], S0ix might fail. Start cooling...\n",
+			pch_cur_temp, pch_thr_temp);
 
 	/*
 	 * If current PCH temperature is higher than configured PCH threshold

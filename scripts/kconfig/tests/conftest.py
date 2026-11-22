@@ -37,7 +37,8 @@ class Conf:
 
     # runners
     def _run_conf(self, mode, dot_config=None, out_file='.config',
-                  interactive=False, in_keys=None, extra_env={}):
+                  interactive=False, in_keys=None, extra_env={},
+                  silent=False):
         """Run text-based Kconfig executable and save the result.
 
         mode: input mode option (--oldaskconfig, --defconfig=<file> etc.)
@@ -48,14 +49,20 @@ class Conf:
         extra_env: additional environments
         returncode: exit status of the Kconfig executable
         """
-        command = [CONF_PATH, mode, 'Kconfig']
+        command = [CONF_PATH]
+        if silent:
+            command.append('-s')
+        command += [mode, 'Kconfig']
 
         # Override 'srctree' environment to make the test as the top directory
         extra_env['srctree'] = self._test_dir
 
-        # Clear KCONFIG_DEFCONFIG_LIST to keep unit tests from being affected
-        # by the user's environment.
-        extra_env['KCONFIG_DEFCONFIG_LIST'] = ''
+        # Clear all KCONFIG_* environment variables
+        env = {
+            varname: os.environ[varname]
+            for varname in os.environ.keys()
+            if not varname.startswith("KCONFIG_")
+        }
 
         # Run Kconfig in a temporary directory.
         # This directory is automatically removed when done.
@@ -71,7 +78,7 @@ class Conf:
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE,
                                   cwd=temp_dir,
-                                  env=dict(os.environ, **extra_env))
+                                  env=dict(env, **extra_env))
 
             # If input key sequence is given, feed it to stdin.
             if in_keys:
@@ -81,7 +88,22 @@ class Conf:
                 # For interactive modes such as oldaskconfig, oldconfig,
                 # send 'Enter' key until the program finishes.
                 if interactive:
-                    ps.stdin.write(b'\n')
+                    try:
+                        ps.stdin.write(b'\n')
+                        ps.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        # Process has exited, stop sending input
+                        break
+
+            # Close stdin gracefully
+            try:
+                ps.stdin.close()
+            except (BrokenPipeError, OSError):
+                # Ignore broken pipe on close
+                pass
+
+            # Wait for process to complete
+            ps.wait()
 
             self.retcode = ps.returncode
             self.stdout = ps.stdout.read().decode()
@@ -137,13 +159,13 @@ class Conf:
         return self._run_conf('--oldconfig', dot_config=dot_config,
                               interactive=True, in_keys=in_keys)
 
-    def olddefconfig(self, dot_config=None):
+    def olddefconfig(self, dot_config=None, **kw):
         """Run olddefconfig.
 
         dot_config: .config file to use for configuration base (optional)
         returncode: exit status of the Kconfig executable
         """
-        return self._run_conf('--olddefconfig', dot_config=dot_config)
+        return self._run_conf('--olddefconfig', dot_config=dot_config, **kw)
 
     def defconfig(self, defconfig):
         """Run defconfig.
@@ -154,12 +176,10 @@ class Conf:
         defconfig_path = os.path.join(self._test_dir, defconfig)
         return self._run_conf('--defconfig={}'.format(defconfig_path))
 
-    def _allconfig(self, mode, all_config):
+    def _allconfig(self, mode, all_config, extra_env={}):
         if all_config:
             all_config_path = os.path.join(self._test_dir, all_config)
-            extra_env = {'KCONFIG_ALLCONFIG': all_config_path}
-        else:
-            extra_env = {}
+            extra_env['KCONFIG_ALLCONFIG'] = all_config_path
 
         return self._run_conf('--{}config'.format(mode), extra_env=extra_env)
 
@@ -195,21 +215,29 @@ class Conf:
         """
         return self._allconfig('alldef', all_config)
 
-    def randconfig(self, all_config=None):
+    def randconfig(self, all_config=None, seed=None):
         """Run randconfig.
 
         all_config: fragment config file for KCONFIG_ALLCONFIG (optional)
+        seed: the seed for randconfig (optional)
         returncode: exit status of the Kconfig executable
         """
-        return self._allconfig('rand', all_config)
+        if seed is not None:
+            extra_env = {'KCONFIG_SEED': hex(seed)}
+        else:
+            extra_env = {}
 
-    def savedefconfig(self, dot_config):
+        return self._allconfig('rand', all_config, extra_env=extra_env)
+
+    def savedefconfig(self, dot_config, out_file='defconfig', **kw):
         """Run savedefconfig.
 
         dot_config: .config file for input
+        out_file: defconfig file for output
         returncode: exit status of the Kconfig executable
         """
-        return self._run_conf('--savedefconfig', out_file='defconfig')
+        return self._run_conf('--savedefconfig={}'.format(out_file),
+                              dot_config=dot_config, out_file=out_file, **kw)
 
     def listnewconfig(self, dot_config=None):
         """Run listnewconfig.
@@ -287,6 +315,12 @@ class Conf:
         returncode: True if result matches the expected data, False otherwise
         """
         return self._matches('stderr', expected)
+
+
+@pytest.fixture(autouse=True)
+def clear_werror(monkeypatch):
+    # extra_env can set strict mode, but cannot remove an inherited flag.
+    monkeypatch.delenv('KCONFIG_WERROR', raising=False)
 
 
 @pytest.fixture(scope="module")

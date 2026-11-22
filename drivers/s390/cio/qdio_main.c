@@ -7,16 +7,19 @@
  *	      Jan Glauber <jang@linux.vnet.ibm.com>
  * 2.6 cio integration by Cornelia Huck <cornelia.huck@de.ibm.com>
  */
+
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/kmemleak.h>
 #include <linux/delay.h>
 #include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/atomic.h>
+#include <linux/slab.h>
 #include <asm/debug.h>
 #include <asm/qdio.h>
+#include <asm/asm.h>
 #include <asm/ipl.h>
 
 #include "cio.h"
@@ -42,13 +45,12 @@ static inline int do_siga_sync(unsigned long schid,
 		"	lgr	2,%[out]\n"
 		"	lgr	3,%[in]\n"
 		"	siga	0\n"
-		"	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
-		: [cc] "=&d" (cc)
+		CC_IPM(cc)
+		: CC_OUT(cc, cc)
 		: [fc] "d" (fc), [schid] "d" (schid),
 		  [out] "d" (out_mask), [in] "d" (in_mask)
-		: "cc", "0", "1", "2", "3");
-	return cc;
+		: CC_CLOBBER_LIST("0", "1", "2", "3"));
+	return CC_TRANSFORM(cc);
 }
 
 static inline int do_siga_input(unsigned long schid, unsigned long mask,
@@ -61,12 +63,11 @@ static inline int do_siga_input(unsigned long schid, unsigned long mask,
 		"	lgr	1,%[schid]\n"
 		"	lgr	2,%[mask]\n"
 		"	siga	0\n"
-		"	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
-		: [cc] "=&d" (cc)
+		CC_IPM(cc)
+		: CC_OUT(cc, cc)
 		: [fc] "d" (fc), [schid] "d" (schid), [mask] "d" (mask)
-		: "cc", "0", "1", "2");
-	return cc;
+		: CC_CLOBBER_LIST("0", "1", "2"));
+	return CC_TRANSFORM(cc);
 }
 
 /**
@@ -82,7 +83,7 @@ static inline int do_siga_input(unsigned long schid, unsigned long mask,
  */
 static inline int do_siga_output(unsigned long schid, unsigned long mask,
 				 unsigned int *bb, unsigned long fc,
-				 unsigned long aob)
+				 dma64_t aob)
 {
 	int cc;
 
@@ -93,13 +94,12 @@ static inline int do_siga_output(unsigned long schid, unsigned long mask,
 		"	lgr	3,%[aob]\n"
 		"	siga	0\n"
 		"	lgr	%[fc],0\n"
-		"	ipm	%[cc]\n"
-		"	srl	%[cc],28\n"
-		: [cc] "=&d" (cc), [fc] "+&d" (fc)
+		CC_IPM(cc)
+		: CC_OUT(cc, cc), [fc] "+&d" (fc)
 		: [schid] "d" (schid), [mask] "d" (mask), [aob] "d" (aob)
-		: "cc", "0", "1", "2", "3");
+		: CC_CLOBBER_LIST("0", "1", "2", "3"));
 	*bb = fc >> 31;
-	return cc;
+	return CC_TRANSFORM(cc);
 }
 
 /**
@@ -321,7 +321,7 @@ static inline int qdio_siga_sync_q(struct qdio_q *q)
 }
 
 static int qdio_siga_output(struct qdio_q *q, unsigned int count,
-			    unsigned int *busy_bit, unsigned long aob)
+			    unsigned int *busy_bit, dma64_t aob)
 {
 	unsigned long schid = *((u32 *) &q->irq_ptr->schid);
 	unsigned int fc = QDIO_SIGA_WRITE;
@@ -628,7 +628,7 @@ int qdio_inspect_output_queue(struct ccw_device *cdev, unsigned int nr,
 EXPORT_SYMBOL_GPL(qdio_inspect_output_queue);
 
 static int qdio_kick_outbound_q(struct qdio_q *q, unsigned int count,
-				unsigned long aob)
+				dma64_t aob)
 {
 	int retries = 0, cc;
 	unsigned int busy_bit;
@@ -695,7 +695,7 @@ static void qdio_int_handler_pci(struct qdio_irq *irq_ptr)
 		return;
 
 	qdio_deliver_irq(irq_ptr);
-	irq_ptr->last_data_irq_time = S390_lowcore.int_clock;
+	irq_ptr->last_data_irq_time = get_lowcore()->int_clock.tod;
 }
 
 static void qdio_handle_activate_check(struct qdio_irq *irq_ptr,
@@ -722,8 +722,8 @@ static void qdio_handle_activate_check(struct qdio_irq *irq_ptr,
 	lgr_info_log();
 }
 
-static void qdio_establish_handle_irq(struct qdio_irq *irq_ptr, int cstat,
-				      int dstat)
+static int qdio_establish_handle_irq(struct qdio_irq *irq_ptr, int cstat,
+				     int dstat, int dcc)
 {
 	DBF_DEV_EVENT(DBF_INFO, irq_ptr, "qest irq");
 
@@ -731,15 +731,18 @@ static void qdio_establish_handle_irq(struct qdio_irq *irq_ptr, int cstat,
 		goto error;
 	if (dstat & ~(DEV_STAT_DEV_END | DEV_STAT_CHN_END))
 		goto error;
+	if (dcc == 1)
+		return -EAGAIN;
 	if (!(dstat & DEV_STAT_DEV_END))
 		goto error;
 	qdio_set_state(irq_ptr, QDIO_IRQ_STATE_ESTABLISHED);
-	return;
+	return 0;
 
 error:
 	DBF_ERROR("%4x EQ:error", irq_ptr->schid.sch_no);
 	DBF_ERROR("ds: %2x cs:%2x", dstat, cstat);
 	qdio_set_state(irq_ptr, QDIO_IRQ_STATE_ERR);
+	return -EIO;
 }
 
 /* qdio interrupt handler */
@@ -748,7 +751,7 @@ void qdio_int_handler(struct ccw_device *cdev, unsigned long intparm,
 {
 	struct qdio_irq *irq_ptr = cdev->private->qdio_data;
 	struct subchannel_id schid;
-	int cstat, dstat;
+	int cstat, dstat, rc, dcc;
 
 	if (!intparm || !irq_ptr) {
 		ccw_device_get_schid(cdev, &schid);
@@ -768,10 +771,12 @@ void qdio_int_handler(struct ccw_device *cdev, unsigned long intparm,
 	qdio_irq_check_sense(irq_ptr, irb);
 	cstat = irb->scsw.cmd.cstat;
 	dstat = irb->scsw.cmd.dstat;
+	dcc   = scsw_cmd_is_valid_cc(&irb->scsw) ? irb->scsw.cmd.cc : 0;
+	rc    = 0;
 
 	switch (irq_ptr->state) {
 	case QDIO_IRQ_STATE_INACTIVE:
-		qdio_establish_handle_irq(irq_ptr, cstat, dstat);
+		rc = qdio_establish_handle_irq(irq_ptr, cstat, dstat, dcc);
 		break;
 	case QDIO_IRQ_STATE_CLEANUP:
 		qdio_set_state(irq_ptr, QDIO_IRQ_STATE_INACTIVE);
@@ -785,12 +790,25 @@ void qdio_int_handler(struct ccw_device *cdev, unsigned long intparm,
 		if (cstat || dstat)
 			qdio_handle_activate_check(irq_ptr, intparm, cstat,
 						   dstat);
+		else if (dcc == 1)
+			rc = -EAGAIN;
 		break;
 	case QDIO_IRQ_STATE_STOPPED:
 		break;
 	default:
 		WARN_ON_ONCE(1);
 	}
+
+	if (rc == -EAGAIN) {
+		DBF_DEV_EVENT(DBF_INFO, irq_ptr, "qint retry");
+		rc = ccw_device_start(cdev, irq_ptr->ccw, intparm, 0, 0);
+		if (!rc)
+			return;
+		DBF_ERROR("%4x RETRY ERR", irq_ptr->schid.sch_no);
+		DBF_ERROR("rc:%4x", rc);
+		qdio_set_state(irq_ptr, QDIO_IRQ_STATE_ERR);
+	}
+
 	wake_up(&cdev->private->wait_q);
 }
 
@@ -915,10 +933,10 @@ int qdio_free(struct ccw_device *cdev)
 	mutex_unlock(&irq_ptr->setup_mutex);
 
 	qdio_free_queues(irq_ptr);
-	free_page((unsigned long) irq_ptr->qdr);
-	free_page(irq_ptr->chsc_page);
+	kfree(irq_ptr->qdr);
+	kfree(irq_ptr->chsc_page);
 	kfree(irq_ptr->ccw);
-	free_page((unsigned long) irq_ptr);
+	kfree(irq_ptr);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qdio_free);
@@ -943,16 +961,13 @@ int qdio_allocate(struct ccw_device *cdev, unsigned int no_input_qs,
 	    no_output_qs > QDIO_MAX_QUEUES_PER_IRQ)
 		return -EINVAL;
 
-	irq_ptr = (void *) get_zeroed_page(GFP_KERNEL);
+	irq_ptr = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!irq_ptr)
 		return -ENOMEM;
 
-	irq_ptr->ccw = kmalloc(sizeof(*irq_ptr->ccw), GFP_KERNEL | GFP_DMA);
+	irq_ptr->ccw = kmalloc_obj(*irq_ptr->ccw, GFP_KERNEL | GFP_DMA);
 	if (!irq_ptr->ccw)
 		goto err_ccw;
-
-	/* kmemleak doesn't scan the page-allocated irq_ptr: */
-	kmemleak_not_leak(irq_ptr->ccw);
 
 	irq_ptr->cdev = cdev;
 	mutex_init(&irq_ptr->setup_mutex);
@@ -968,12 +983,12 @@ int qdio_allocate(struct ccw_device *cdev, unsigned int no_input_qs,
 	 * qdio_establish. In case of low memory and swap on a zfcp disk
 	 * we may not be able to allocate memory otherwise.
 	 */
-	irq_ptr->chsc_page = get_zeroed_page(GFP_KERNEL);
+	irq_ptr->chsc_page = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!irq_ptr->chsc_page)
 		goto err_chsc;
 
 	/* qdr is used in ccw1.cda which is u32 */
-	irq_ptr->qdr = (struct qdr *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
+	irq_ptr->qdr = kzalloc(PAGE_SIZE, GFP_KERNEL | GFP_DMA);
 	if (!irq_ptr->qdr)
 		goto err_qdr;
 
@@ -986,14 +1001,14 @@ int qdio_allocate(struct ccw_device *cdev, unsigned int no_input_qs,
 	return 0;
 
 err_queues:
-	free_page((unsigned long) irq_ptr->qdr);
+	kfree(irq_ptr->qdr);
 err_qdr:
-	free_page(irq_ptr->chsc_page);
+	kfree(irq_ptr->chsc_page);
 err_chsc:
 err_dbf:
 	kfree(irq_ptr->ccw);
 err_ccw:
-	free_page((unsigned long) irq_ptr);
+	kfree(irq_ptr);
 	return rc;
 }
 EXPORT_SYMBOL_GPL(qdio_allocate);
@@ -1070,7 +1085,7 @@ int qdio_establish(struct ccw_device *cdev,
 	irq_ptr->ccw->cmd_code = ciw->cmd;
 	irq_ptr->ccw->flags = CCW_FLAG_SLI;
 	irq_ptr->ccw->count = ciw->count;
-	irq_ptr->ccw->cda = (u32) virt_to_phys(irq_ptr->qdr);
+	irq_ptr->ccw->cda = virt_to_dma32(irq_ptr->qdr);
 
 	spin_lock_irq(get_ccwdev_lock(cdev));
 	ccw_device_set_options_mask(cdev, 0);
@@ -1263,9 +1278,9 @@ static int handle_outbound(struct qdio_q *q, unsigned int bufnr, unsigned int co
 		qperf_inc(q, outbound_queue_full);
 
 	if (queue_type(q) == QDIO_IQDIO_QFMT) {
-		unsigned long phys_aob = aob ? virt_to_phys(aob) : 0;
+		dma64_t phys_aob = aob ? virt_to_dma64(aob) : 0;
 
-		WARN_ON_ONCE(!IS_ALIGNED(phys_aob, 256));
+		WARN_ON_ONCE(!IS_ALIGNED(dma64_to_u64(phys_aob), 256));
 		rc = qdio_kick_outbound_q(q, count, phys_aob);
 	} else if (qdio_need_siga_sync(q->irq_ptr)) {
 		rc = qdio_sync_output_queue(q);

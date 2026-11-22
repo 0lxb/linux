@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
 //
-// Copyright(c) 2020 Intel Corporation. All rights reserved.
+// Copyright(c) 2020 Intel Corporation
 //
 // Authors: Ranjani Sridharan <ranjani.sridharan@linux.intel.com>
 //
@@ -20,6 +20,13 @@ static const struct snd_sof_debugfs_map tgl_dsp_debugfs[] = {
 	{"hda", HDA_DSP_HDA_BAR, 0, 0x4000, SOF_DEBUGFS_ACCESS_ALWAYS},
 	{"pp", HDA_DSP_PP_BAR,  0, 0x1000, SOF_DEBUGFS_ACCESS_ALWAYS},
 	{"dsp", HDA_DSP_BAR,  0, 0x10000, SOF_DEBUGFS_ACCESS_ALWAYS},
+};
+
+static const struct snd_sof_debugfs_map tgl_ipc4_dsp_debugfs[] = {
+	{"hda", HDA_DSP_HDA_BAR, 0, 0x4000, SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"pp", HDA_DSP_PP_BAR,  0, 0x1000, SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"dsp", HDA_DSP_BAR,  0, 0x10000, SOF_DEBUGFS_ACCESS_ALWAYS},
+	{"fw_regs", HDA_DSP_BAR,  SRAM_WINDOW_OFFSET(0), 0x1000, SOF_DEBUGFS_ACCESS_D0_ONLY},
 };
 
 static int tgl_dsp_core_get(struct snd_sof_dev *sdev, int core)
@@ -56,7 +63,6 @@ static int tgl_dsp_core_put(struct snd_sof_dev *sdev, int core)
 
 /* Tigerlake ops */
 struct snd_sof_dsp_ops sof_tgl_ops;
-EXPORT_SYMBOL_NS(sof_tgl_ops, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 int sof_tgl_ops_init(struct snd_sof_dev *sdev)
 {
@@ -75,6 +81,8 @@ int sof_tgl_ops_init(struct snd_sof_dev *sdev)
 
 		/* debug */
 		sof_tgl_ops.ipc_dump	= cnl_ipc_dump;
+		sof_tgl_ops.debug_map	= tgl_dsp_debugfs;
+		sof_tgl_ops.debug_map_count = ARRAY_SIZE(tgl_dsp_debugfs);
 
 		sof_tgl_ops.set_power_state = hda_dsp_set_power_state_ipc3;
 	}
@@ -82,11 +90,12 @@ int sof_tgl_ops_init(struct snd_sof_dev *sdev)
 	if (sdev->pdata->ipc_type == SOF_IPC_TYPE_4) {
 		struct sof_ipc4_fw_data *ipc4_data;
 
-		sdev->private = kzalloc(sizeof(*ipc4_data), GFP_KERNEL);
+		sdev->private = kzalloc_obj(*ipc4_data);
 		if (!sdev->private)
 			return -ENOMEM;
 
 		ipc4_data = sdev->private;
+		INIT_LIST_HEAD(&ipc4_data->nhlt_list);
 		ipc4_data->manifest_fw_hdr_offset = SOF_MAN4_FW_HDR_OFFSET;
 
 		ipc4_data->mtrace_type = SOF_IPC4_MTRACE_INTEL_CAVS_2;
@@ -105,16 +114,14 @@ int sof_tgl_ops_init(struct snd_sof_dev *sdev)
 		/* debug */
 		sof_tgl_ops.ipc_dump	= cnl_ipc4_dump;
 		sof_tgl_ops.dbg_dump	= hda_ipc4_dsp_dump;
+		sof_tgl_ops.debug_map	= tgl_ipc4_dsp_debugfs;
+		sof_tgl_ops.debug_map_count = ARRAY_SIZE(tgl_ipc4_dsp_debugfs);
 
 		sof_tgl_ops.set_power_state = hda_dsp_set_power_state_ipc4;
 	}
 
 	/* set DAI driver ops */
 	hda_set_dai_drv_ops(sdev, &sof_tgl_ops);
-
-	/* debug */
-	sof_tgl_ops.debug_map	= tgl_dsp_debugfs;
-	sof_tgl_ops.debug_map_count	= ARRAY_SIZE(tgl_dsp_debugfs);
 
 	/* pre/post fw run */
 	sof_tgl_ops.post_fw_run = hda_dsp_post_fw_run;
@@ -128,7 +135,6 @@ int sof_tgl_ops_init(struct snd_sof_dev *sdev)
 
 	return 0;
 };
-EXPORT_SYMBOL_NS(sof_tgl_ops_init, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc tgl_chip_info = {
 	/* Tigerlake , Alderlake */
@@ -151,13 +157,14 @@ const struct sof_intel_dsp_desc tgl_chip_info = {
 	.enable_sdw_irq	= hda_common_enable_sdw_irq,
 	.check_sdw_irq	= hda_common_check_sdw_irq,
 	.check_sdw_wakeen_irq = hda_sdw_check_wakeen_irq_common,
+	.sdw_process_wakeen = hda_sdw_process_wakeen_common,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
 	.cl_init = cl_dsp_init,
 	.power_down_dsp = hda_power_down_dsp,
 	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_2_5,
+	.platform = "tgl",
 };
-EXPORT_SYMBOL_NS(tgl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc tglh_chip_info = {
 	/* Tigerlake-H */
@@ -180,13 +187,14 @@ const struct sof_intel_dsp_desc tglh_chip_info = {
 	.enable_sdw_irq	= hda_common_enable_sdw_irq,
 	.check_sdw_irq	= hda_common_check_sdw_irq,
 	.check_sdw_wakeen_irq = hda_sdw_check_wakeen_irq_common,
+	.sdw_process_wakeen = hda_sdw_process_wakeen_common,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
 	.cl_init = cl_dsp_init,
 	.power_down_dsp = hda_power_down_dsp,
 	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_2_5,
+	.platform = "tgl",
 };
-EXPORT_SYMBOL_NS(tglh_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc ehl_chip_info = {
 	/* Elkhartlake */
@@ -209,13 +217,14 @@ const struct sof_intel_dsp_desc ehl_chip_info = {
 	.enable_sdw_irq	= hda_common_enable_sdw_irq,
 	.check_sdw_irq	= hda_common_check_sdw_irq,
 	.check_sdw_wakeen_irq = hda_sdw_check_wakeen_irq_common,
+	.sdw_process_wakeen = hda_sdw_process_wakeen_common,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
 	.cl_init = cl_dsp_init,
 	.power_down_dsp = hda_power_down_dsp,
 	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_2_5,
+	.platform = "ehl",
 };
-EXPORT_SYMBOL_NS(ehl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc adls_chip_info = {
 	/* Alderlake-S */
@@ -238,10 +247,11 @@ const struct sof_intel_dsp_desc adls_chip_info = {
 	.enable_sdw_irq	= hda_common_enable_sdw_irq,
 	.check_sdw_irq	= hda_common_check_sdw_irq,
 	.check_sdw_wakeen_irq = hda_sdw_check_wakeen_irq_common,
+	.sdw_process_wakeen = hda_sdw_process_wakeen_common,
 	.check_ipc_irq	= hda_dsp_check_ipc_irq,
 	.cl_init = cl_dsp_init,
 	.power_down_dsp = hda_power_down_dsp,
 	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_2_5,
+	.platform = "adl",
 };
-EXPORT_SYMBOL_NS(adls_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);

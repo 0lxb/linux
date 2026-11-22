@@ -403,7 +403,6 @@ static int cyapa_open(struct input_dev *input)
 	}
 
 	pm_runtime_get_sync(dev);
-	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_sync_autosuspend(dev);
 out:
 	mutex_unlock(&cyapa->state_sync_lock);
@@ -450,7 +449,6 @@ static int cyapa_create_input_dev(struct cyapa *cyapa)
 	input->id.bustype = BUS_I2C;
 	input->id.version = 1;
 	input->id.product = 0;  /* Means any product in eventcomm. */
-	input->dev.parent = &cyapa->client->dev;
 
 	input->open = cyapa_open;
 	input->close = cyapa_close;
@@ -666,7 +664,6 @@ out:
 		pm_runtime_enable(dev);
 
 		pm_runtime_get_sync(dev);
-		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_sync_autosuspend(dev);
 	}
 
@@ -710,7 +707,6 @@ static irqreturn_t cyapa_irq(int irq, void *dev_id)
 			 * process.
 			 */
 			pm_runtime_get_sync(dev);
-			pm_runtime_mark_last_busy(dev);
 			pm_runtime_put_sync_autosuspend(dev);
 		}
 
@@ -1080,8 +1076,8 @@ static ssize_t cyapa_update_fw_store(struct device *dev,
 	char fw_name[NAME_MAX];
 	int ret, error;
 
-	if (count >= NAME_MAX) {
-		dev_err(dev, "File name too long\n");
+	if (!count || count >= NAME_MAX) {
+		dev_err(dev, "Bad file name size\n");
 		return -EINVAL;
 	}
 
@@ -1260,7 +1256,7 @@ static int cyapa_probe(struct i2c_client *client)
 			I2C_SMBUS_READ, 0, I2C_SMBUS_BYTE, &dummy) < 0)
 		return -ENODEV;
 
-	cyapa = devm_kzalloc(dev, sizeof(struct cyapa), GFP_KERNEL);
+	cyapa = devm_kzalloc_obj(dev, struct cyapa);
 	if (!cyapa)
 		return -ENOMEM;
 
@@ -1347,9 +1343,15 @@ static int cyapa_suspend(struct device *dev)
 	u8 power_mode;
 	int error;
 
-	error = mutex_lock_interruptible(&cyapa->state_sync_lock);
+	error = mutex_lock_interruptible(&cyapa->input->mutex);
 	if (error)
 		return error;
+
+	error = mutex_lock_interruptible(&cyapa->state_sync_lock);
+	if (error) {
+		mutex_unlock(&cyapa->input->mutex);
+		return error;
+	}
 
 	/*
 	 * Runtime PM is enable only when device is in operational mode and
@@ -1385,6 +1387,8 @@ static int cyapa_suspend(struct device *dev)
 		cyapa->irq_wake = (enable_irq_wake(client->irq) == 0);
 
 	mutex_unlock(&cyapa->state_sync_lock);
+	mutex_unlock(&cyapa->input->mutex);
+
 	return 0;
 }
 
@@ -1394,6 +1398,7 @@ static int cyapa_resume(struct device *dev)
 	struct cyapa *cyapa = i2c_get_clientdata(client);
 	int error;
 
+	mutex_lock(&cyapa->input->mutex);
 	mutex_lock(&cyapa->state_sync_lock);
 
 	if (device_may_wakeup(dev) && cyapa->irq_wake) {
@@ -1412,6 +1417,7 @@ static int cyapa_resume(struct device *dev)
 	enable_irq(client->irq);
 
 	mutex_unlock(&cyapa->state_sync_lock);
+	mutex_unlock(&cyapa->input->mutex);
 	return 0;
 }
 
@@ -1449,16 +1455,16 @@ static const struct dev_pm_ops cyapa_pm_ops = {
 };
 
 static const struct i2c_device_id cyapa_id_table[] = {
-	{ "cyapa", 0 },
-	{ },
+	{ .name = "cyapa" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, cyapa_id_table);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id cyapa_acpi_id[] = {
-	{ "CYAP0000", 0 },  /* Gen3 trackpad with 0x67 I2C address. */
-	{ "CYAP0001", 0 },  /* Gen5 trackpad with 0x24 I2C address. */
-	{ "CYAP0002", 0 },  /* Gen6 trackpad with 0x24 I2C address. */
+	{ .id = "CYAP0000" },  /* Gen3 trackpad with 0x67 I2C address. */
+	{ .id = "CYAP0001" },  /* Gen5 trackpad with 0x24 I2C address. */
+	{ .id = "CYAP0002" },  /* Gen6 trackpad with 0x24 I2C address. */
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, cyapa_acpi_id);

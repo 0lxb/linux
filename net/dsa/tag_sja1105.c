@@ -149,19 +149,20 @@ static struct sk_buff *sja1105_defer_xmit(struct dsa_port *dp,
 	xmit_work_fn = tagger_data->xmit_work_fn;
 	xmit_worker = priv->xmit_worker;
 
-	if (!xmit_work_fn || !xmit_worker)
+	if (!xmit_work_fn || !xmit_worker) {
+		kfree_skb(skb);
 		return NULL;
+	}
 
-	xmit_work = kzalloc(sizeof(*xmit_work), GFP_ATOMIC);
-	if (!xmit_work)
+	xmit_work = kzalloc_obj(*xmit_work, GFP_ATOMIC);
+	if (!xmit_work) {
+		kfree_skb(skb);
 		return NULL;
+	}
 
 	kthread_init_work(&xmit_work->work, xmit_work_fn);
-	/* Increase refcount so the kfree_skb in dsa_user_xmit
-	 * won't really free the packet.
-	 */
 	xmit_work->dp = dp;
-	xmit_work->skb = skb_get(skb);
+	xmit_work->skb = skb;
 
 	kthread_queue_work(xmit_worker, &xmit_work->work);
 
@@ -401,10 +402,7 @@ static struct sk_buff
 			kfree_skb(priv->stampable_skb);
 		}
 
-		/* Hold a reference to avoid dsa_switch_rcv
-		 * from freeing the skb.
-		 */
-		priv->stampable_skb = skb_get(skb);
+		priv->stampable_skb = skb;
 		spin_unlock(&priv->meta_lock);
 
 		/* Tell DSA we got nothing */
@@ -436,6 +434,7 @@ static struct sk_buff
 			dev_err_ratelimited(ds->dev,
 					    "Unexpected meta frame\n");
 			spin_unlock(&priv->meta_lock);
+			kfree_skb(skb);
 			return NULL;
 		}
 
@@ -443,6 +442,7 @@ static struct sk_buff
 			dev_err_ratelimited(ds->dev,
 					    "Meta frame on wrong port\n");
 			spin_unlock(&priv->meta_lock);
+			kfree_skb(skb);
 			return NULL;
 		}
 
@@ -472,37 +472,14 @@ static bool sja1110_skb_has_inband_control_extension(const struct sk_buff *skb)
 	return ntohs(eth_hdr(skb)->h_proto) == ETH_P_SJA1110;
 }
 
-/* If the VLAN in the packet is a tag_8021q one, set @source_port and
- * @switch_id and strip the header. Otherwise set @vid and keep it in the
- * packet.
- */
-static void sja1105_vlan_rcv(struct sk_buff *skb, int *source_port,
-			     int *switch_id, int *vbid, u16 *vid)
-{
-	struct vlan_ethhdr *hdr = vlan_eth_hdr(skb);
-	u16 vlan_tci;
-
-	if (skb_vlan_tag_present(skb))
-		vlan_tci = skb_vlan_tag_get(skb);
-	else
-		vlan_tci = ntohs(hdr->h_vlan_TCI);
-
-	if (vid_is_dsa_8021q(vlan_tci & VLAN_VID_MASK))
-		return dsa_8021q_rcv(skb, source_port, switch_id, vbid);
-
-	/* Try our best with imprecise RX */
-	*vid = vlan_tci & VLAN_VID_MASK;
-}
-
 static struct sk_buff *sja1105_rcv(struct sk_buff *skb,
 				   struct net_device *netdev)
 {
-	int source_port = -1, switch_id = -1, vbid = -1;
+	int source_port = -1, switch_id = -1, vbid = -1, vid = -1;
 	struct sja1105_meta meta = {0};
 	struct ethhdr *hdr;
 	bool is_link_local;
 	bool is_meta;
-	u16 vid;
 
 	hdr = eth_hdr(skb);
 	is_link_local = sja1105_is_link_local(skb);
@@ -525,38 +502,20 @@ static struct sk_buff *sja1105_rcv(struct sk_buff *skb,
 	 * a tag_8021q VLAN which we have to strip
 	 */
 	if (sja1105_skb_has_tag_8021q(skb)) {
-		int tmp_source_port = -1, tmp_switch_id = -1;
-
-		sja1105_vlan_rcv(skb, &tmp_source_port, &tmp_switch_id, &vbid,
-				 &vid);
-		/* Preserve the source information from the INCL_SRCPT option,
-		 * if available. This allows us to not overwrite a valid source
-		 * port and switch ID with zeroes when receiving link-local
-		 * frames from a VLAN-unaware bridged port (non-zero vbid) or a
-		 * VLAN-aware bridged port (non-zero vid). Furthermore, the
-		 * tag_8021q source port information is only of trust when the
-		 * vbid is 0 (precise port). Otherwise, tmp_source_port and
-		 * tmp_switch_id will be zeroes.
-		 */
-		if (vbid == 0 && source_port == -1)
-			source_port = tmp_source_port;
-		if (vbid == 0 && switch_id == -1)
-			switch_id = tmp_switch_id;
+		dsa_8021q_rcv(skb, &source_port, &switch_id, &vbid, &vid);
 	} else if (source_port == -1 && switch_id == -1) {
 		/* Packets with no source information have no chance of
 		 * getting accepted, drop them straight away.
 		 */
+		kfree_skb(skb);
 		return NULL;
 	}
 
-	if (source_port != -1 && switch_id != -1)
-		skb->dev = dsa_conduit_find_user(netdev, switch_id, source_port);
-	else if (vbid >= 1)
-		skb->dev = dsa_tag_8021q_find_port_by_vbid(netdev, vbid);
-	else
-		skb->dev = dsa_find_designated_bridge_port_by_vid(netdev, vid);
+	skb->dev = dsa_tag_8021q_find_user(netdev, source_port, switch_id,
+					   vid, vbid);
 	if (!skb->dev) {
 		netdev_warn(netdev, "Couldn't decode source port\n");
+		kfree_skb(skb);
 		return NULL;
 	}
 
@@ -583,12 +542,15 @@ static struct sk_buff *sja1110_rcv_meta(struct sk_buff *skb, u16 rx_header)
 	if (!ds) {
 		net_err_ratelimited("%s: cannot find switch id %d\n",
 				    conduit->name, switch_id);
+		kfree_skb(skb);
 		return NULL;
 	}
 
 	tagger_data = sja1105_tagger_data(ds);
-	if (!tagger_data->meta_tstamp_handler)
+	if (!tagger_data->meta_tstamp_handler) {
+		kfree_skb(skb);
 		return NULL;
+	}
 
 	for (i = 0; i <= n_ts; i++) {
 		u8 ts_id, source_port, dir;
@@ -606,6 +568,7 @@ static struct sk_buff *sja1110_rcv_meta(struct sk_buff *skb, u16 rx_header)
 	}
 
 	/* Discard the meta frame, we've consumed the timestamps it contained */
+	kfree_skb(skb);
 	return NULL;
 }
 
@@ -616,8 +579,10 @@ static struct sk_buff *sja1110_rcv_inband_control_extension(struct sk_buff *skb,
 {
 	u16 rx_header;
 
-	if (unlikely(!pskb_may_pull(skb, SJA1110_HEADER_LEN)))
+	if (unlikely(!pskb_may_pull(skb, SJA1110_HEADER_LEN))) {
+		kfree_skb(skb);
 		return NULL;
+	}
 
 	/* skb->data points to skb_mac_header(skb) + ETH_HLEN, which is exactly
 	 * what we need because the caller has checked the EtherType (which is
@@ -653,8 +618,10 @@ static struct sk_buff *sja1110_rcv_inband_control_extension(struct sk_buff *skb,
 		 * padding and trailer we need to account for the fact that
 		 * skb->data points to skb_mac_header(skb) + ETH_HLEN.
 		 */
-		if (pskb_trim_rcsum(skb, start_of_padding - ETH_HLEN))
+		if (pskb_trim_rcsum(skb, start_of_padding - ETH_HLEN)) {
+			kfree_skb(skb);
 			return NULL;
+		}
 	/* Trap-to-host frame, no timestamp trailer */
 	} else {
 		*source_port = SJA1110_RX_HEADER_SRC_PORT(rx_header);
@@ -677,9 +644,8 @@ static struct sk_buff *sja1110_rcv_inband_control_extension(struct sk_buff *skb,
 static struct sk_buff *sja1110_rcv(struct sk_buff *skb,
 				   struct net_device *netdev)
 {
-	int source_port = -1, switch_id = -1, vbid = -1;
+	int source_port = -1, switch_id = -1, vbid = -1, vid = -1;
 	bool host_only = false;
-	u16 vid = 0;
 
 	if (sja1110_skb_has_inband_control_extension(skb)) {
 		skb = sja1110_rcv_inband_control_extension(skb, &source_port,
@@ -691,16 +657,14 @@ static struct sk_buff *sja1110_rcv(struct sk_buff *skb,
 
 	/* Packets with in-band control extensions might still have RX VLANs */
 	if (likely(sja1105_skb_has_tag_8021q(skb)))
-		sja1105_vlan_rcv(skb, &source_port, &switch_id, &vbid, &vid);
+		dsa_8021q_rcv(skb, &source_port, &switch_id, &vbid, &vid);
 
-	if (vbid >= 1)
-		skb->dev = dsa_tag_8021q_find_port_by_vbid(netdev, vbid);
-	else if (source_port == -1 || switch_id == -1)
-		skb->dev = dsa_find_designated_bridge_port_by_vid(netdev, vid);
-	else
-		skb->dev = dsa_conduit_find_user(netdev, switch_id, source_port);
+	skb->dev = dsa_tag_8021q_find_user(netdev, source_port, switch_id,
+					   vid, vbid);
+
 	if (!skb->dev) {
 		netdev_warn(netdev, "Couldn't decode source port\n");
+		kfree_skb(skb);
 		return NULL;
 	}
 
@@ -749,13 +713,13 @@ static int sja1105_connect(struct dsa_switch *ds)
 	struct kthread_worker *xmit_worker;
 	int err;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc_obj(*priv);
 	if (!priv)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->meta_lock);
 
-	xmit_worker = kthread_create_worker(0, "dsa%d:%d_xmit",
+	xmit_worker = kthread_run_worker(0, "dsa%d:%d_xmit",
 					    ds->dst->index, ds->index);
 	if (IS_ERR(xmit_worker)) {
 		err = PTR_ERR(xmit_worker);

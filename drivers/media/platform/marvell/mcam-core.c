@@ -224,11 +224,11 @@ static void mcam_buffer_done(struct mcam_camera *cam, int frame,
  * Debugging and related.
  */
 #define cam_err(cam, fmt, arg...) \
-	dev_err((cam)->dev, fmt, ##arg);
+	dev_err((cam)->dev, fmt, ##arg)
 #define cam_warn(cam, fmt, arg...) \
-	dev_warn((cam)->dev, fmt, ##arg);
+	dev_warn((cam)->dev, fmt, ##arg)
 #define cam_dbg(cam, fmt, arg...) \
-	dev_dbg((cam)->dev, fmt, ##arg);
+	dev_dbg((cam)->dev, fmt, ##arg)
 
 
 /*
@@ -406,6 +406,8 @@ static void mcam_free_dma_bufs(struct mcam_camera *cam)
 {
 	int i;
 
+	cancel_work_sync(&cam->s_bh_work);
+
 	for (i = 0; i < cam->nbufs; i++) {
 		dma_free_coherent(cam->dev, cam->dma_buf_size,
 				cam->dma_bufs[i], cam->dma_handles[i]);
@@ -439,9 +441,9 @@ static void mcam_ctlr_dma_vmalloc(struct mcam_camera *cam)
 /*
  * Copy data out to user space in the vmalloc case
  */
-static void mcam_frame_tasklet(struct tasklet_struct *t)
+static void mcam_frame_work(struct work_struct *t)
 {
-	struct mcam_camera *cam = from_tasklet(cam, t, s_tasklet);
+	struct mcam_camera *cam = from_work(cam, t, s_bh_work);
 	int i;
 	unsigned long flags;
 	struct mcam_vb_buffer *buf;
@@ -493,7 +495,7 @@ static int mcam_check_dma_buffers(struct mcam_camera *cam)
 
 static void mcam_vmalloc_done(struct mcam_camera *cam, int frame)
 {
-	tasklet_schedule(&cam->s_tasklet);
+	queue_work(system_bh_wq, &cam->s_bh_work);
 }
 
 #else /* MCAM_MODE_VMALLOC */
@@ -935,7 +937,12 @@ static int mclk_enable(struct clk_hw *hw)
 	ret = pm_runtime_resume_and_get(cam->dev);
 	if (ret < 0)
 		return ret;
-	clk_enable(cam->clk[0]);
+	ret = clk_enable(cam->clk[0]);
+	if (ret) {
+		pm_runtime_put(cam->dev);
+		return ret;
+	}
+
 	mcam_reg_write(cam, REG_CLKCTRL, (mclk_src << 29) | mclk_div);
 	mcam_ctlr_power_up(cam);
 
@@ -1017,7 +1024,7 @@ static int mcam_cam_configure(struct mcam_camera *cam)
 	v4l2_fill_mbus_format(&format.format, &cam->pix_format, cam->mbus_code);
 	ret = sensor_call(cam, core, init, 0);
 	if (ret == 0)
-		ret = sensor_call(cam, pad, set_fmt, NULL, &format);
+		ret = sensor_call(cam, pad, set_fmt, NULL, NULL, &format);
 	/*
 	 * OV7670 does weird things if flip is set *before* format...
 	 */
@@ -1203,8 +1210,6 @@ static const struct vb2_ops mcam_vb2_ops = {
 	.buf_queue		= mcam_vb_buf_queue,
 	.start_streaming	= mcam_vb_start_streaming,
 	.stop_streaming		= mcam_vb_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 
@@ -1267,8 +1272,6 @@ static const struct vb2_ops mcam_vb2_sg_ops = {
 	.buf_cleanup		= mcam_vb_sg_buf_cleanup,
 	.start_streaming	= mcam_vb_start_streaming,
 	.stop_streaming		= mcam_vb_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 #endif /* MCAM_MODE_DMA_SG */
@@ -1305,7 +1308,6 @@ static int mcam_setup_vb2(struct mcam_camera *cam)
 		break;
 	case B_vmalloc:
 #ifdef MCAM_MODE_VMALLOC
-		tasklet_setup(&cam->s_tasklet, mcam_frame_tasklet);
 		vq->ops = &mcam_vb2_ops;
 		vq->mem_ops = &vb2_vmalloc_memops;
 		cam->dma_setup = mcam_ctlr_dma_vmalloc;
@@ -1361,7 +1363,7 @@ static int mcam_vidioc_try_fmt_vid_cap(struct file *filp, void *priv,
 	f = mcam_find_format(pix->pixelformat);
 	pix->pixelformat = f->pixelformat;
 	v4l2_fill_mbus_format(&format.format, pix, f->mbus_code);
-	ret = sensor_call(cam, pad, set_fmt, &pad_state, &format);
+	ret = sensor_call(cam, pad, set_fmt, NULL, &pad_state, &format);
 	v4l2_fill_pix_format(pix, &format.format);
 	pix->bytesperline = pix->width * f->bpp;
 	switch (f->pixelformat) {
@@ -1863,6 +1865,12 @@ int mccic_register(struct mcam_camera *cam)
 		goto out;
 	}
 
+#ifdef MCAM_MODE_VMALLOC
+	/* Init before sensor bind: armed by IRQ, cancelled on probe-error paths. */
+	if (cam->buffer_mode == B_vmalloc)
+		INIT_WORK(&cam->s_bh_work, mcam_frame_work);
+#endif
+
 	mutex_init(&cam->s_mutex);
 	cam->state = S_NOTREADY;
 	mcam_set_config_needed(cam, 1);
@@ -1921,10 +1929,15 @@ void mccic_shutdown(struct mcam_camera *cam)
 	 * take it down again will wedge the machine, which is frowned
 	 * upon.
 	 */
+	mutex_lock(&cam->s_mutex);
 	if (!list_empty(&cam->vdev.fh_list)) {
 		cam_warn(cam, "Removing a device with users!\n");
+		/* Stop so the IRQ can't re-arm s_bh_work after the buffers are freed. */
+		if (cam->state == S_STREAMING)
+			mcam_ctlr_stop_dma(cam);
 		sensor_call(cam, core, s_power, 0);
 	}
+	mutex_unlock(&cam->s_mutex);
 	if (cam->buffer_mode == B_vmalloc)
 		mcam_free_dma_bufs(cam);
 	v4l2_ctrl_handler_free(&cam->ctrl_handler);
@@ -1981,5 +1994,6 @@ int mccic_resume(struct mcam_camera *cam)
 }
 EXPORT_SYMBOL_GPL(mccic_resume);
 
+MODULE_DESCRIPTION("Marvell camera core driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");

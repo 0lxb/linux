@@ -96,7 +96,7 @@ static int timbradio_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	tr = devm_kzalloc(&pdev->dev, sizeof(*tr), GFP_KERNEL);
+	tr = devm_kzalloc_obj(&pdev->dev, *tr);
 	if (!tr) {
 		err = -ENOMEM;
 		goto err;
@@ -164,7 +164,7 @@ static struct platform_driver timbradio_platform_driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe		= timbradio_probe,
-	.remove_new	= timbradio_remove,
+	.remove		= timbradio_remove,
 };
 
 module_platform_driver(timbradio_platform_driver);

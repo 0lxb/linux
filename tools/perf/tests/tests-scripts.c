@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <linux/ctype.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -29,15 +30,49 @@
 
 static int shell_tests__dir_fd(void)
 {
-	char path[PATH_MAX], *exec_path;
-	static const char * const devel_dirs[] = { "./tools/perf/tests/shell", "./tests/shell", };
+	struct stat st;
+	char path[PATH_MAX], path2[PATH_MAX], *exec_path;
+	ssize_t len;
+	static const char * const devel_dirs[] = {
+		"./tools/perf/tests/shell",
+		"./tests/shell",
+		"./source/tests/shell"
+	};
+	int fd;
+	char *p;
 
 	for (size_t i = 0; i < ARRAY_SIZE(devel_dirs); ++i) {
-		int fd = open(devel_dirs[i], O_PATH);
+		fd = open(devel_dirs[i], O_PATH);
 
 		if (fd >= 0)
 			return fd;
 	}
+
+	/* Use directory of executable */
+	len = readlink("/proc/self/exe", path2, sizeof(path2) - 1);
+	if (len < 0)
+		return -1;
+	path2[len] = '\0';
+	/* Follow another level of symlink if there */
+	if (lstat(path2, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK) {
+		scnprintf(path, sizeof(path), "%s", path2);
+		len = readlink(path, path2, sizeof(path2) - 1);
+		if (len < 0)
+			return -1;
+		path2[len] = '\0';
+	}
+	/* Get directory */
+	p = strrchr(path2, '/');
+	if (p)
+		*p = 0;
+	scnprintf(path, sizeof(path), "%s/tests/shell", path2);
+	fd = open(path, O_PATH);
+	if (fd >= 0)
+		return fd;
+	scnprintf(path, sizeof(path), "%s/source/tests/shell", path2);
+	fd = open(path, O_PATH);
+	if (fd >= 0)
+		return fd;
 
 	/* Then installed path. */
 	exec_path = get_argv_exec_path();
@@ -49,43 +84,50 @@ static int shell_tests__dir_fd(void)
 static char *shell_test__description(int dir_fd, const char *name)
 {
 	struct io io;
-	char buf[128], desc[256];
-	int ch, pos = 0;
+	char buf[128], *line = NULL;
+	size_t line_len = 0;
+	ssize_t len;
+	char *desc = NULL;
+	const char *spdx = "SPDX-License";
 
 	io__init(&io, openat(dir_fd, name, O_RDONLY), buf, sizeof(buf));
 	if (io.fd < 0)
 		return NULL;
 
-	/* Skip first line - should be #!/bin/sh Shebang */
-	if (io__get_char(&io) != '#')
-		goto err_out;
-	if (io__get_char(&io) != '!')
-		goto err_out;
-	do {
-		ch = io__get_char(&io);
-		if (ch < 0)
-			goto err_out;
-	} while (ch != '\n');
+	while ((len = io__getline(&io, &line, &line_len)) > 0) {
+		char *p = line;
 
-	do {
-		ch = io__get_char(&io);
-		if (ch < 0)
-			goto err_out;
-	} while (ch == '#' || isspace(ch));
-	while (ch > 0 && ch != '\n') {
-		desc[pos++] = ch;
-		if (pos >= (int)sizeof(desc) - 1)
+		/* Skip leading whitespace */
+		while (*p && isspace(*p))
+			p++;
+
+		/* Must be a comment */
+		if (*p != '#')
+			continue;
+		p++;
+
+		/* Skip shebang or SPDX lines */
+		if (*p == '!' || (strstr(p, spdx) && strstr(p, "-Identifier:")))
+			continue;
+
+		/* Skip whitespace after # */
+		while (*p && isspace(*p))
+			p++;
+
+		/* If we found non-empty text, this is the description! */
+		if (*p && *p != '\n') {
+			char *end = p + strlen(p);
+
+			while (end > p && isspace(end[-1]))
+				end--;
+			*end = '\0';
+			desc = strdup(p);
 			break;
-		ch = io__get_char(&io);
+		}
 	}
-	while (pos > 0 && isspace(desc[--pos]))
-		;
-	desc[++pos] = '\0';
+	free(line);
 	close(io.fd);
-	return strdup(desc);
-err_out:
-	close(io.fd);
-	return NULL;
+	return desc;
 }
 
 /* Is this full file path a shell script */
@@ -138,6 +180,79 @@ static int shell_test__run(struct test_suite *test, int subtest __maybe_unused)
 	return WEXITSTATUS(err) == 2 ? TEST_SKIP : TEST_FAIL;
 }
 
+/*
+ * The requisites are a comma separated list in the parens ending the
+ * description line, e.g. "perf stat tests (no_mlock)": "exclusive" is the
+ * catch-all, implying every other requisite, "no_mlock" waives the default of
+ * needing room in the per user budget set in kernel.perf_event_mlock_kb.
+ */
+static void shell_test__requisites(char *desc, bool *exclusive, bool *needs_mlock)
+{
+	char *lparen, *rparen, *requisites, *token, *tokp;
+	bool known = false;
+
+	/* Only a list closing the description line is taken for requisites. */
+	rparen = strrchr(desc, ')');
+	if (rparen == NULL || rparen[1] != '\0')
+		return;
+
+	lparen = strrchr(desc, '(');
+	if (lparen == NULL || lparen > rparen)
+		return;
+
+	/* Tokenize a copy: a list with nothing recognized leaves desc alone. */
+	requisites = strndup(lparen + 1, rparen - lparen - 1);
+	if (requisites == NULL) {
+		pr_err("Failed to copy the requisites of '%s'\n", desc);
+		return;
+	}
+
+	for (token = strtok_r(requisites, ",", &tokp); token;
+	     token = strtok_r(NULL, ",", &tokp)) {
+		char *end = token + strlen(token);
+		const char *requisite = token;
+		bool waived;
+
+		while (isspace(*token))
+			token++;
+		while (end > token && isspace(end[-1]))
+			end--;
+		*end = '\0';
+
+		/* A "no_" prefix waives the requisite named after it. */
+		waived = strncmp(token, "no_", sizeof("no_") - 1) == 0;
+		if (waived)
+			token += sizeof("no_") - 1;
+
+		if (!strcmp(token, "mlock")) {
+			*needs_mlock = !waived;
+		} else if (!strcmp(token, "exclusive") && !waived) {
+			*exclusive = true;
+		} else {
+			pr_debug("Ignoring %s requisite '%s' in '%s'\n",
+				 strcmp(token, "exclusive") == 0 ? "a waived" : "an unknown",
+				 requisite, desc);
+			continue;
+		}
+
+		known = true;
+	}
+
+	zfree(&requisites);
+
+	if (!known)
+		return;
+
+	/* Drop the list and the space before it from the description. */
+	*lparen = '\0';
+	if (lparen > desc && isspace(lparen[-1]))
+		lparen[-1] = '\0';
+
+	/* The catch-all implies every other requisite, whatever the order. */
+	if (*exclusive)
+		*needs_mlock = true;
+}
+
 static void append_script(int dir_fd, const char *name, char *desc,
 			  struct test_suite ***result,
 			  size_t *result_sz)
@@ -145,12 +260,14 @@ static void append_script(int dir_fd, const char *name, char *desc,
 	char filename[PATH_MAX], link[128];
 	struct test_suite *test_suite, **result_tmp;
 	struct test_case *tests;
-	size_t len;
+	ssize_t len;
+	/* Shell tests run perf, that maps ring buffers, so they need the budget. */
+	bool exclusive = false, needs_mlock = true;
 
 	snprintf(link, sizeof(link), "/proc/%d/fd/%d", getpid(), dir_fd);
-	len = readlink(link, filename, sizeof(filename));
-	if (len < 0) {
-		pr_err("Failed to readlink %s", link);
+	len = readlink(link, filename, sizeof(filename) - 1);
+	if (len < 0 || (size_t)len > sizeof(filename) - strlen(name) - 2) {
+		pr_err("Failed to readlink %s or path too long", link);
 		return;
 	}
 	filename[len++] = '/';
@@ -162,9 +279,10 @@ static void append_script(int dir_fd, const char *name, char *desc,
 		return;
 	}
 	tests[0].name = strdup_check(name);
+	shell_test__requisites(desc, &exclusive, &needs_mlock);
+	tests[0].exclusive = exclusive;
 	tests[0].desc = strdup_check(desc);
 	tests[0].run_case = shell_test__run;
-
 	test_suite = zalloc(sizeof(*test_suite));
 	if (!test_suite) {
 		pr_err("Out of memory while building script test suite list\n");
@@ -174,6 +292,7 @@ static void append_script(int dir_fd, const char *name, char *desc,
 	test_suite->desc = desc;
 	test_suite->test_cases = tests;
 	test_suite->priv = strdup_check(filename);
+	test_suite->needs_mlock = needs_mlock;
 	/* Realloc is good enough, though we could realloc by chunks, not that
 	 * anyone will ever measure performance here */
 	result_tmp = realloc(*result, (*result_sz + 1) * sizeof(*result_tmp));
@@ -222,8 +341,11 @@ static void append_scripts_in_dir(int dir_fd,
 			if (!S_ISDIR(st.st_mode))
 				continue;
 		}
+		if (strncmp(ent->d_name, "base_", 5) == 0)
+			continue; /* Skip scripts that have a separate driver. */
 		fd = openat(dir_fd, ent->d_name, O_PATH);
 		append_scripts_in_dir(fd, result, result_sz);
+		close(fd);
 	}
 	for (i = 0; i < n_dirs; i++) /* Clean up */
 		zfree(&entlist[i]);

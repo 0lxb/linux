@@ -2,7 +2,6 @@
 #ifndef _LINUX_FORTIFY_STRING_H_
 #define _LINUX_FORTIFY_STRING_H_
 
-#include <linux/bitfield.h>
 #include <linux/bug.h>
 #include <linux/const.h>
 #include <linux/limits.h>
@@ -10,21 +9,23 @@
 #define __FORTIFY_INLINE extern __always_inline __gnu_inline __overloadable
 #define __RENAME(x) __asm__(#x)
 
-#define FORTIFY_REASON_DIR(r)		FIELD_GET(BIT(0), r)
-#define FORTIFY_REASON_FUNC(r)		FIELD_GET(GENMASK(7, 1), r)
-#define FORTIFY_REASON(func, write)	(FIELD_PREP(BIT(0), write) | \
-					 FIELD_PREP(GENMASK(7, 1), func))
+#define FORTIFY_REASON_DIR(r)		((r) & 1)
+#define FORTIFY_REASON_FUNC(r)		((r) >> 1)
+#define FORTIFY_REASON(func, write)	((func) << 1 | (write))
 
+/* Overridden by KUnit tests. */
 #ifndef fortify_panic
 # define fortify_panic(func, write, avail, size, retfail)	\
 	 __fortify_panic(FORTIFY_REASON(func, write), avail, size)
+#endif
+#ifndef fortify_warn_once
+# define fortify_warn_once(x...)	WARN_ONCE(x)
 #endif
 
 #define FORTIFY_READ		 0
 #define FORTIFY_WRITE		 1
 
 #define EACH_FORTIFY_FUNC(macro)	\
-	macro(strncpy),			\
 	macro(strnlen),			\
 	macro(strlen),			\
 	macro(strscpy),			\
@@ -71,17 +72,28 @@ void __write_overflow_field(size_t avail, size_t wanted) __compiletime_warning("
 	__ret;							\
 })
 
-#if defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KASAN_SW_TAGS)
+#if defined(__SANITIZE_ADDRESS__)
+
+#if !defined(CONFIG_CC_HAS_KASAN_MEMINTRINSIC_PREFIX) && !defined(CONFIG_GENERIC_ENTRY)
+extern void *__underlying_memset(void *p, int c, __kernel_size_t size) __RENAME(memset);
+extern void *__underlying_memmove(void *p, const void *q, __kernel_size_t size) __RENAME(memmove);
+extern void *__underlying_memcpy(void *p, const void *q, __kernel_size_t size) __RENAME(memcpy);
+#elif defined(CONFIG_KASAN_GENERIC)
+extern void *__underlying_memset(void *p, int c, __kernel_size_t size) __RENAME(__asan_memset);
+extern void *__underlying_memmove(void *p, const void *q, __kernel_size_t size) __RENAME(__asan_memmove);
+extern void *__underlying_memcpy(void *p, const void *q, __kernel_size_t size) __RENAME(__asan_memcpy);
+#else /* CONFIG_KASAN_SW_TAGS */
+extern void *__underlying_memset(void *p, int c, __kernel_size_t size) __RENAME(__hwasan_memset);
+extern void *__underlying_memmove(void *p, const void *q, __kernel_size_t size) __RENAME(__hwasan_memmove);
+extern void *__underlying_memcpy(void *p, const void *q, __kernel_size_t size) __RENAME(__hwasan_memcpy);
+#endif
+
 extern void *__underlying_memchr(const void *p, int c, __kernel_size_t size) __RENAME(memchr);
 extern int __underlying_memcmp(const void *p, const void *q, __kernel_size_t size) __RENAME(memcmp);
-extern void *__underlying_memcpy(void *p, const void *q, __kernel_size_t size) __RENAME(memcpy);
-extern void *__underlying_memmove(void *p, const void *q, __kernel_size_t size) __RENAME(memmove);
-extern void *__underlying_memset(void *p, int c, __kernel_size_t size) __RENAME(memset);
 extern char *__underlying_strcat(char *p, const char *q) __RENAME(strcat);
 extern char *__underlying_strcpy(char *p, const char *q) __RENAME(strcpy);
 extern __kernel_size_t __underlying_strlen(const char *p) __RENAME(strlen);
 extern char *__underlying_strncat(char *p, const char *q, __kernel_size_t count) __RENAME(strncat);
-extern char *__underlying_strncpy(char *p, const char *q, __kernel_size_t size) __RENAME(strncpy);
 #else
 
 #if defined(__SANITIZE_MEMORY__)
@@ -105,7 +117,7 @@ extern char *__underlying_strncpy(char *p, const char *q, __kernel_size_t size) 
 #define __underlying_strcpy	__builtin_strcpy
 #define __underlying_strlen	__builtin_strlen
 #define __underlying_strncat	__builtin_strncat
-#define __underlying_strncpy	__builtin_strncpy
+
 #endif
 
 /**
@@ -142,50 +154,6 @@ extern char *__underlying_strncpy(char *p, const char *q, __kernel_size_t size) 
 	__builtin_constant_p((bounds) < (length)) &&	\
 	(bounds) < (length)				\
 )
-
-/**
- * strncpy - Copy a string to memory with non-guaranteed NUL padding
- *
- * @p: pointer to destination of copy
- * @q: pointer to NUL-terminated source string to copy
- * @size: bytes to write at @p
- *
- * If strlen(@q) >= @size, the copy of @q will stop after @size bytes,
- * and @p will NOT be NUL-terminated
- *
- * If strlen(@q) < @size, following the copy of @q, trailing NUL bytes
- * will be written to @p until @size total bytes have been written.
- *
- * Do not use this function. While FORTIFY_SOURCE tries to avoid
- * over-reads of @q, it cannot defend against writing unterminated
- * results to @p. Using strncpy() remains ambiguous and fragile.
- * Instead, please choose an alternative, so that the expectation
- * of @p's contents is unambiguous:
- *
- * +--------------------+--------------------+------------+
- * | **p** needs to be: | padded to **size** | not padded |
- * +====================+====================+============+
- * |     NUL-terminated | strscpy_pad()      | strscpy()  |
- * +--------------------+--------------------+------------+
- * | not NUL-terminated | strtomem_pad()     | strtomem() |
- * +--------------------+--------------------+------------+
- *
- * Note strscpy*()'s differing return values for detecting truncation,
- * and strtomem*()'s expectation that the destination is marked with
- * __nonstring when it is a character array.
- *
- */
-__FORTIFY_INLINE __diagnose_as(__builtin_strncpy, 1, 2, 3)
-char *strncpy(char * const POS p, const char *q, __kernel_size_t size)
-{
-	const size_t p_size = __member_size(p);
-
-	if (__compiletime_lessthan(p_size, size))
-		__write_overflow();
-	if (p_size < size)
-		fortify_panic(FORTIFY_FUNC_strncpy, FORTIFY_WRITE, p_size, size, p);
-	return __underlying_strncpy(p, q, size);
-}
 
 extern __kernel_size_t __real_strnlen(const char *, __kernel_size_t) __RENAME(strnlen);
 /**
@@ -490,10 +458,8 @@ __FORTIFY_INLINE bool fortify_memset_chk(__kernel_size_t size,
  * __struct_size() vs __member_size() must be captured here to avoid
  * evaluating argument side-effects further into the macro layers.
  */
-#ifndef CONFIG_KMSAN
 #define memset(p, c, s) __fortify_memset_chk(p, c, s,			\
 		__struct_size(p), __member_size(p))
-#endif
 
 /*
  * To make sure the compiler can enforce protection against buffer overflows,
@@ -578,16 +544,12 @@ __FORTIFY_INLINE bool fortify_memcpy_chk(__kernel_size_t size,
 	if (p_size != SIZE_MAX && p_size < size)
 		fortify_panic(func, FORTIFY_WRITE, p_size, size, true);
 	else if (q_size != SIZE_MAX && q_size < size)
-		fortify_panic(func, FORTIFY_READ, p_size, size, true);
+		fortify_panic(func, FORTIFY_READ, q_size, size, true);
 
 	/*
 	 * Warn when writing beyond destination field size.
 	 *
-	 * We must ignore p_size_field == 0 for existing 0-element
-	 * fake flexible arrays, until they are all converted to
-	 * proper flexible arrays.
-	 *
-	 * The implementation of __builtin_*object_size() behaves
+	 * Note the implementation of __builtin_*object_size() behaves
 	 * like sizeof() when not directly referencing a flexible
 	 * array member, which means there will be many bounds checks
 	 * that will appear at run-time, without a way for them to be
@@ -595,13 +557,19 @@ __FORTIFY_INLINE bool fortify_memcpy_chk(__kernel_size_t size,
 	 * is specifically the flexible array member).
 	 * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101832
 	 */
-	if (p_size_field != 0 && p_size_field != SIZE_MAX &&
+	if (p_size_field != SIZE_MAX &&
 	    p_size != p_size_field && p_size_field < size)
 		return true;
 
 	return false;
 }
 
+/*
+ * To work around what seems to be an optimizer bug, the macro arguments
+ * need to have const copies or the values end up changed by the time they
+ * reach fortify_warn_once(). See commit 6f7630b1b5bc ("fortify: Capture
+ * __bos() results in const temp vars") for more details.
+ */
 #define __fortify_memcpy_chk(p, q, size, p_size, q_size,		\
 			     p_size_field, q_size_field, op) ({		\
 	const size_t __fortify_size = (size_t)(size);			\
@@ -609,14 +577,20 @@ __FORTIFY_INLINE bool fortify_memcpy_chk(__kernel_size_t size,
 	const size_t __q_size = (q_size);				\
 	const size_t __p_size_field = (p_size_field);			\
 	const size_t __q_size_field = (q_size_field);			\
-	WARN_ONCE(fortify_memcpy_chk(__fortify_size, __p_size,		\
+	/* Keep a mutable version of the size for the final copy. */	\
+	size_t __copy_size = __fortify_size;				\
+	fortify_warn_once(fortify_memcpy_chk(__fortify_size, __p_size,	\
 				     __q_size, __p_size_field,		\
 				     __q_size_field, FORTIFY_FUNC_ ##op), \
 		  #op ": detected field-spanning write (size %zu) of single %s (size %zu)\n", \
 		  __fortify_size,					\
 		  "field \"" #p "\" at " FILE_LINE,			\
 		  __p_size_field);					\
-	__underlying_##op(p, q, __fortify_size);			\
+	/* Hide only the run-time size from value range tracking to */	\
+	/* silence compile-time false positive bounds warnings. */	\
+	if (!__builtin_constant_p(__copy_size))				\
+		OPTIMIZER_HIDE_VAR(__copy_size);			\
+	__underlying_##op(p, q, __copy_size);				\
 })
 
 /*
@@ -725,18 +699,20 @@ __FORTIFY_INLINE void *memchr_inv(const void * const POS0 p, int c, size_t size)
 	return __real_memchr_inv(p, c, size);
 }
 
-extern void *__real_kmemdup(const void *src, size_t len, gfp_t gfp) __RENAME(kmemdup)
+extern void *__real_kmemdup(const void *src, size_t len, gfp_t gfp) __RENAME(kmemdup_noprof)
 								    __realloc_size(2);
-__FORTIFY_INLINE void *kmemdup(const void * const POS0 p, size_t size, gfp_t gfp)
+__FORTIFY_INLINE void *kmemdup_noprof(const void * const POS0 p, size_t size, gfp_t gfp)
 {
 	const size_t p_size = __struct_size(p);
 
 	if (__compiletime_lessthan(p_size, size))
 		__read_overflow();
 	if (p_size < size)
-		fortify_panic(FORTIFY_FUNC_kmemdup, FORTIFY_READ, p_size, size, NULL);
+		fortify_panic(FORTIFY_FUNC_kmemdup, FORTIFY_READ, p_size, size,
+			      __real_kmemdup(p, 0, gfp));
 	return __real_kmemdup(p, size, gfp);
 }
+#define kmemdup(...)	alloc_hooks(kmemdup_noprof(__VA_ARGS__))
 
 /**
  * strcpy - Copy a string into another string buffer
@@ -783,7 +759,6 @@ char *strcpy(char * const POS p, const char * const POS q)
 #undef __underlying_strcpy
 #undef __underlying_strlen
 #undef __underlying_strncat
-#undef __underlying_strncpy
 
 #undef POS
 #undef POS0

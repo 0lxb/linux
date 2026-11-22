@@ -42,7 +42,7 @@ struct nouveau_job_args {
 		u32 count;
 	} out_sync;
 
-	struct nouveau_job_ops *ops;
+	const struct nouveau_job_ops *ops;
 };
 
 struct nouveau_job {
@@ -73,7 +73,7 @@ struct nouveau_job {
 		u32 count;
 	} out_sync;
 
-	struct nouveau_job_ops {
+	const struct nouveau_job_ops {
 		/* If .submit() returns without any error, it is guaranteed that
 		 * armed_submit() is called.
 		 */
@@ -98,6 +98,7 @@ void nouveau_job_free(struct nouveau_job *job);
 
 struct nouveau_sched {
 	struct drm_gpu_scheduler base;
+	struct rcu_head rcu;
 	struct drm_sched_entity entity;
 	struct workqueue_struct *wq;
 	struct mutex mutex;

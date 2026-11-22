@@ -161,16 +161,26 @@ static void tcpm_check_stamp(struct tcp_metrics_block *tm,
 	rcu_dereference_protected(p, lockdep_is_held(&tcp_metrics_lock))
 
 static struct tcp_metrics_block *tcpm_new(struct dst_entry *dst,
+					  struct net *net,
 					  struct inetpeer_addr *saddr,
 					  struct inetpeer_addr *daddr,
 					  unsigned int hash)
 {
 	struct tcp_metrics_block *tm;
-	struct net *net;
 	bool reclaim = false;
 
 	spin_lock_bh(&tcp_metrics_lock);
-	net = dev_net(dst->dev);
+
+	/* Do not add entries to a dismantling netns: they would not be
+	 * flushed again. Callers are in an RCU read-side section, and
+	 * cleanup_net() waits for a grace period after the netns refcount
+	 * reached zero and before tcp_metrics_flush_all(NULL) runs, so an
+	 * entry added after a successful check_net() is seen by the flush.
+	 */
+	if (unlikely(!check_net(net))) {
+		tm = NULL;
+		goto out_unlock;
+	}
 
 	/* While waiting for the spin-lock the cache might have been populated
 	 * with this entry and so we have to check again.
@@ -197,7 +207,7 @@ static struct tcp_metrics_block *tcpm_new(struct dst_entry *dst,
 		}
 		tm = oldest;
 	} else {
-		tm = kzalloc(sizeof(*tm), GFP_ATOMIC);
+		tm = kzalloc_obj(*tm, GFP_ATOMIC);
 		if (!tm)
 			goto out_unlock;
 	}
@@ -273,7 +283,7 @@ static struct tcp_metrics_block *__tcp_get_metrics_req(struct request_sock *req,
 		return NULL;
 	}
 
-	net = dev_net(dst->dev);
+	net = sock_net(req_to_sk(req));
 	hash ^= net_hash_mix(net);
 	hash = hash_32(hash, tcp_metrics_hash_log);
 
@@ -318,7 +328,7 @@ static struct tcp_metrics_block *tcp_get_metrics(struct sock *sk,
 	else
 		return NULL;
 
-	net = dev_net(dst->dev);
+	net = sock_net(sk);
 	hash ^= net_hash_mix(net);
 	hash = hash_32(hash, tcp_metrics_hash_log);
 
@@ -326,7 +336,7 @@ static struct tcp_metrics_block *tcp_get_metrics(struct sock *sk,
 	if (tm == TCP_METRICS_RECLAIM_PTR)
 		tm = NULL;
 	if (!tm && create)
-		tm = tcpm_new(dst, &saddr, &daddr, hash);
+		tm = tcpm_new(dst, net, &saddr, &daddr, hash);
 	else
 		tcpm_check_stamp(tm, dst);
 
@@ -485,18 +495,19 @@ void tcp_init_metrics(struct sock *sk)
 	}
 
 	if (tcp_metric_locked(tm, TCP_METRIC_CWND))
-		tp->snd_cwnd_clamp = tcp_metric_get(tm, TCP_METRIC_CWND);
+		tp->snd_cwnd_clamp = min(tcp_metric_get(tm, TCP_METRIC_CWND),
+					 TCP_MAX_SND_CWND);
 
 	val = READ_ONCE(net->ipv4.sysctl_tcp_no_ssthresh_metrics_save) ?
 	      0 : tcp_metric_get(tm, TCP_METRIC_SSTHRESH);
 	if (val) {
-		tp->snd_ssthresh = val;
+		WRITE_ONCE(tp->snd_ssthresh, val);
 		if (tp->snd_ssthresh > tp->snd_cwnd_clamp)
-			tp->snd_ssthresh = tp->snd_cwnd_clamp;
+			WRITE_ONCE(tp->snd_ssthresh, tp->snd_cwnd_clamp);
 	}
 	val = tcp_metric_get(tm, TCP_METRIC_REORDERING);
 	if (val && tp->reordering != val)
-		tp->reordering = val;
+		WRITE_ONCE(tp->reordering, val);
 
 	crtt = tcp_metric_get(tm, TCP_METRIC_RTT);
 	rcu_read_unlock();
@@ -617,8 +628,13 @@ static struct genl_family tcp_metrics_nl_family;
 
 static const struct nla_policy tcp_metrics_nl_policy[TCP_METRICS_ATTR_MAX + 1] = {
 	[TCP_METRICS_ATTR_ADDR_IPV4]	= { .type = NLA_U32, },
-	[TCP_METRICS_ATTR_ADDR_IPV6]	= { .type = NLA_BINARY,
-					    .len = sizeof(struct in6_addr), },
+	[TCP_METRICS_ATTR_ADDR_IPV6]	=
+		NLA_POLICY_EXACT_LEN(sizeof(struct in6_addr)),
+
+	[TCP_METRICS_ATTR_SADDR_IPV4]	= { .type = NLA_U32, },
+	[TCP_METRICS_ATTR_SADDR_IPV6]	=
+		NLA_POLICY_EXACT_LEN(sizeof(struct in6_addr)),
+
 	/* Following attributes are not received for GET/DEL,
 	 * we keep them for reference
 	 */
@@ -766,6 +782,7 @@ static int tcp_metrics_nl_dump(struct sk_buff *skb,
 	unsigned int max_rows = 1U << tcp_metrics_hash_log;
 	unsigned int row, s_row = cb->args[0];
 	int s_col = cb->args[1], col = s_col;
+	int res = 0;
 
 	for (row = s_row; row < max_rows; row++, s_col = 0) {
 		struct tcp_metrics_block *tm;
@@ -778,7 +795,8 @@ static int tcp_metrics_nl_dump(struct sk_buff *skb,
 				continue;
 			if (col < s_col)
 				continue;
-			if (tcp_metrics_dump_info(skb, cb, tm) < 0) {
+			res = tcp_metrics_dump_info(skb, cb, tm);
+			if (res < 0) {
 				rcu_read_unlock();
 				goto done;
 			}
@@ -789,7 +807,7 @@ static int tcp_metrics_nl_dump(struct sk_buff *skb,
 done:
 	cb->args[0] = row;
 	cb->args[1] = col;
-	return skb->len;
+	return res;
 }
 
 static int __parse_nl_addr(struct genl_info *info, struct inetpeer_addr *addr,
@@ -808,8 +826,6 @@ static int __parse_nl_addr(struct genl_info *info, struct inetpeer_addr *addr,
 	if (a) {
 		struct in6_addr in6;
 
-		if (nla_len(a) != sizeof(struct in6_addr))
-			return -EINVAL;
 		in6 = nla_get_in6_addr(a);
 		inetpeer_set_addr_v6(addr, &in6);
 		if (hash)
@@ -907,7 +923,7 @@ static void tcp_metrics_flush_all(struct net *net)
 		spin_lock_bh(&tcp_metrics_lock);
 		for (tm = deref_locked(*pp); tm; tm = deref_locked(*pp)) {
 			match = net ? net_eq(tm_net(tm), net) :
-				!refcount_read(&tm_net(tm)->ns.count);
+				!check_net(tm_net(tm));
 			if (match) {
 				rcu_assign_pointer(*pp, tm->tcpm_next);
 				kfree_rcu(tm, rcu_head);
@@ -986,6 +1002,7 @@ static struct genl_family tcp_metrics_nl_family __ro_after_init = {
 	.maxattr	= TCP_METRICS_ATTR_MAX,
 	.policy = tcp_metrics_nl_policy,
 	.netnsok	= true,
+	.parallel_ops	= true,
 	.module		= THIS_MODULE,
 	.small_ops	= tcp_metrics_nl_ops,
 	.n_small_ops	= ARRAY_SIZE(tcp_metrics_nl_ops),

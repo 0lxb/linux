@@ -18,7 +18,7 @@
 #include <linux/regmap.h>
 
 #define VERSION_ELEMENTS	3
-#define MAX_PCODE_NAME_LEN	7
+#define MAX_PCODE_NAME_LEN	16
 
 #define VERSION_SHIFT		28
 #define HW_INFO_INDEX		1
@@ -263,11 +263,11 @@ static int __init sti_cpufreq_init(void)
 
 	ddata.cpu = get_cpu_device(0);
 	if (!ddata.cpu) {
-		dev_err(ddata.cpu, "Failed to get device for CPU0\n");
+		pr_err("Failed to get device for CPU0\n");
 		goto skip_voltage_scaling;
 	}
 
-	if (!of_get_property(ddata.cpu->of_node, "operating-points-v2", NULL)) {
+	if (!of_property_present(ddata.cpu->of_node, "operating-points-v2")) {
 		dev_err(ddata.cpu, "OPP-v2 not supported\n");
 		goto skip_voltage_scaling;
 	}
@@ -281,7 +281,7 @@ static int __init sti_cpufreq_init(void)
 		goto register_cpufreq_dt;
 
 skip_voltage_scaling:
-	dev_err(ddata.cpu, "Not doing voltage scaling\n");
+	pr_err("Not doing voltage scaling\n");
 
 register_cpufreq_dt:
 	platform_device_register_simple("cpufreq-dt", -1, NULL, 0);
@@ -293,6 +293,7 @@ module_init(sti_cpufreq_init);
 static const struct of_device_id __maybe_unused sti_cpufreq_of_match[] = {
 	{ .compatible = "st,stih407" },
 	{ .compatible = "st,stih410" },
+	{ .compatible = "st,stih418" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, sti_cpufreq_of_match);

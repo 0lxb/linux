@@ -10,14 +10,11 @@
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
 #include "ultrasoc-smb.h"
-
-DEFINE_CORESIGHT_DEVLIST(sink_devs, "ultra_smb");
 
 #define ULTRASOC_SMB_DSM_UUID	"82ae1283-7f6a-4cbe-aa06-53e8fb24db18"
 
@@ -98,12 +95,12 @@ static int smb_open(struct inode *inode, struct file *file)
 	struct smb_drv_data *drvdata = container_of(file->private_data,
 					struct smb_drv_data, miscdev);
 
-	guard(spinlock)(&drvdata->spinlock);
+	guard(raw_spinlock)(&drvdata->spinlock);
 
 	if (drvdata->reading)
 		return -EBUSY;
 
-	if (atomic_read(&drvdata->csdev->refcnt))
+	if (drvdata->csdev->refcnt)
 		return -EBUSY;
 
 	smb_update_data_size(drvdata);
@@ -152,7 +149,7 @@ static int smb_release(struct inode *inode, struct file *file)
 	struct smb_drv_data *drvdata = container_of(file->private_data,
 					struct smb_drv_data, miscdev);
 
-	guard(spinlock)(&drvdata->spinlock);
+	guard(raw_spinlock)(&drvdata->spinlock);
 	drvdata->reading = false;
 
 	return 0;
@@ -163,7 +160,6 @@ static const struct file_operations smb_fops = {
 	.open		= smb_open,
 	.read		= smb_read,
 	.release	= smb_release,
-	.llseek		= no_llseek,
 };
 
 static ssize_t buf_size_show(struct device *dev, struct device_attribute *attr,
@@ -207,17 +203,18 @@ static void smb_enable_sysfs(struct coresight_device *csdev)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 
-	if (drvdata->mode != CS_MODE_DISABLED)
+	if (coresight_get_mode(csdev) != CS_MODE_DISABLED)
 		return;
 
 	smb_enable_hw(drvdata);
-	drvdata->mode = CS_MODE_SYSFS;
+	coresight_set_mode(csdev, CS_MODE_SYSFS);
 }
 
-static int smb_enable_perf(struct coresight_device *csdev, void *data)
+static int smb_enable_perf(struct coresight_device *csdev,
+			   struct coresight_path *path)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
-	struct perf_output_handle *handle = data;
+	struct perf_output_handle *handle = path->handle;
 	struct cs_buffers *buf = etm_perf_sink_config(handle);
 	pid_t pid;
 
@@ -234,26 +231,27 @@ static int smb_enable_perf(struct coresight_device *csdev, void *data)
 	if (drvdata->pid == -1) {
 		smb_enable_hw(drvdata);
 		drvdata->pid = pid;
-		drvdata->mode = CS_MODE_PERF;
+		coresight_set_mode(csdev, CS_MODE_PERF);
 	}
 
 	return 0;
 }
 
 static int smb_enable(struct coresight_device *csdev, enum cs_mode mode,
-		      void *data)
+		      struct coresight_path *path)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 	int ret = 0;
 
-	guard(spinlock)(&drvdata->spinlock);
+	guard(raw_spinlock)(&drvdata->spinlock);
 
 	/* Do nothing, the trace data is reading by other interface now */
 	if (drvdata->reading)
 		return -EBUSY;
 
 	/* Do nothing, the SMB is already enabled as other mode */
-	if (drvdata->mode != CS_MODE_DISABLED && drvdata->mode != mode)
+	if (coresight_get_mode(csdev) != CS_MODE_DISABLED &&
+	    coresight_get_mode(csdev) != mode)
 		return -EBUSY;
 
 	switch (mode) {
@@ -261,7 +259,7 @@ static int smb_enable(struct coresight_device *csdev, enum cs_mode mode,
 		smb_enable_sysfs(csdev);
 		break;
 	case CS_MODE_PERF:
-		ret = smb_enable_perf(csdev, data);
+		ret = smb_enable_perf(csdev, path);
 		break;
 	default:
 		ret = -EINVAL;
@@ -270,7 +268,7 @@ static int smb_enable(struct coresight_device *csdev, enum cs_mode mode,
 	if (ret)
 		return ret;
 
-	atomic_inc(&csdev->refcnt);
+	csdev->refcnt++;
 	dev_dbg(&csdev->dev, "Ultrasoc SMB enabled\n");
 
 	return ret;
@@ -280,22 +278,23 @@ static int smb_disable(struct coresight_device *csdev)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 
-	guard(spinlock)(&drvdata->spinlock);
+	guard(raw_spinlock)(&drvdata->spinlock);
 
 	if (drvdata->reading)
 		return -EBUSY;
 
-	if (atomic_dec_return(&csdev->refcnt))
+	csdev->refcnt--;
+	if (csdev->refcnt)
 		return -EBUSY;
 
 	/* Complain if we (somehow) got out of sync */
-	WARN_ON_ONCE(drvdata->mode == CS_MODE_DISABLED);
+	WARN_ON_ONCE(coresight_get_mode(csdev) == CS_MODE_DISABLED);
 
 	smb_disable_hw(drvdata);
 
 	/* Dissociate from the target process. */
 	drvdata->pid = -1;
-	drvdata->mode = CS_MODE_DISABLED;
+	coresight_set_mode(csdev, CS_MODE_DISABLED);
 	dev_dbg(&csdev->dev, "Ultrasoc SMB disabled\n");
 
 	return 0;
@@ -337,6 +336,7 @@ static void smb_sync_perf_buffer(struct smb_drv_data *drvdata,
 	unsigned long to_copy;
 	long pg_idx, pg_offset;
 
+	head %= (unsigned long)buf->nr_pages << PAGE_SHIFT;
 	pg_idx = head >> PAGE_SHIFT;
 	pg_offset = head & (PAGE_SIZE - 1);
 
@@ -377,10 +377,10 @@ static unsigned long smb_update_buffer(struct coresight_device *csdev,
 	if (!buf)
 		return 0;
 
-	guard(spinlock)(&drvdata->spinlock);
+	guard(raw_spinlock)(&drvdata->spinlock);
 
 	/* Don't do anything if another tracer is using this sink. */
-	if (atomic_read(&csdev->refcnt) != 1)
+	if (csdev->refcnt != 1)
 		return 0;
 
 	smb_disable_hw(drvdata);
@@ -476,7 +476,7 @@ static int smb_register_sink(struct platform_device *pdev,
 	desc.pdata = pdata;
 	desc.dev = &pdev->dev;
 	desc.groups = smb_sink_groups;
-	desc.name = coresight_alloc_device_name(&sink_devs, &pdev->dev);
+	desc.name = coresight_alloc_device_name("ultra_smb", &pdev->dev);
 	if (!desc.name) {
 		dev_err(&pdev->dev, "Failed to alloc coresight device name");
 		return -ENOMEM;
@@ -538,7 +538,7 @@ static int smb_probe(struct platform_device *pdev)
 	struct smb_drv_data *drvdata;
 	int ret;
 
-	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(dev, *drvdata);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -562,7 +562,7 @@ static int smb_probe(struct platform_device *pdev)
 
 	smb_reset_buffer(drvdata);
 	platform_set_drvdata(pdev, drvdata);
-	spin_lock_init(&drvdata->spinlock);
+	raw_spin_lock_init(&drvdata->spinlock);
 	drvdata->pid = -1;
 
 	ret = smb_register_sink(pdev, drvdata);
@@ -586,7 +586,7 @@ static void smb_remove(struct platform_device *pdev)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id ultrasoc_smb_acpi_match[] = {
-	{"HISI03A1", 0},
+	{"HISI03A1", 0, 0, 0},
 	{}
 };
 MODULE_DEVICE_TABLE(acpi, ultrasoc_smb_acpi_match);
@@ -599,7 +599,7 @@ static struct platform_driver smb_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = smb_probe,
-	.remove_new = smb_remove,
+	.remove = smb_remove,
 };
 module_platform_driver(smb_driver);
 

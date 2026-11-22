@@ -20,6 +20,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/slab.h>
@@ -105,7 +106,9 @@ static int pwm_imx_tpm_round_state(struct pwm_chip *chip,
 	p->prescale = prescale;
 
 	period_count = (clock_unit + ((1 << prescale) >> 1)) >> prescale;
-	p->mod = period_count;
+	if (period_count == 0)
+		return -EINVAL;
+	p->mod = period_count - 1;
 
 	/* calculate real period HW can support */
 	tmp = (u64)period_count << prescale;
@@ -201,6 +204,15 @@ static int pwm_imx_tpm_apply_hw(struct pwm_chip *chip,
 		val |= FIELD_PREP(PWM_IMX_TPM_SC_PS, p->prescale);
 		writel(val, tpm->base + PWM_IMX_TPM_SC);
 
+		/*
+		 * if the counter is disabled (CMOD == 0), programming the new
+		 * period length (MOD) will not reset the counter (CNT). If
+		 * CNT.COUNT happens to be bigger than the new MOD value then
+		 * the counter will end up being reset way too late. Therefore,
+		 * manually reset it to 0.
+		 */
+		if (!cmod)
+			writel(0x0, tpm->base + PWM_IMX_TPM_CNT);
 		/*
 		 * set period count:
 		 * if the PWM is disabled (CMOD[1:0] = 2b00), then MOD register
@@ -340,7 +352,7 @@ static int pwm_imx_tpm_probe(struct platform_device *pdev)
 	struct clk *clk;
 	void __iomem *base;
 	int ret;
-	unsigned int npwm;
+	unsigned int i, npwm;
 	u32 val;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
@@ -370,6 +382,13 @@ static int pwm_imx_tpm_probe(struct platform_device *pdev)
 
 	mutex_init(&tpm->lock);
 
+	/* count the enabled channels */
+	for (i = 0; i < npwm; ++i) {
+		val = readl(base + PWM_IMX_TPM_CnSC(i));
+		if (FIELD_GET(PWM_IMX_TPM_CnSC_ELS, val))
+			++tpm->enable_count;
+	}
+
 	ret = devm_pwmchip_add(&pdev->dev, chip);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "failed to add PWM chip\n");
@@ -380,6 +399,7 @@ static int pwm_imx_tpm_probe(struct platform_device *pdev)
 static int pwm_imx_tpm_suspend(struct device *dev)
 {
 	struct imx_tpm_pwm_chip *tpm = dev_get_drvdata(dev);
+	int ret;
 
 	if (tpm->enable_count > 0)
 		return -EBUSY;
@@ -393,7 +413,11 @@ static int pwm_imx_tpm_suspend(struct device *dev)
 
 	clk_disable_unprepare(tpm->clk);
 
-	return 0;
+	ret = pinctrl_pm_select_sleep_state(dev);
+	if (ret)
+		clk_prepare_enable(tpm->clk);
+
+	return ret;
 }
 
 static int pwm_imx_tpm_resume(struct device *dev)
@@ -401,9 +425,15 @@ static int pwm_imx_tpm_resume(struct device *dev)
 	struct imx_tpm_pwm_chip *tpm = dev_get_drvdata(dev);
 	int ret = 0;
 
-	ret = clk_prepare_enable(tpm->clk);
+	ret = pinctrl_pm_select_default_state(dev);
 	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(tpm->clk);
+	if (ret) {
 		dev_err(dev, "failed to prepare or enable clock: %d\n", ret);
+		pinctrl_pm_select_sleep_state(dev);
+	}
 
 	return ret;
 }
@@ -412,7 +442,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(imx_tpm_pwm_pm,
 				pwm_imx_tpm_suspend, pwm_imx_tpm_resume);
 
 static const struct of_device_id imx_tpm_pwm_dt_ids[] = {
-	{ .compatible = "fsl,imx7ulp-pwm", },
+	{ .compatible = "fsl,imx7ulp-pwm" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imx_tpm_pwm_dt_ids);

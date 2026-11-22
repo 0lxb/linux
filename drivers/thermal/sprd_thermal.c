@@ -178,7 +178,7 @@ static int sprd_thm_sensor_calibration(struct device_node *np,
 static int sprd_thm_rawdata_to_temp(struct sprd_thermal_sensor *sen,
 				    u32 rawdata)
 {
-	clamp(rawdata, (u32)SPRD_THM_RAW_DATA_LOW, (u32)SPRD_THM_RAW_DATA_HIGH);
+	rawdata = clamp(rawdata, SPRD_THM_RAW_DATA_LOW, SPRD_THM_RAW_DATA_HIGH);
 
 	/*
 	 * According to the thermal datasheet, the formula of converting
@@ -192,7 +192,7 @@ static int sprd_thm_temp_to_rawdata(int temp, struct sprd_thermal_sensor *sen)
 {
 	u32 val;
 
-	clamp(temp, (int)SPRD_THM_TEMP_LOW, (int)SPRD_THM_TEMP_HIGH);
+	temp = clamp(temp, SPRD_THM_TEMP_LOW, SPRD_THM_TEMP_HIGH);
 
 	/*
 	 * According to the thermal datasheet, the formula of converting
@@ -201,7 +201,7 @@ static int sprd_thm_temp_to_rawdata(int temp, struct sprd_thermal_sensor *sen)
 	 */
 	val = (temp + sen->cal_offset) / sen->cal_slope;
 
-	return clamp(val, val, (u32)(SPRD_THM_RAW_DATA_HIGH - 1));
+	return min(val, SPRD_THM_RAW_DATA_HIGH - 1);
 }
 
 static int sprd_thm_read_temp(struct thermal_zone_device *tz, int *temp)
@@ -344,7 +344,7 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	thm = devm_kzalloc(&pdev->dev, sizeof(*thm), GFP_KERNEL);
+	thm = devm_kzalloc_obj(&pdev->dev, *thm);
 	if (!thm)
 		return -ENOMEM;
 
@@ -359,21 +359,17 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	thm->clk = devm_clk_get(&pdev->dev, "enable");
+	thm->clk = devm_clk_get_enabled(&pdev->dev, "enable");
 	if (IS_ERR(thm->clk)) {
 		dev_err(&pdev->dev, "failed to get enable clock\n");
 		return PTR_ERR(thm->clk);
 	}
 
-	ret = clk_prepare_enable(thm->clk);
-	if (ret)
-		return ret;
-
 	sprd_thm_para_config(thm);
 
 	ret = sprd_thm_cal_read(np, "thm_sign_cal", &val);
 	if (ret)
-		goto disable_clk;
+		return ret;
 
 	if (val > 0)
 		thm->ratio_sign = -1;
@@ -382,10 +378,10 @@ static int sprd_thm_probe(struct platform_device *pdev)
 
 	ret = sprd_thm_cal_read(np, "thm_ratio_cal", &thm->ratio_off);
 	if (ret)
-		goto disable_clk;
+		return ret;
 
 	for_each_child_of_node(np, sen_child) {
-		sen = devm_kzalloc(&pdev->dev, sizeof(*sen), GFP_KERNEL);
+		sen = devm_kzalloc_obj(&pdev->dev, *sen);
 		if (!sen) {
 			ret = -ENOMEM;
 			goto of_put;
@@ -397,6 +393,12 @@ static int sprd_thm_probe(struct platform_device *pdev)
 		ret = of_property_read_u32(sen_child, "reg", &sen->id);
 		if (ret) {
 			dev_err(&pdev->dev, "get sensor reg failed");
+			goto of_put;
+		}
+
+		if (sen->id < 0 || sen->id >= SPRD_THM_MAX_SENSOR) {
+			dev_err(&pdev->dev, "invalid sensor id %d\n", sen->id);
+			ret = -EINVAL;
 			goto of_put;
 		}
 
@@ -439,8 +441,6 @@ static int sprd_thm_probe(struct platform_device *pdev)
 
 of_put:
 	of_node_put(sen_child);
-disable_clk:
-	clk_disable_unprepare(thm->clk);
 	return ret;
 }
 
@@ -526,8 +526,6 @@ static void sprd_thm_remove(struct platform_device *pdev)
 		devm_thermal_of_zone_unregister(&pdev->dev,
 						thm->sensor[i]->tzd);
 	}
-
-	clk_disable_unprepare(thm->clk);
 }
 
 static const struct of_device_id sprd_thermal_of_match[] = {
@@ -542,7 +540,7 @@ static const struct dev_pm_ops sprd_thermal_pm_ops = {
 
 static struct platform_driver sprd_thermal_driver = {
 	.probe = sprd_thm_probe,
-	.remove_new = sprd_thm_remove,
+	.remove = sprd_thm_remove,
 	.driver = {
 		.name = "sprd-thermal",
 		.pm = &sprd_thermal_pm_ops,

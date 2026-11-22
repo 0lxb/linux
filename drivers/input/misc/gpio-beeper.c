@@ -63,7 +63,7 @@ static int gpio_beeper_probe(struct platform_device *pdev)
 	struct gpio_beeper *beep;
 	struct input_dev *input;
 
-	beep = devm_kzalloc(&pdev->dev, sizeof(*beep), GFP_KERNEL);
+	beep = devm_kzalloc_obj(&pdev->dev, *beep);
 	if (!beep)
 		return -ENOMEM;
 
@@ -94,7 +94,7 @@ static int gpio_beeper_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_OF
 static const struct of_device_id gpio_beeper_of_match[] = {
-	{ .compatible = BEEPER_MODNAME, },
+	{ .compatible = "gpio-beeper", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gpio_beeper_of_match);

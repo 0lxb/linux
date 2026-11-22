@@ -11,12 +11,12 @@ TRACE_EVENT(tegra_dma_tx_status,
 	TP_PROTO(struct dma_chan *dc, dma_cookie_t cookie, struct dma_tx_state *state),
 	TP_ARGS(dc, cookie, state),
 	TP_STRUCT__entry(
-		__string(chan,	dev_name(&dc->dev->device))
+		__string(chan,	dma_chan_name(dc))
 		__field(dma_cookie_t, cookie)
 		__field(__u32,	residue)
 	),
 	TP_fast_assign(
-		__assign_str(chan, dev_name(&dc->dev->device));
+		__assign_str(chan);
 		__entry->cookie = cookie;
 		__entry->residue = state ? state->residue : (u32)-1;
 	),
@@ -28,12 +28,12 @@ TRACE_EVENT(tegra_dma_complete_cb,
 	TP_PROTO(struct dma_chan *dc, int count, void *ptr),
 	TP_ARGS(dc, count, ptr),
 	TP_STRUCT__entry(
-		__string(chan,	dev_name(&dc->dev->device))
+		__string(chan,	dma_chan_name(dc))
 		__field(int,	count)
 		__field(void *,	ptr)
 		),
 	TP_fast_assign(
-		__assign_str(chan, dev_name(&dc->dev->device));
+		__assign_str(chan);
 		__entry->count = count;
 		__entry->ptr = ptr;
 		),
@@ -45,11 +45,11 @@ TRACE_EVENT(tegra_dma_isr,
 	TP_PROTO(struct dma_chan *dc, int irq),
 	TP_ARGS(dc, irq),
 	TP_STRUCT__entry(
-		__string(chan,	dev_name(&dc->dev->device))
+		__string(chan,	dma_chan_name(dc))
 		__field(int,	irq)
 	),
 	TP_fast_assign(
-		__assign_str(chan, dev_name(&dc->dev->device));
+		__assign_str(chan);
 		__entry->irq = irq;
 	),
 	TP_printk("%s: irq %d\n",  __get_str(chan), __entry->irq)

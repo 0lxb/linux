@@ -6,8 +6,7 @@
  * Author(s): Sebastian Ott <sebott@linux.vnet.ibm.com>
  */
 
-#define KMSG_COMPONENT "scm_block"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+#define pr_fmt(fmt) "scm_block: " fmt
 
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
@@ -78,8 +77,7 @@ static int __scm_alloc_rq(void)
 	if (!scmrq->aob)
 		goto free;
 
-	scmrq->request = kcalloc(nr_requests_per_io, sizeof(scmrq->request[0]),
-				 GFP_KERNEL);
+	scmrq->request = kzalloc_objs(scmrq->request[0], nr_requests_per_io);
 	if (!scmrq->request)
 		goto free;
 
@@ -131,7 +129,7 @@ static void scm_request_done(struct scm_request *scmrq)
 
 	for (i = 0; i < nr_requests_per_io && scmrq->request[i]; i++) {
 		msb = &scmrq->aob->msb[i];
-		aidaw = (u64)phys_to_virt(msb->data_addr);
+		aidaw = (u64)dma64_to_virt(msb->data_addr);
 
 		if ((msb->flags & MSB_FLAG_IDA) && aidaw &&
 		    IS_ALIGNED(aidaw, PAGE_SIZE))
@@ -196,12 +194,12 @@ static int scm_request_prepare(struct scm_request *scmrq)
 	msb->scm_addr = scmdev->address + ((u64) blk_rq_pos(req) << 9);
 	msb->oc = (rq_data_dir(req) == READ) ? MSB_OC_READ : MSB_OC_WRITE;
 	msb->flags |= MSB_FLAG_IDA;
-	msb->data_addr = (u64)virt_to_phys(aidaw);
+	msb->data_addr = virt_to_dma64(aidaw);
 
 	rq_for_each_segment(bv, req, iter) {
 		WARN_ON(bv.bv_offset);
 		msb->blk_count += bv.bv_len >> 12;
-		aidaw->data_addr = virt_to_phys(page_address(bv.bv_page));
+		aidaw->data_addr = virt_to_dma64(page_address(bv.bv_page));
 		aidaw++;
 	}
 
@@ -332,7 +330,7 @@ static blk_status_t scm_blk_request(struct blk_mq_hw_ctx *hctx,
 static int scm_blk_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
 			     unsigned int idx)
 {
-	struct scm_queue *qd = kzalloc(sizeof(*qd), GFP_KERNEL);
+	struct scm_queue *qd = kzalloc_obj(*qd);
 
 	if (!qd)
 		return -ENOMEM;
@@ -439,7 +437,6 @@ int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 		.logical_block_size	= 1 << 12,
 	};
 	unsigned int devindex;
-	struct request_queue *rq;
 	int len, ret;
 
 	lim.max_segments = min(scmdev->nr_max_block,
@@ -462,7 +459,6 @@ int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 	bdev->tag_set.cmd_size = sizeof(blk_status_t);
 	bdev->tag_set.nr_hw_queues = nr_requests;
 	bdev->tag_set.queue_depth = nr_requests_per_io * nr_requests;
-	bdev->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
 	bdev->tag_set.numa_node = NUMA_NO_NODE;
 
 	ret = blk_mq_alloc_tag_set(&bdev->tag_set);
@@ -474,10 +470,6 @@ int scm_blk_dev_setup(struct scm_blk_dev *bdev, struct scm_device *scmdev)
 		ret = PTR_ERR(bdev->gendisk);
 		goto out_tag;
 	}
-	rq = bdev->rq = bdev->gendisk->queue;
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, rq);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, rq);
-
 	bdev->gendisk->private_data = scmdev;
 	bdev->gendisk->fops = &scm_blk_devops;
 	bdev->gendisk->major = scm_major;

@@ -197,7 +197,7 @@ out:
  * Actually probing is superfluous but we're paranoid.
  */
 
-int xtsonic_probe(struct platform_device *pdev)
+static int xtsonic_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct sonic_local *lp;
@@ -264,7 +264,7 @@ static void xtsonic_device_remove(struct platform_device *pdev)
 
 static struct platform_driver xtsonic_driver = {
 	.probe = xtsonic_probe,
-	.remove_new = xtsonic_device_remove,
+	.remove = xtsonic_device_remove,
 	.driver = {
 		.name = xtsonic_string,
 	},

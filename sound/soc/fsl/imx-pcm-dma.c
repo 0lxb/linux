@@ -38,8 +38,7 @@ int imx_pcm_dma_init(struct platform_device *pdev)
 {
 	struct snd_dmaengine_pcm_config *config;
 
-	config = devm_kzalloc(&pdev->dev,
-			sizeof(struct snd_dmaengine_pcm_config), GFP_KERNEL);
+	config = devm_kzalloc_obj(&pdev->dev, struct snd_dmaengine_pcm_config);
 	if (!config)
 		return -ENOMEM;
 	*config = imx_dmaengine_pcm_config;
@@ -50,4 +49,5 @@ int imx_pcm_dma_init(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(imx_pcm_dma_init);
 
+MODULE_DESCRIPTION("Freescale i.MX PCM DMA interface");
 MODULE_LICENSE("GPL");

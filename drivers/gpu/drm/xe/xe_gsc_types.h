@@ -13,6 +13,7 @@
 #include <linux/workqueue.h>
 
 #include "xe_uc_fw_types.h"
+#include "xe_device_types.h"
 
 struct xe_bo;
 struct xe_exec_queue;
@@ -47,6 +48,7 @@ struct xe_gsc {
 	u32 work_actions;
 #define GSC_ACTION_FW_LOAD BIT(0)
 #define GSC_ACTION_SW_PROXY BIT(1)
+#define GSC_ACTION_ER_COMPLETE BIT(2)
 
 	/** @proxy: sub-structure containing the SW proxy-related variables */
 	struct {
@@ -56,6 +58,8 @@ struct xe_gsc {
 		struct mutex mutex;
 		/** @proxy.component_added: whether the component has been added */
 		bool component_added;
+		/** @proxy.started: whether the proxy has been started */
+		bool started;
 		/** @proxy.bo: object to store message to and from the GSC */
 		struct xe_bo *bo;
 		/** @proxy.to_gsc: map of the memory used to send messages to the GSC */

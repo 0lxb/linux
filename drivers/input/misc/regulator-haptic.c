@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
 
@@ -44,7 +45,7 @@ static int regulator_haptic_toggle(struct regulator_haptic *haptic, bool on)
 		if (error) {
 			dev_err(haptic->dev,
 				"failed to switch regulator %s: %d\n",
-				on ? "on" : "off", error);
+				str_on_off(on), error);
 			return error;
 		}
 
@@ -83,12 +84,10 @@ static void regulator_haptic_work(struct work_struct *work)
 	struct regulator_haptic *haptic = container_of(work,
 					struct regulator_haptic, work);
 
-	mutex_lock(&haptic->mutex);
+	guard(mutex)(&haptic->mutex);
 
 	if (!haptic->suspended)
 		regulator_haptic_set_voltage(haptic, haptic->magnitude);
-
-	mutex_unlock(&haptic->mutex);
 }
 
 static int regulator_haptic_play_effect(struct input_dev *input, void *data,
@@ -147,7 +146,7 @@ static int regulator_haptic_probe(struct platform_device *pdev)
 	struct input_dev *input_dev;
 	int error;
 
-	haptic = devm_kzalloc(&pdev->dev, sizeof(*haptic), GFP_KERNEL);
+	haptic = devm_kzalloc_obj(&pdev->dev, *haptic);
 	if (!haptic)
 		return -ENOMEM;
 
@@ -180,7 +179,6 @@ static int regulator_haptic_probe(struct platform_device *pdev)
 
 	haptic->input_dev = input_dev;
 	haptic->input_dev->name = "regulator-haptic";
-	haptic->input_dev->dev.parent = &pdev->dev;
 	haptic->input_dev->close = regulator_haptic_close;
 	input_set_drvdata(haptic->input_dev, haptic);
 	input_set_capability(haptic->input_dev, EV_FF, FF_RUMBLE);
@@ -205,19 +203,15 @@ static int regulator_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
-	int error;
 
-	error = mutex_lock_interruptible(&haptic->mutex);
-	if (error)
-		return error;
+	scoped_guard(mutex_intr, &haptic->mutex) {
+		regulator_haptic_set_voltage(haptic, 0);
+		haptic->suspended = true;
 
-	regulator_haptic_set_voltage(haptic, 0);
+		return 0;
+	}
 
-	haptic->suspended = true;
-
-	mutex_unlock(&haptic->mutex);
-
-	return 0;
+	return -EINTR;
 }
 
 static int regulator_haptic_resume(struct device *dev)
@@ -226,15 +220,13 @@ static int regulator_haptic_resume(struct device *dev)
 	struct regulator_haptic *haptic = platform_get_drvdata(pdev);
 	unsigned int magnitude;
 
-	mutex_lock(&haptic->mutex);
+	guard(mutex)(&haptic->mutex);
 
 	haptic->suspended = false;
 
 	magnitude = READ_ONCE(haptic->magnitude);
 	if (magnitude)
 		regulator_haptic_set_voltage(haptic, magnitude);
-
-	mutex_unlock(&haptic->mutex);
 
 	return 0;
 }

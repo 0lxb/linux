@@ -66,7 +66,6 @@ static void adc_keys_poll(struct input_dev *input)
 static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 {
 	struct adc_keys_button *map;
-	struct fwnode_handle *child;
 	int i;
 
 	st->num_keys = device_get_child_node_count(dev);
@@ -75,16 +74,15 @@ static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 		return -EINVAL;
 	}
 
-	map = devm_kmalloc_array(dev, st->num_keys, sizeof(*map), GFP_KERNEL);
+	map = devm_kmalloc_objs(dev, *map, st->num_keys);
 	if (!map)
 		return -ENOMEM;
 
 	i = 0;
-	device_for_each_child_node(dev, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		if (fwnode_property_read_u32(child, "press-threshold-microvolt",
 					     &map[i].voltage)) {
 			dev_err(dev, "Key with invalid or missing voltage\n");
-			fwnode_handle_put(child);
 			return -EINVAL;
 		}
 		map[i].voltage /= 1000;
@@ -92,7 +90,6 @@ static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 		if (fwnode_property_read_u32(child, "linux,code",
 					     &map[i].keycode)) {
 			dev_err(dev, "Key with invalid or missing linux,code\n");
-			fwnode_handle_put(child);
 			return -EINVAL;
 		}
 
@@ -112,7 +109,7 @@ static int adc_keys_probe(struct platform_device *pdev)
 	int i, value;
 	int error;
 
-	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	st = devm_kzalloc_obj(dev, *st);
 	if (!st)
 		return -ENOMEM;
 
@@ -205,3 +202,4 @@ module_platform_driver(adc_keys_driver);
 MODULE_AUTHOR("Alexandre Belloni <alexandre.belloni@free-electrons.com>");
 MODULE_DESCRIPTION("Input driver for resistor ladder connected on ADC");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS("IIO_CONSUMER");

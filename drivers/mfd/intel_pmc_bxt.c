@@ -23,8 +23,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/itco_wdt.h>
-
-#include <asm/intel_scu_ipc.h>
+#include <linux/platform_data/x86/intel_scu_ipc.h>
 
 /* Residency with clock rate at 19.2MHz to usecs */
 #define S0IX_RESIDENCY_IN_USECS(d, s)		\
@@ -426,7 +425,7 @@ static int intel_pmc_probe(struct platform_device *pdev)
 	struct intel_pmc_dev *pmc;
 	int ret;
 
-	pmc = devm_kzalloc(&pdev->dev, sizeof(*pmc), GFP_KERNEL);
+	pmc = devm_kzalloc_obj(&pdev->dev, *pmc);
 	if (!pmc)
 		return -ENOMEM;
 

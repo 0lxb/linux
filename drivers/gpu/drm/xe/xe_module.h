@@ -8,19 +8,29 @@
 
 #include <linux/types.h>
 
+struct work_struct;
+
 /* Module modprobe variables */
 struct xe_modparam {
-	bool force_execlist;
-	bool enable_display;
-	u32 force_vram_bar_size;
+	bool probe_display;
+	int force_vram_bar_size;
 	int guc_log_level;
 	char *guc_firmware_path;
 	char *huc_firmware_path;
 	char *gsc_firmware_path;
 	char *force_probe;
+#ifdef CONFIG_PCI_IOV
+	unsigned int max_vfs;
+#endif
+	unsigned int wedged_mode;
+	unsigned int num_pf_work;
+	u32 svm_notifier_size;
 };
 
 extern struct xe_modparam xe_modparam;
+
+bool xe_destroy_wq_queue(struct work_struct *work);
+void xe_destroy_wq_flush(void);
 
 #endif
 

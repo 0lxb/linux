@@ -247,7 +247,7 @@ static int cti_plat_read_trig_group(struct cti_trig_grp *tgrp,
 	if (!tgrp->nr_sigs)
 		return 0;
 
-	values = kcalloc(tgrp->nr_sigs, sizeof(u32), GFP_KERNEL);
+	values = kzalloc_objs(u32, tgrp->nr_sigs);
 	if (!values)
 		return -ENOMEM;
 
@@ -283,7 +283,7 @@ static int cti_plat_read_trig_types(struct cti_trig_grp *tgrp,
 
 	/* need an array to store the values iff there are any */
 	if (items) {
-		values = kcalloc(items, sizeof(u32), GFP_KERNEL);
+		values = kzalloc_objs(u32, items);
 		if (!values)
 			return -ENOMEM;
 
@@ -325,10 +325,11 @@ static int cti_plat_process_filter_sigs(struct cti_drvdata *drvdata,
 	if (nr_filter_sigs > drvdata->config.nr_trig_max)
 		return -EINVAL;
 
-	tg = kzalloc(sizeof(*tg), GFP_KERNEL);
+	tg = kzalloc_obj(*tg);
 	if (!tg)
 		return -ENOMEM;
 
+	tg->nr_sigs = nr_filter_sigs;
 	err = cti_plat_read_trig_group(tg, fwnode, CTI_DT_FILTER_OUT_SIGS);
 	if (!err)
 		drvdata->config.trig_out_filter |= tg->used_mask;
@@ -416,20 +417,16 @@ static int cti_plat_create_impdef_connections(struct device *dev,
 					      struct cti_drvdata *drvdata)
 {
 	int rc = 0;
-	struct fwnode_handle *fwnode = dev_fwnode(dev);
-	struct fwnode_handle *child = NULL;
 
-	if (IS_ERR_OR_NULL(fwnode))
+	if (IS_ERR_OR_NULL(dev_fwnode(dev)))
 		return -EINVAL;
 
-	fwnode_for_each_child_node(fwnode, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		if (cti_plat_node_name_eq(child, CTI_DT_CONNS))
-			rc = cti_plat_create_connection(dev, drvdata,
-							child);
+			rc = cti_plat_create_connection(dev, drvdata, child);
 		if (rc != 0)
 			break;
 	}
-	fwnode_handle_put(child);
 
 	return rc;
 }
@@ -474,7 +471,7 @@ coresight_cti_get_platform_data(struct device *dev)
 	 * empty struct enables us to use the standard coresight component
 	 * registration code.
 	 */
-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(dev, *pdata);
 	if (!pdata) {
 		ret = -ENOMEM;
 		goto error;

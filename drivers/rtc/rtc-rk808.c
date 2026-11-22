@@ -381,7 +381,7 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 	struct rk808_rtc *rk808_rtc;
 	int ret;
 
-	rk808_rtc = devm_kzalloc(&pdev->dev, sizeof(*rk808_rtc), GFP_KERNEL);
+	rk808_rtc = devm_kzalloc_obj(&pdev->dev, *rk808_rtc);
 	if (rk808_rtc == NULL)
 		return -ENOMEM;
 
@@ -418,7 +418,7 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	rk808_rtc->rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(rk808_rtc->rtc))

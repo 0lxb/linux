@@ -745,7 +745,7 @@ static int __init dryice_rtc_probe(struct platform_device *pdev)
 	int norm_irq, sec_irq;
 	int rc;
 
-	imxdi = devm_kzalloc(&pdev->dev, sizeof(*imxdi), GFP_KERNEL);
+	imxdi = devm_kzalloc_obj(&pdev->dev, *imxdi);
 	if (!imxdi)
 		return -ENOMEM;
 
@@ -860,7 +860,7 @@ static struct platform_driver dryice_rtc_driver __refdata = {
 		   .name = "imxdi_rtc",
 		   .of_match_table = dryice_dt_ids,
 		   },
-	.remove_new = __exit_p(dryice_rtc_remove),
+	.remove = __exit_p(dryice_rtc_remove),
 };
 
 module_platform_driver_probe(dryice_rtc_driver, dryice_rtc_probe);

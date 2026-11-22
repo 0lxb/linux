@@ -192,7 +192,7 @@ static int phy_probe(struct platform_device *pdev)
 	struct tca_apb *ta;
 	int i;
 
-	ta = devm_kzalloc(dev, sizeof(*ta), GFP_KERNEL);
+	ta = devm_kzalloc_obj(dev, *ta);
 	if (!ta)
 		return -ENOMEM;
 
@@ -271,7 +271,7 @@ static struct platform_driver lgm_phy_driver = {
 		.of_match_table = intel_usb_phy_dt_ids,
 	},
 	.probe = phy_probe,
-	.remove_new = phy_remove,
+	.remove = phy_remove,
 };
 
 module_platform_driver(lgm_phy_driver);

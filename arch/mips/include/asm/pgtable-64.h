@@ -147,22 +147,9 @@
 #if defined(CONFIG_MODULES) && defined(KBUILD_64BIT_SYM32) && \
 	VMALLOC_START != CKSSEG
 /* Load modules into 32bit-compatible segment. */
-#define MODULE_START	CKSSEG
-#define MODULE_END	(FIXADDR_START-2*PAGE_SIZE)
+#define MODULES_VADDR	CKSSEG
+#define MODULES_END	(FIXADDR_START-2*PAGE_SIZE)
 #endif
-
-#define pte_ERROR(e) \
-	printk("%s:%d: bad pte %016lx.\n", __FILE__, __LINE__, pte_val(e))
-#ifndef __PAGETABLE_PMD_FOLDED
-#define pmd_ERROR(e) \
-	printk("%s:%d: bad pmd %016lx.\n", __FILE__, __LINE__, pmd_val(e))
-#endif
-#ifndef __PAGETABLE_PUD_FOLDED
-#define pud_ERROR(e) \
-	printk("%s:%d: bad pud %016lx.\n", __FILE__, __LINE__, pud_val(e))
-#endif
-#define pgd_ERROR(e) \
-	printk("%s:%d: bad pgd %016lx.\n", __FILE__, __LINE__, pgd_val(e))
 
 extern pte_t invalid_pte_table[PTRS_PER_PTE];
 
@@ -245,7 +232,7 @@ static inline int pmd_none(pmd_t pmd)
 static inline int pmd_bad(pmd_t pmd)
 {
 #ifdef CONFIG_MIPS_HUGE_TLB_SUPPORT
-	/* pmd_huge(pmd) but inline */
+	/* pmd_leaf(pmd) but inline */
 	if (unlikely(pmd_val(pmd) & _PAGE_HUGE))
 		return 0;
 #endif
@@ -317,7 +304,9 @@ static inline pmd_t *pud_pgtable(pud_t pud)
  */
 extern void pgd_init(void *addr);
 extern void pud_init(void *addr);
+#define pud_init pud_init
 extern void pmd_init(void *addr);
+#define pmd_init pmd_init
 
 /*
  * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that

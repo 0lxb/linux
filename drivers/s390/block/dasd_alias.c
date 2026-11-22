@@ -98,7 +98,7 @@ static struct alias_server *_allocate_server(struct dasd_uid *uid)
 {
 	struct alias_server *server;
 
-	server = kzalloc(sizeof(*server), GFP_KERNEL);
+	server = kzalloc_obj(*server);
 	if (!server)
 		return ERR_PTR(-ENOMEM);
 	memcpy(server->uid.vendor, uid->vendor, sizeof(uid->vendor));
@@ -117,17 +117,16 @@ static struct alias_lcu *_allocate_lcu(struct dasd_uid *uid)
 {
 	struct alias_lcu *lcu;
 
-	lcu = kzalloc(sizeof(*lcu), GFP_KERNEL);
+	lcu = kzalloc_obj(*lcu);
 	if (!lcu)
 		return ERR_PTR(-ENOMEM);
-	lcu->uac = kzalloc(sizeof(*(lcu->uac)), GFP_KERNEL | GFP_DMA);
+	lcu->uac = kzalloc_obj(*(lcu->uac), GFP_KERNEL | GFP_DMA);
 	if (!lcu->uac)
 		goto out_err1;
-	lcu->rsu_cqr = kzalloc(sizeof(*lcu->rsu_cqr), GFP_KERNEL | GFP_DMA);
+	lcu->rsu_cqr = kzalloc_obj(*lcu->rsu_cqr, GFP_KERNEL | GFP_DMA);
 	if (!lcu->rsu_cqr)
 		goto out_err2;
-	lcu->rsu_cqr->cpaddr = kzalloc(sizeof(struct ccw1),
-				       GFP_KERNEL | GFP_DMA);
+	lcu->rsu_cqr->cpaddr = kzalloc_obj(struct ccw1, GFP_KERNEL | GFP_DMA);
 	if (!lcu->rsu_cqr->cpaddr)
 		goto out_err3;
 	lcu->rsu_cqr->data = kzalloc(16, GFP_KERNEL | GFP_DMA);
@@ -323,7 +322,7 @@ static int _add_device_to_lcu(struct alias_lcu *lcu,
 	}
 	group = _find_group(lcu, &uid);
 	if (!group) {
-		group = kzalloc(sizeof(*group), GFP_ATOMIC);
+		group = kzalloc_obj(*group, GFP_ATOMIC);
 		if (!group)
 			return -ENOMEM;
 		memcpy(group->uid.vendor, uid.vendor, sizeof(uid.vendor));
@@ -435,7 +434,7 @@ static int read_unit_address_configuration(struct dasd_device *device,
 	ccw->cmd_code = DASD_ECKD_CCW_PSF;
 	ccw->count = sizeof(struct dasd_psf_prssd_data);
 	ccw->flags |= CCW_FLAG_CC;
-	ccw->cda = (__u32)virt_to_phys(prssdp);
+	ccw->cda = virt_to_dma32(prssdp);
 
 	/* Read Subsystem Data - feature codes */
 	memset(lcu->uac, 0, sizeof(*(lcu->uac)));
@@ -443,7 +442,7 @@ static int read_unit_address_configuration(struct dasd_device *device,
 	ccw++;
 	ccw->cmd_code = DASD_ECKD_CCW_RSSD;
 	ccw->count = sizeof(*(lcu->uac));
-	ccw->cda = (__u32)virt_to_phys(lcu->uac);
+	ccw->cda = virt_to_dma32(lcu->uac);
 
 	cqr->buildclk = get_tod_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -739,7 +738,7 @@ static int reset_summary_unit_check(struct alias_lcu *lcu,
 	ccw->cmd_code = DASD_ECKD_CCW_RSCK;
 	ccw->flags = CCW_FLAG_SLI;
 	ccw->count = 16;
-	ccw->cda = (__u32)virt_to_phys(cqr->data);
+	ccw->cda = virt_to_dma32(cqr->data);
 	((char *)cqr->data)[0] = reason;
 
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
@@ -751,7 +750,7 @@ static int reset_summary_unit_check(struct alias_lcu *lcu,
 	cqr->buildclk = get_tod_clock();
 	cqr->status = DASD_CQR_FILLED;
 
-	rc = dasd_sleep_on_immediatly(cqr);
+	rc = dasd_sleep_on_immediately(cqr);
 	return rc;
 }
 

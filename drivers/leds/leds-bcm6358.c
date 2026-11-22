@@ -100,7 +100,7 @@ static int bcm6358_led(struct device *dev, struct device_node *nc, u32 reg,
 	unsigned long val;
 	int rc;
 
-	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
+	led = devm_kzalloc_obj(dev, *led);
 	if (!led)
 		return -ENOMEM;
 
@@ -147,7 +147,6 @@ static int bcm6358_leds_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev_of_node(&pdev->dev);
-	struct device_node *child;
 	void __iomem *mem;
 	spinlock_t *lock; /* memory lock */
 	unsigned long val;
@@ -157,7 +156,7 @@ static int bcm6358_leds_probe(struct platform_device *pdev)
 	if (IS_ERR(mem))
 		return PTR_ERR(mem);
 
-	lock = devm_kzalloc(dev, sizeof(*lock), GFP_KERNEL);
+	lock = devm_kzalloc_obj(dev, *lock);
 	if (!lock)
 		return -ENOMEM;
 
@@ -184,7 +183,7 @@ static int bcm6358_leds_probe(struct platform_device *pdev)
 	}
 	bcm6358_led_write(mem + BCM6358_REG_CTRL, val);
 
-	for_each_available_child_of_node(np, child) {
+	for_each_available_child_of_node_scoped(np, child) {
 		int rc;
 		u32 reg;
 
@@ -198,10 +197,8 @@ static int bcm6358_leds_probe(struct platform_device *pdev)
 		}
 
 		rc = bcm6358_led(dev, child, reg, mem, lock);
-		if (rc < 0) {
-			of_node_put(child);
+		if (rc < 0)
 			return rc;
-		}
 	}
 
 	return 0;

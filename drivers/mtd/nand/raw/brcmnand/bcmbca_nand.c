@@ -88,7 +88,7 @@ static int bcmbca_nand_probe(struct platform_device *pdev)
 	struct bcmbca_nand_soc *priv;
 	struct brcmnand_soc *soc;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 	soc = &priv->soc;
@@ -112,7 +112,7 @@ MODULE_DEVICE_TABLE(of, bcmbca_nand_of_match);
 
 static struct platform_driver bcmbca_nand_driver = {
 	.probe			= bcmbca_nand_probe,
-	.remove_new		= brcmnand_remove,
+	.remove			= brcmnand_remove,
 	.driver = {
 		.name		= "bcmbca_nand",
 		.pm		= &brcmnand_pm_ops,

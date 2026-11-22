@@ -4,6 +4,7 @@
  */
 
 #include <linux/miscdevice.h>
+#include <linux/capability.h>
 #include <linux/init.h>
 #include <linux/wait.h>
 #include <linux/file.h>
@@ -145,24 +146,6 @@ static void compat_output(struct dlm_lock_result *res,
 }
 #endif
 
-/* should held proc->asts_spin lock */
-void dlm_purge_lkb_callbacks(struct dlm_lkb *lkb)
-{
-	struct dlm_callback *cb, *safe;
-
-	list_for_each_entry_safe(cb, safe, &lkb->lkb_callbacks, list) {
-		list_del(&cb->list);
-		kref_put(&cb->ref, dlm_release_callback);
-	}
-
-	clear_bit(DLM_IFL_CB_PENDING_BIT, &lkb->lkb_iflags);
-
-	/* invalidate */
-	dlm_callback_set_last_ptr(&lkb->lkb_last_cast, NULL);
-	dlm_callback_set_last_ptr(&lkb->lkb_last_cb, NULL);
-	lkb->lkb_last_bast_mode = -1;
-}
-
 /* Figure out if this lock is at the end of its life and no longer
    available for the application to use.  The lkb still exists until
    the final ast is read.  A lock becomes EOL in three situations:
@@ -199,14 +182,15 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, uint32_t flags, int mode,
 	struct dlm_ls *ls;
 	struct dlm_user_args *ua;
 	struct dlm_user_proc *proc;
-	int rv;
+	struct dlm_callback *cb;
+	int rv, copy_lvb;
 
 	if (test_bit(DLM_DFL_ORPHAN_BIT, &lkb->lkb_dflags) ||
 	    test_bit(DLM_IFL_DEAD_BIT, &lkb->lkb_iflags))
 		return;
 
 	ls = lkb->lkb_resource->res_ls;
-	spin_lock(&ls->ls_clear_proc_locks);
+	spin_lock_bh(&ls->ls_clear_proc_locks);
 
 	/* If ORPHAN/DEAD flag is set, it means the process is dead so an ast
 	   can't be delivered.  For ORPHAN's, dlm_clear_proc_locks() freed
@@ -228,38 +212,38 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, uint32_t flags, int mode,
 	if ((flags & DLM_CB_CAST) && lkb_is_endoflife(mode, status))
 		set_bit(DLM_IFL_ENDOFLIFE_BIT, &lkb->lkb_iflags);
 
-	spin_lock(&proc->asts_spin);
+	spin_lock_bh(&proc->asts_spin);
 
-	rv = dlm_enqueue_lkb_callback(lkb, flags, mode, status, sbflags);
-	switch (rv) {
-	case DLM_ENQUEUE_CALLBACK_FAILURE:
-		spin_unlock(&proc->asts_spin);
-		WARN_ON_ONCE(1);
-		goto out;
-	case DLM_ENQUEUE_CALLBACK_NEED_SCHED:
-		kref_get(&lkb->lkb_ref);
-		list_add_tail(&lkb->lkb_cb_list, &proc->asts);
-		wake_up_interruptible(&proc->wait);
-		break;
-	case DLM_ENQUEUE_CALLBACK_SUCCESS:
-		break;
-	default:
-		WARN_ON_ONCE(1);
-		break;
+	if (!dlm_may_skip_callback(lkb, flags, mode, status, sbflags,
+				   &copy_lvb)) {
+		rv = dlm_get_cb(lkb, flags, mode, status, sbflags, &cb);
+		if (!rv) {
+			cb->copy_lvb = copy_lvb;
+			cb->ua = *ua;
+			cb->lkb_lksb = &cb->ua.lksb;
+			if (copy_lvb) {
+				memcpy(cb->lvbptr, ua->lksb.sb_lvbptr,
+				       DLM_USER_LVB_LEN);
+				cb->lkb_lksb->sb_lvbptr = cb->lvbptr;
+			}
+
+			list_add_tail(&cb->list, &proc->asts);
+			wake_up_interruptible(&proc->wait);
+		}
 	}
-	spin_unlock(&proc->asts_spin);
+	spin_unlock_bh(&proc->asts_spin);
 
 	if (test_bit(DLM_IFL_ENDOFLIFE_BIT, &lkb->lkb_iflags)) {
 		/* N.B. spin_lock locks_spin, not asts_spin */
-		spin_lock(&proc->locks_spin);
+		spin_lock_bh(&proc->locks_spin);
 		if (!list_empty(&lkb->lkb_ownqueue)) {
 			list_del_init(&lkb->lkb_ownqueue);
 			dlm_put_lkb(lkb);
 		}
-		spin_unlock(&proc->locks_spin);
+		spin_unlock_bh(&proc->locks_spin);
 	}
  out:
-	spin_unlock(&ls->ls_clear_proc_locks);
+	spin_unlock_bh(&ls->ls_clear_proc_locks);
 }
 
 static int device_user_lock(struct dlm_user_proc *proc,
@@ -279,7 +263,7 @@ static int device_user_lock(struct dlm_user_proc *proc,
 		goto out;
 	}
 
-	ua = kzalloc(sizeof(struct dlm_user_args), GFP_NOFS);
+	ua = kzalloc_obj(struct dlm_user_args, GFP_NOFS);
 	if (!ua)
 		goto out;
 	ua->proc = proc;
@@ -324,7 +308,7 @@ static int device_user_unlock(struct dlm_user_proc *proc,
 	if (!ls)
 		return -ENOENT;
 
-	ua = kzalloc(sizeof(struct dlm_user_args), GFP_NOFS);
+	ua = kzalloc_obj(struct dlm_user_args, GFP_NOFS);
 	if (!ua)
 		goto out;
 	ua->proc = proc;
@@ -442,7 +426,7 @@ static int device_create_lockspace(struct dlm_lspace_params *params)
 	dlm_put_lockspace(ls);
 
 	if (error)
-		dlm_release_lockspace(lockspace, 0);
+		dlm_release_lockspace(lockspace, DLM_RELEASE_NO_LOCKS);
 	else
 		error = ls->ls_device.minor;
 
@@ -453,7 +437,7 @@ static int device_remove_lockspace(struct dlm_lspace_params *params)
 {
 	dlm_lockspace_t *lockspace;
 	struct dlm_ls *ls;
-	int error, force = 0;
+	int error, force = DLM_RELEASE_NO_LOCKS;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -463,9 +447,9 @@ static int device_remove_lockspace(struct dlm_lspace_params *params)
 		return -ENOENT;
 
 	if (params->flags & DLM_USER_LSFLG_FORCEFREE)
-		force = 2;
+		force = DLM_RELEASE_NORMAL;
 
-	lockspace = ls->ls_local_handle;
+	lockspace = ls;
 	dlm_put_lockspace(ls);
 
 	/* The final dlm_release_lockspace waits for references to go to
@@ -528,6 +512,7 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 			    size_t count, loff_t *ppos)
 {
 	struct dlm_user_proc *proc = file->private_data;
+	size_t name_payload = 0;
 	struct dlm_write_request *kbuf;
 	int error;
 
@@ -561,6 +546,7 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 
 		if (count > sizeof(struct dlm_write_request32))
 			namelen = count - sizeof(struct dlm_write_request32);
+		name_payload = namelen;
 
 		k32buf = (struct dlm_write_request32 *)kbuf;
 
@@ -577,7 +563,13 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 
 		compat_input(kbuf, k32buf, namelen);
 		kfree(k32buf);
+	} else {
+		if (count > sizeof(*kbuf))
+			name_payload = count - sizeof(*kbuf);
 	}
+#else
+	if (count > sizeof(*kbuf))
+		name_payload = count - sizeof(*kbuf);
 #endif
 
 	/* do we really need this? can a write happen after a close? */
@@ -585,6 +577,15 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 	    (proc && test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))) {
 		error = -EINVAL;
 		goto out_free;
+	}
+
+	if (kbuf->cmd == DLM_USER_LOCK &&
+	    !(kbuf->i.lock.flags & DLM_LKF_CONVERT)) {
+		if (kbuf->i.lock.namelen > name_payload ||
+		    kbuf->i.lock.namelen > DLM_RESNAME_MAXLEN) {
+			error = -EINVAL;
+			goto out_free;
+		}
 	}
 
 	error = -EINVAL;
@@ -662,13 +663,13 @@ static int device_open(struct inode *inode, struct file *file)
 	if (!ls)
 		return -ENOENT;
 
-	proc = kzalloc(sizeof(struct dlm_user_proc), GFP_NOFS);
+	proc = kzalloc_obj(struct dlm_user_proc, GFP_NOFS);
 	if (!proc) {
 		dlm_put_lockspace(ls);
 		return -ENOMEM;
 	}
 
-	proc->lockspace = ls->ls_local_handle;
+	proc->lockspace = ls;
 	INIT_LIST_HEAD(&proc->asts);
 	INIT_LIST_HEAD(&proc->locks);
 	INIT_LIST_HEAD(&proc->unlocking);
@@ -803,11 +804,9 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 			   loff_t *ppos)
 {
 	struct dlm_user_proc *proc = file->private_data;
-	struct dlm_lkb *lkb;
 	DECLARE_WAITQUEUE(wait, current);
 	struct dlm_callback *cb;
-	int rv, copy_lvb = 0;
-	int old_mode, new_mode;
+	int rv, ret;
 
 	if (count == sizeof(struct dlm_device_version)) {
 		rv = copy_version_to_user(buf, count);
@@ -826,16 +825,14 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 #endif
 		return -EINVAL;
 
- try_another:
-
 	/* do we really need this? can a read happen after a close? */
 	if (test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))
 		return -EINVAL;
 
-	spin_lock(&proc->asts_spin);
+	spin_lock_bh(&proc->asts_spin);
 	if (list_empty(&proc->asts)) {
 		if (file->f_flags & O_NONBLOCK) {
-			spin_unlock(&proc->asts_spin);
+			spin_unlock_bh(&proc->asts_spin);
 			return -EAGAIN;
 		}
 
@@ -844,16 +841,16 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	repeat:
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (list_empty(&proc->asts) && !signal_pending(current)) {
-			spin_unlock(&proc->asts_spin);
+			spin_unlock_bh(&proc->asts_spin);
 			schedule();
-			spin_lock(&proc->asts_spin);
+			spin_lock_bh(&proc->asts_spin);
 			goto repeat;
 		}
 		set_current_state(TASK_RUNNING);
 		remove_wait_queue(&proc->wait, &wait);
 
 		if (signal_pending(current)) {
-			spin_unlock(&proc->asts_spin);
+			spin_unlock_bh(&proc->asts_spin);
 			return -ERESTARTSYS;
 		}
 	}
@@ -862,61 +859,25 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	   without removing lkb_cb_list; so empty lkb_cb_list is always
 	   consistent with empty lkb_callbacks */
 
-	lkb = list_first_entry(&proc->asts, struct dlm_lkb, lkb_cb_list);
-
-	/* rem_lkb_callback sets a new lkb_last_cast */
-	old_mode = lkb->lkb_last_cast->mode;
-
-	rv = dlm_dequeue_lkb_callback(lkb, &cb);
-	switch (rv) {
-	case DLM_DEQUEUE_CALLBACK_EMPTY:
-		/* this shouldn't happen; lkb should have been removed from
-		 * list when last item was dequeued
-		 */
-		log_print("dlm_rem_lkb_callback empty %x", lkb->lkb_id);
-		list_del_init(&lkb->lkb_cb_list);
-		spin_unlock(&proc->asts_spin);
-		/* removes ref for proc->asts, may cause lkb to be freed */
-		dlm_put_lkb(lkb);
-		WARN_ON_ONCE(1);
-		goto try_another;
-	case DLM_DEQUEUE_CALLBACK_LAST:
-		list_del_init(&lkb->lkb_cb_list);
-		clear_bit(DLM_IFL_CB_PENDING_BIT, &lkb->lkb_iflags);
-		break;
-	case DLM_DEQUEUE_CALLBACK_SUCCESS:
-		break;
-	default:
-		WARN_ON_ONCE(1);
-		break;
-	}
-	spin_unlock(&proc->asts_spin);
+	cb = list_first_entry(&proc->asts, struct dlm_callback, list);
+	list_del(&cb->list);
+	spin_unlock_bh(&proc->asts_spin);
 
 	if (cb->flags & DLM_CB_BAST) {
-		trace_dlm_bast(lkb->lkb_resource->res_ls, lkb, cb->mode);
+		trace_dlm_bast(cb->ls_id, cb->lkb_id, cb->mode, cb->res_name,
+			       cb->res_length);
 	} else if (cb->flags & DLM_CB_CAST) {
-		new_mode = cb->mode;
-
-		if (!cb->sb_status && lkb->lkb_lksb->sb_lvbptr &&
-		    dlm_lvb_operations[old_mode + 1][new_mode + 1])
-			copy_lvb = 1;
-
-		lkb->lkb_lksb->sb_status = cb->sb_status;
-		lkb->lkb_lksb->sb_flags = cb->sb_flags;
-		trace_dlm_ast(lkb->lkb_resource->res_ls, lkb);
+		cb->lkb_lksb->sb_status = cb->sb_status;
+		cb->lkb_lksb->sb_flags = cb->sb_flags;
+		trace_dlm_ast(cb->ls_id, cb->lkb_id, cb->sb_status,
+			      cb->sb_flags, cb->res_name, cb->res_length);
 	}
 
-	rv = copy_result_to_user(lkb->lkb_ua,
-				 test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
-				 cb->flags, cb->mode, copy_lvb, buf, count);
-
-	kref_put(&cb->ref, dlm_release_callback);
-
-	/* removes ref for proc->asts, may cause lkb to be freed */
-	if (rv == DLM_DEQUEUE_CALLBACK_LAST)
-		dlm_put_lkb(lkb);
-
-	return rv;
+	ret = copy_result_to_user(&cb->ua,
+				  test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
+				  cb->flags, cb->mode, cb->copy_lvb, buf, count);
+	dlm_free_cb(cb);
+	return ret;
 }
 
 static __poll_t device_poll(struct file *file, poll_table *wait)
@@ -925,12 +886,12 @@ static __poll_t device_poll(struct file *file, poll_table *wait)
 
 	poll_wait(file, &proc->wait, wait);
 
-	spin_lock(&proc->asts_spin);
+	spin_lock_bh(&proc->asts_spin);
 	if (!list_empty(&proc->asts)) {
-		spin_unlock(&proc->asts_spin);
+		spin_unlock_bh(&proc->asts_spin);
 		return EPOLLIN | EPOLLRDNORM;
 	}
-	spin_unlock(&proc->asts_spin);
+	spin_unlock_bh(&proc->asts_spin);
 	return 0;
 }
 
@@ -967,6 +928,10 @@ static int ctl_device_close(struct inode *inode, struct file *file)
 
 static int monitor_device_open(struct inode *inode, struct file *file)
 {
+	/* dlm_controld is the only expected opener; last close stops LS. */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	atomic_inc(&dlm_monitor_opened);
 	dlm_monitor_unused = 0;
 	return 0;
@@ -1015,6 +980,7 @@ static struct miscdevice monitor_device = {
 	.name  = "dlm-monitor",
 	.fops  = &monitor_device_fops,
 	.minor = MISC_DYNAMIC_MINOR,
+	.mode  = 0600,
 };
 
 int __init dlm_user_init(void)

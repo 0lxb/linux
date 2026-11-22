@@ -58,7 +58,9 @@ enum ovl_opt {
 	Opt_xino,
 	Opt_metacopy,
 	Opt_verity,
+	Opt_fsync,
 	Opt_volatile,
+	Opt_override_creds,
 };
 
 static const struct constant_table ovl_parameter_bool[] = {
@@ -105,21 +107,40 @@ static int ovl_xino_def(void)
 const struct constant_table ovl_parameter_redirect_dir[] = {
 	{ "off",	OVL_REDIRECT_OFF      },
 	{ "follow",	OVL_REDIRECT_FOLLOW   },
+	{ "followdata",	OVL_REDIRECT_FOLLOWDATA },
 	{ "nofollow",	OVL_REDIRECT_NOFOLLOW },
 	{ "on",		OVL_REDIRECT_ON       },
 	{}
 };
 
-static const char *ovl_redirect_mode(struct ovl_config *config)
+static const char *ovl_redirect_mode_name(int redirect_mode)
 {
-	return ovl_parameter_redirect_dir[config->redirect_mode].name;
+	return ovl_parameter_redirect_dir[redirect_mode].name;
 }
 
+const char *ovl_redirect_mode(struct ovl_config *config)
+{
+	return ovl_redirect_mode_name(config->redirect_mode);
+}
+
+int ovl_redirect_follow_mode(bool follow_lower, size_t nr_data)
+{
+	if (ovl_redirect_always_follow && follow_lower)
+		return OVL_REDIRECT_FOLLOW;
+
+	/* Data-only layers cannot be used without following redirects to them */
+	return nr_data ? OVL_REDIRECT_FOLLOWDATA : OVL_REDIRECT_NOFOLLOW;
+}
+
+/*
+ * The default for show_options() is resolved as if there are no data-only layers,
+ * so that redirect_dir=followdata, which is auto selected with data-only layers,
+ * is displayed in mount options.
+ */
 static int ovl_redirect_mode_def(void)
 {
-	return ovl_redirect_dir_def	  ? OVL_REDIRECT_ON :
-	       ovl_redirect_always_follow ? OVL_REDIRECT_FOLLOW :
-					    OVL_REDIRECT_NOFOLLOW;
+	return ovl_redirect_dir_def ? OVL_REDIRECT_ON :
+				      ovl_redirect_follow_mode(true, 0);
 }
 
 static const struct constant_table ovl_parameter_verity[] = {
@@ -139,16 +160,29 @@ static int ovl_verity_mode_def(void)
 	return OVL_VERITY_OFF;
 }
 
-#define fsparam_string_empty(NAME, OPT) \
-	__fsparam(fs_param_is_string, NAME, OPT, fs_param_can_be_empty, NULL)
+static const struct constant_table ovl_parameter_fsync[] = {
+	{ "volatile",	OVL_FSYNC_VOLATILE },
+	{ "auto",	OVL_FSYNC_AUTO     },
+	{ "strict",	OVL_FSYNC_STRICT   },
+	{}
+};
 
+static const char *ovl_fsync_mode(struct ovl_config *config)
+{
+	return ovl_parameter_fsync[config->fsync_mode].name;
+}
+
+static int ovl_fsync_mode_def(void)
+{
+	return OVL_FSYNC_AUTO;
+}
 
 const struct fs_parameter_spec ovl_parameter_spec[] = {
 	fsparam_string_empty("lowerdir",    Opt_lowerdir),
-	fsparam_string("lowerdir+",         Opt_lowerdir_add),
-	fsparam_string("datadir+",          Opt_datadir_add),
-	fsparam_string("upperdir",          Opt_upperdir),
-	fsparam_string("workdir",           Opt_workdir),
+	fsparam_file_or_string("lowerdir+", Opt_lowerdir_add),
+	fsparam_file_or_string("datadir+",  Opt_datadir_add),
+	fsparam_file_or_string("upperdir",  Opt_upperdir),
+	fsparam_file_or_string("workdir",   Opt_workdir),
 	fsparam_flag("default_permissions", Opt_default_permissions),
 	fsparam_enum("redirect_dir",        Opt_redirect_dir, ovl_parameter_redirect_dir),
 	fsparam_enum("index",               Opt_index, ovl_parameter_bool),
@@ -158,7 +192,9 @@ const struct fs_parameter_spec ovl_parameter_spec[] = {
 	fsparam_enum("xino",                Opt_xino, ovl_parameter_xino),
 	fsparam_enum("metacopy",            Opt_metacopy, ovl_parameter_bool),
 	fsparam_enum("verity",              Opt_verity, ovl_parameter_verity),
+	fsparam_enum("fsync",               Opt_fsync, ovl_parameter_fsync),
 	fsparam_flag("volatile",            Opt_volatile),
+	fsparam_flag_no("override_creds",   Opt_override_creds),
 	{}
 };
 
@@ -199,6 +235,9 @@ static ssize_t ovl_parse_param_split_lowerdirs(char *str)
 		if (*s == '\\') {
 			/* keep esc chars in split lowerdir */
 			*d++ = *s++;
+			/* A trailing backslash escapes nothing. */
+			if (!*s)
+				return -EINVAL;
 		} else if (*s == ':') {
 			bool next_colon = (*(s + 1) == ':');
 
@@ -278,19 +317,26 @@ static int ovl_mount_dir(const char *name, struct path *path)
 static int ovl_mount_dir_check(struct fs_context *fc, const struct path *path,
 			       enum ovl_opt layer, const char *name, bool upper)
 {
+	bool is_casefolded = ovl_dentry_casefolded(path->dentry);
 	struct ovl_fs_context *ctx = fc->fs_private;
+	struct ovl_fs *ofs = fc->s_fs_info;
 
 	if (!d_is_dir(path->dentry))
 		return invalfc(fc, "%s is not a directory", name);
 
 	/*
-	 * Root dentries of case-insensitive capable filesystems might
-	 * not have the dentry operations set, but still be incompatible
-	 * with overlayfs.  Check explicitly to prevent post-mount
-	 * failures.
+	 * Allow filesystems that are case-folding capable but deny composing
+	 * ovl stack from inconsistent case-folded directories.
 	 */
-	if (sb_has_encoding(path->mnt->mnt_sb))
-		return invalfc(fc, "case-insensitive capable filesystem on %s not supported", name);
+	if (!ctx->casefold_set) {
+		ofs->casefold = is_casefolded;
+		ctx->casefold_set = true;
+	}
+
+	if (ofs->casefold != is_casefolded) {
+		return invalfc(fc, "case-%ssensitive directory on %s is inconsistent",
+			       is_casefolded ? "in" : "", name);
+	}
 
 	if (ovl_dentry_weird(path->dentry))
 		return invalfc(fc, "filesystem on %s not supported", name);
@@ -357,6 +403,8 @@ static void ovl_add_layer(struct fs_context *fc, enum ovl_opt layer,
 	case Opt_datadir_add:
 		ctx->nr_data++;
 		fallthrough;
+	case Opt_lowerdir:
+		fallthrough;
 	case Opt_lowerdir_add:
 		WARN_ON(ctx->nr >= ctx->capacity);
 		l = &ctx->lower[ctx->nr++];
@@ -369,41 +417,100 @@ static void ovl_add_layer(struct fs_context *fc, enum ovl_opt layer,
 	}
 }
 
-static int ovl_parse_layer(struct fs_context *fc, struct fs_parameter *param,
-			   enum ovl_opt layer)
+static inline bool is_upper_layer(enum ovl_opt layer)
 {
-	char *name = kstrdup(param->string, GFP_KERNEL);
-	bool upper = (layer == Opt_upperdir || layer == Opt_workdir);
-	struct path path;
+	return layer == Opt_upperdir || layer == Opt_workdir;
+}
+
+/* Handle non-file descriptor-based layer options that require path lookup. */
+static inline int ovl_kern_path(const char *layer_name, struct path *layer_path,
+				enum ovl_opt layer)
+{
 	int err;
+
+	switch (layer) {
+	case Opt_upperdir:
+		fallthrough;
+	case Opt_workdir:
+		fallthrough;
+	case Opt_lowerdir:
+		err = ovl_mount_dir(layer_name, layer_path);
+		break;
+	case Opt_lowerdir_add:
+		fallthrough;
+	case Opt_datadir_add:
+		err = ovl_mount_dir_noesc(layer_name, layer_path);
+		break;
+	default:
+		WARN_ON_ONCE(true);
+		err = -EINVAL;
+	}
+
+	return err;
+}
+
+static int ovl_do_parse_layer(struct fs_context *fc, const char *layer_name,
+			      struct path *layer_path, enum ovl_opt layer)
+{
+	char *name __free(kfree) = kstrdup(layer_name, GFP_KERNEL);
+	bool upper;
+	int err = 0;
 
 	if (!name)
 		return -ENOMEM;
 
-	if (upper)
-		err = ovl_mount_dir(name, &path);
-	else
-		err = ovl_mount_dir_noesc(name, &path);
+	upper = is_upper_layer(layer);
+	err = ovl_mount_dir_check(fc, layer_path, layer, name, upper);
 	if (err)
-		goto out_free;
-
-	err = ovl_mount_dir_check(fc, &path, layer, name, upper);
-	if (err)
-		goto out_put;
+		return err;
 
 	if (!upper) {
 		err = ovl_ctx_realloc_lower(fc);
 		if (err)
-			goto out_put;
+			return err;
 	}
 
 	/* Store the user provided path string in ctx to show in mountinfo */
-	ovl_add_layer(fc, layer, &path, &name);
+	ovl_add_layer(fc, layer, layer_path, &name);
+	return err;
+}
 
-out_put:
-	path_put(&path);
-out_free:
-	kfree(name);
+static int ovl_parse_layer(struct fs_context *fc, struct fs_parameter *param,
+			   enum ovl_opt layer)
+{
+	struct path layer_path __free(path_put) = {};
+	int err = 0;
+
+	switch (param->type) {
+	case fs_value_is_string:
+		err = ovl_kern_path(param->string, &layer_path, layer);
+		if (err)
+			return err;
+		err = ovl_do_parse_layer(fc, param->string, &layer_path, layer);
+		break;
+	case fs_value_is_file: {
+		char *buf __free(kfree);
+		char *layer_name;
+
+		buf = kmalloc(PATH_MAX, GFP_KERNEL_ACCOUNT);
+		if (!buf)
+			return -ENOMEM;
+
+		layer_path = param->file->f_path;
+		path_get(&layer_path);
+
+		layer_name = d_path(&layer_path, buf, PATH_MAX);
+		if (IS_ERR(layer_name))
+			return PTR_ERR(layer_name);
+
+		err = ovl_do_parse_layer(fc, layer_name, &layer_path, layer);
+		break;
+	}
+	default:
+		WARN_ON_ONCE(true);
+		err = -EINVAL;
+	}
+
 	return err;
 }
 
@@ -436,7 +543,6 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
 {
 	int err;
 	struct ovl_fs_context *ctx = fc->fs_private;
-	struct ovl_fs_context_layer *l;
 	char *dup = NULL, *iter;
 	ssize_t nr_lower, nr;
 	bool data_layer = false;
@@ -453,7 +559,7 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
 		return 0;
 
 	if (*name == ':') {
-		pr_err("cannot append lower layer");
+		pr_err("cannot append lower layer\n");
 		return -EINVAL;
 	}
 
@@ -476,35 +582,17 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
 		goto out_err;
 	}
 
-	if (nr_lower > ctx->capacity) {
-		err = -ENOMEM;
-		l = krealloc_array(ctx->lower, nr_lower, sizeof(*ctx->lower),
-				   GFP_KERNEL_ACCOUNT);
-		if (!l)
+	iter = dup;
+	for (nr = 0; nr < nr_lower; nr++) {
+		struct path path __free(path_put) = {};
+
+		err = ovl_kern_path(iter, &path, Opt_lowerdir);
+		if (err)
 			goto out_err;
 
-		ctx->lower = l;
-		ctx->capacity = nr_lower;
-	}
-
-	iter = dup;
-	l = ctx->lower;
-	for (nr = 0; nr < nr_lower; nr++, l++) {
-		ctx->nr++;
-		memset(l, 0, sizeof(*l));
-
-		err = ovl_mount_dir(iter, &l->path);
+		err = ovl_do_parse_layer(fc, iter, &path, Opt_lowerdir);
 		if (err)
-			goto out_put;
-
-		err = ovl_mount_dir_check(fc, &l->path, Opt_lowerdir, iter, false);
-		if (err)
-			goto out_put;
-
-		err = -ENOMEM;
-		l->name = kstrdup(iter, GFP_KERNEL_ACCOUNT);
-		if (!l->name)
-			goto out_put;
+			goto out_err;
 
 		if (data_layer)
 			ctx->nr_data++;
@@ -521,8 +609,8 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
 			 * there are no data layers.
 			 */
 			if (ctx->nr_data > 0) {
-				pr_err("regular lower layers cannot follow data lower layers");
-				goto out_put;
+				pr_err("regular lower layers cannot follow data lower layers\n");
+				goto out_err;
 			}
 
 			data_layer = false;
@@ -535,9 +623,6 @@ static int ovl_parse_param_lowerdir(const char *name, struct fs_context *fc)
 	}
 	kfree(dup);
 	return 0;
-
-out_put:
-	ovl_reset_lowerdirs(ctx);
 
 out_err:
 	kfree(dup);
@@ -593,11 +678,6 @@ static int ovl_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		break;
 	case Opt_redirect_dir:
 		config->redirect_mode = result.uint_32;
-		if (config->redirect_mode == OVL_REDIRECT_OFF) {
-			config->redirect_mode = ovl_redirect_always_follow ?
-						OVL_REDIRECT_FOLLOW :
-						OVL_REDIRECT_NOFOLLOW;
-		}
 		ctx->set.redirect = true;
 		break;
 	case Opt_index:
@@ -621,12 +701,38 @@ static int ovl_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_verity:
 		config->verity_mode = result.uint_32;
 		break;
+	case Opt_fsync:
+		config->fsync_mode = result.uint_32;
+		break;
 	case Opt_volatile:
-		config->ovl_volatile = true;
+		config->fsync_mode = OVL_FSYNC_VOLATILE;
 		break;
 	case Opt_userxattr:
 		config->userxattr = true;
 		break;
+	case Opt_override_creds: {
+		const struct cred *cred = NULL;
+
+		if (result.negated) {
+			swap(cred, ofs->creator_cred);
+			put_cred(cred);
+			break;
+		}
+
+		if (!current_in_userns(fc->user_ns)) {
+			err = -EINVAL;
+			break;
+		}
+
+		cred = prepare_creds();
+		if (cred)
+			swap(cred, ofs->creator_cred);
+		else
+			err = -ENOMEM;
+
+		put_cred(cred);
+		break;
+	}
 	default:
 		pr_err("unrecognized mount option \"%s\" or missing value\n",
 		       param->key);
@@ -710,7 +816,7 @@ int ovl_init_fs_context(struct fs_context *fc)
 	struct ovl_fs_context *ctx;
 	struct ovl_fs *ofs;
 
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL_ACCOUNT);
+	ctx = kzalloc_obj(*ctx, GFP_KERNEL_ACCOUNT);
 	if (!ctx)
 		return -ENOMEM;
 
@@ -718,25 +824,34 @@ int ovl_init_fs_context(struct fs_context *fc)
 	 * By default we allocate for three lower layers. It's likely
 	 * that it'll cover most users.
 	 */
-	ctx->lower = kmalloc_array(3, sizeof(*ctx->lower), GFP_KERNEL_ACCOUNT);
+	ctx->lower = kmalloc_objs(*ctx->lower, 3, GFP_KERNEL_ACCOUNT);
 	if (!ctx->lower)
 		goto out_err;
 	ctx->capacity = 3;
 
-	ofs = kzalloc(sizeof(struct ovl_fs), GFP_KERNEL);
+	ofs = kzalloc_obj(struct ovl_fs);
 	if (!ofs)
 		goto out_err;
 
-	ofs->config.redirect_mode	= ovl_redirect_mode_def();
+	/*
+	 * The module default determines only if new redirects are created in
+	 * upper dir.  If they are not, the redirect follow mode will be
+	 * determined after parsing mount options.
+	 */
+	ofs->config.redirect_mode	= ovl_redirect_dir_def ?
+					  OVL_REDIRECT_ON : OVL_REDIRECT_OFF;
 	ofs->config.index		= ovl_index_def;
 	ofs->config.uuid		= ovl_uuid_def();
 	ofs->config.nfs_export		= ovl_nfs_export_def;
 	ofs->config.xino		= ovl_xino_def();
 	ofs->config.metacopy		= ovl_metacopy_def;
+	ofs->config.fsync_mode		= ovl_fsync_mode_def();
 
 	fc->s_fs_info		= ofs;
 	fc->fs_private		= ctx;
 	fc->ops			= &ovl_context_ops;
+
+	mutex_init(&ofs->whiteout_lock);
 	return 0;
 
 out_err:
@@ -750,15 +865,12 @@ void ovl_free_fs(struct ovl_fs *ofs)
 	struct vfsmount **mounts;
 	unsigned i;
 
+	ovl_inuse_unlock_all(ofs);
 	iput(ofs->workbasedir_trap);
 	iput(ofs->workdir_trap);
 	dput(ofs->whiteout);
 	dput(ofs->workdir);
-	if (ofs->workdir_locked)
-		ovl_inuse_unlock(ofs->workbasedir);
 	dput(ofs->workbasedir);
-	if (ofs->upperdir_locked)
-		ovl_inuse_unlock(ovl_upper_mnt(ofs)->mnt_root);
 
 	/* Reuse ofs->config.lowerdirs as a vfsmount array before freeing it */
 	mounts = (struct vfsmount **) ofs->config.lowerdirs;
@@ -785,11 +897,11 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 			 struct ovl_config *config)
 {
 	struct ovl_opt_set set = ctx->set;
-
-	if (ctx->nr_data > 0 && !config->metacopy) {
-		pr_err("lower data-only dirs require metacopy support.\n");
-		return -EINVAL;
-	}
+	/* The requested redirect_dir=, for reporting conflicts with it */
+	int redirect_opt = config->redirect_mode;
+	/* The redirect follow mode for redirect_dir=off and for the default */
+	int follow_mode = ovl_redirect_follow_mode(!config->userxattr,
+						   ctx->nr_data);
 
 	/* Workdir/index are useless in non-upper mount */
 	if (!config->upperdir) {
@@ -806,9 +918,9 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 		config->index = false;
 	}
 
-	if (!config->upperdir && config->ovl_volatile) {
+	if (!config->upperdir && ovl_is_volatile(config)) {
 		pr_info("option \"volatile\" is meaningless in a non-upper mount, ignoring it.\n");
-		config->ovl_volatile = false;
+		config->fsync_mode = ovl_fsync_mode_def();
 	}
 
 	if (!config->upperdir && config->uuid == OVL_UUID_ON) {
@@ -816,17 +928,12 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 		config->uuid = OVL_UUID_NULL;
 	}
 
-	/* Resolve verity -> metacopy dependency */
-	if (config->verity_mode && !config->metacopy) {
-		/* Don't allow explicit specified conflicting combinations */
-		if (set.metacopy) {
-			pr_err("conflicting options: metacopy=off,verity=%s\n",
-			       ovl_verity_mode(config));
-			return -EINVAL;
-		}
-		/* Otherwise automatically enable metacopy. */
-		config->metacopy = true;
-	}
+	/*
+	 * Resolve redirect_dir=off to the default redirect follow mode.
+	 * With userxattr, redirects are not followed to lower by default.
+	 */
+	if (config->redirect_mode == OVL_REDIRECT_OFF)
+		config->redirect_mode = follow_mode;
 
 	/*
 	 * This is to make the logic below simpler.  It doesn't make any other
@@ -835,16 +942,11 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 	if (!config->upperdir && config->redirect_mode == OVL_REDIRECT_FOLLOW)
 		config->redirect_mode = OVL_REDIRECT_ON;
 
-	/* Resolve verity -> metacopy -> redirect_dir dependency */
+	/* metacopy -> redirect_dir dependency */
 	if (config->metacopy && config->redirect_mode != OVL_REDIRECT_ON) {
 		if (set.metacopy && set.redirect) {
 			pr_err("conflicting options: metacopy=on,redirect_dir=%s\n",
-			       ovl_redirect_mode(config));
-			return -EINVAL;
-		}
-		if (config->verity_mode && set.redirect) {
-			pr_err("conflicting options: verity=%s,redirect_dir=%s\n",
-			       ovl_verity_mode(config), ovl_redirect_mode(config));
+			       ovl_redirect_mode_name(redirect_opt));
 			return -EINVAL;
 		}
 		if (set.redirect) {
@@ -853,12 +955,22 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 			 * in this conflict.
 			 */
 			pr_info("disabling metacopy due to redirect_dir=%s\n",
-				ovl_redirect_mode(config));
+				ovl_redirect_mode_name(redirect_opt));
 			config->metacopy = false;
 		} else {
 			/* Automatically enable redirect otherwise. */
 			config->redirect_mode = OVL_REDIRECT_ON;
 		}
+	}
+
+	/* Resolve nfs_export -> !data-only layers dependency */
+	if (config->nfs_export && ctx->nr_data) {
+		if (set.nfs_export) {
+			pr_err("NFS export is not supported with data-only layers\n");
+			return -EINVAL;
+		}
+		pr_info("disabling nfs_export due to data-only layers\n");
+		config->nfs_export = false;
 	}
 
 	/* Resolve nfs_export -> index dependency */
@@ -915,21 +1027,17 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 	}
 
 
-	/* Resolve userxattr -> !redirect && !metacopy && !verity dependency */
+	/* Resolve userxattr -> !redirect && !metacopy dependency */
 	if (config->userxattr) {
 		if (set.redirect &&
-		    config->redirect_mode != OVL_REDIRECT_NOFOLLOW) {
+		    config->redirect_mode != OVL_REDIRECT_NOFOLLOW &&
+		    config->redirect_mode != OVL_REDIRECT_FOLLOWDATA) {
 			pr_err("conflicting options: userxattr,redirect_dir=%s\n",
-			       ovl_redirect_mode(config));
+			       ovl_redirect_mode_name(redirect_opt));
 			return -EINVAL;
 		}
 		if (config->metacopy && set.metacopy) {
 			pr_err("conflicting options: userxattr,metacopy=on\n");
-			return -EINVAL;
-		}
-		if (config->verity_mode) {
-			pr_err("conflicting options: userxattr,verity=%s\n",
-			       ovl_verity_mode(config));
 			return -EINVAL;
 		}
 		/*
@@ -938,8 +1046,47 @@ int ovl_fs_params_verify(const struct ovl_fs_context *ctx,
 		 * options must be explicitly enabled if used together with
 		 * userxattr.
 		 */
-		config->redirect_mode = OVL_REDIRECT_NOFOLLOW;
+		if (!set.redirect)
+			config->redirect_mode = follow_mode;
 		config->metacopy = false;
+	}
+
+	/* Data-only layers are reached through redirects */
+	if (ctx->nr_data && config->redirect_mode == OVL_REDIRECT_NOFOLLOW) {
+		pr_err("redirect_dir=nofollow is not supported with data-only layers\n");
+		return -EINVAL;
+	}
+	if (!ctx->nr_data && config->redirect_mode == OVL_REDIRECT_FOLLOWDATA) {
+		pr_err("redirect_dir=followdata requires data-only layers\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Fail if we don't have trusted xattr capability and a feature was
+	 * explicitly requested that requires them.
+	 */
+	if (!config->userxattr && !capable(CAP_SYS_ADMIN)) {
+		if (set.redirect &&
+		    config->redirect_mode != OVL_REDIRECT_NOFOLLOW) {
+			pr_err("redirect_dir requires permission to access trusted xattrs\n");
+			return -EPERM;
+		}
+		if (config->metacopy && set.metacopy) {
+			pr_err("metacopy requires permission to access trusted xattrs\n");
+			return -EPERM;
+		}
+		if (config->verity_mode) {
+			pr_err("verity requires permission to access trusted xattrs\n");
+			return -EPERM;
+		}
+		if (ctx->nr_data > 0) {
+			pr_err("lower data-only dirs require permission to access trusted xattrs\n");
+			return -EPERM;
+		}
+		/*
+		 * Other xattr-dependent features should be disabled without
+		 * great disturbance to the user in ovl_make_workdir().
+		 */
 	}
 
 	return 0;
@@ -990,19 +1137,18 @@ int ovl_show_options(struct seq_file *m, struct dentry *dentry)
 		seq_printf(m, ",redirect_dir=%s",
 			   ovl_redirect_mode(&ofs->config));
 	if (ofs->config.index != ovl_index_def)
-		seq_printf(m, ",index=%s", ofs->config.index ? "on" : "off");
+		seq_printf(m, ",index=%s", str_on_off(ofs->config.index));
 	if (ofs->config.uuid != ovl_uuid_def())
 		seq_printf(m, ",uuid=%s", ovl_uuid_mode(&ofs->config));
 	if (ofs->config.nfs_export != ovl_nfs_export_def)
-		seq_printf(m, ",nfs_export=%s", ofs->config.nfs_export ?
-						"on" : "off");
+		seq_printf(m, ",nfs_export=%s",
+			   str_on_off(ofs->config.nfs_export));
 	if (ofs->config.xino != ovl_xino_def() && !ovl_same_fs(ofs))
 		seq_printf(m, ",xino=%s", ovl_xino_mode(&ofs->config));
 	if (ofs->config.metacopy != ovl_metacopy_def)
-		seq_printf(m, ",metacopy=%s",
-			   ofs->config.metacopy ? "on" : "off");
-	if (ofs->config.ovl_volatile)
-		seq_puts(m, ",volatile");
+		seq_printf(m, ",metacopy=%s", str_on_off(ofs->config.metacopy));
+	if (ofs->config.fsync_mode != ovl_fsync_mode_def())
+		seq_printf(m, ",fsync=%s", ovl_fsync_mode(&ofs->config));
 	if (ofs->config.userxattr)
 		seq_puts(m, ",userxattr");
 	if (ofs->config.verity_mode != ovl_verity_mode_def())

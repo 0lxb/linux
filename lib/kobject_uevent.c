@@ -17,7 +17,7 @@
 #include <linux/string.h>
 #include <linux/kobject.h>
 #include <linux/export.h>
-#include <linux/kmod.h>
+#include <linux/umh.h>
 #include <linux/slab.h>
 #include <linux/socket.h>
 #include <linux/skbuff.h>
@@ -30,7 +30,7 @@
 #include <net/net_namespace.h>
 
 
-u64 uevent_seqnum;
+atomic64_t uevent_seqnum;
 #ifdef CONFIG_UEVENT_HELPER
 char uevent_helper[UEVENT_HELPER_PATH_LEN] = CONFIG_UEVENT_HELPER_PATH;
 #endif
@@ -42,10 +42,9 @@ struct uevent_sock {
 
 #ifdef CONFIG_NET
 static LIST_HEAD(uevent_sock_list);
-#endif
-
-/* This lock protects uevent_seqnum and uevent_sock_list */
+/* This lock protects uevent_sock_list */
 static DEFINE_MUTEX(uevent_sock_mutex);
+#endif
 
 /* the strings here must match the enum in include/linux/kobject.h */
 static const char *kobject_actions[] = {
@@ -84,7 +83,7 @@ static int kobject_action_type(const char *buf, size_t count,
 	for (action = 0; action < ARRAY_SIZE(kobject_actions); action++) {
 		if (strncmp(kobject_actions[action], buf, count_first) != 0)
 			continue;
-		if (kobject_actions[action][count_first] != '\0')
+		if (strlen(kobject_actions[action]) != count_first)
 			continue;
 		if (args)
 			*args = args_start;
@@ -125,7 +124,7 @@ static int kobject_action_args(const char *buf, size_t count,
 	if (!count)
 		return -EINVAL;
 
-	env = kzalloc(sizeof(*env), GFP_KERNEL);
+	env = kzalloc_obj(*env);
 	if (!env)
 		return -ENOMEM;
 
@@ -224,9 +223,9 @@ int kobject_synth_uevent(struct kobject *kobj, const char *buf, size_t count)
 out:
 	if (r) {
 		devpath = kobject_get_path(kobj, GFP_KERNEL);
-		pr_warn("synth uevent: %s: %s\n",
-		       devpath ?: "unknown device",
-		       msg ?: "failed to send uevent");
+		pr_warn_ratelimited("synth uevent: %s: %s\n",
+				    devpath ?: "unknown device",
+				    msg ?: "failed to send uevent");
 		kfree(devpath);
 	}
 	return r;
@@ -239,7 +238,7 @@ static int kobj_usermode_filter(struct kobject *kobj)
 
 	ops = kobj_ns_ops(kobj);
 	if (ops) {
-		const void *init_ns, *ns;
+		const struct ns_common *init_ns, *ns;
 
 		ns = kobj->ktype->namespace(kobj);
 		init_ns = ops->initial_ns();
@@ -315,6 +314,7 @@ static int uevent_net_broadcast_untagged(struct kobj_uevent_env *env,
 	int retval = 0;
 
 	/* send netlink message */
+	mutex_lock(&uevent_sock_mutex);
 	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
 		struct sock *uevent_sock = ue_sk->sk;
 
@@ -334,6 +334,7 @@ static int uevent_net_broadcast_untagged(struct kobj_uevent_env *env,
 		if (retval == -ENOBUFS || retval == -ESRCH)
 			retval = 0;
 	}
+	mutex_unlock(&uevent_sock_mutex);
 	consume_skb(skb);
 
 	return retval;
@@ -387,7 +388,7 @@ static int kobject_uevent_net_broadcast(struct kobject *kobj,
 
 #ifdef CONFIG_NET
 	const struct kobj_ns_type_operations *ops;
-	const struct net *net = NULL;
+	const struct ns_common *ns = NULL;
 
 	ops = kobj_ns_ops(kobj);
 	if (!ops && kobj->kset) {
@@ -403,14 +404,17 @@ static int kobject_uevent_net_broadcast(struct kobject *kobj,
 	 */
 	if (ops && ops->netlink_ns && kobj->ktype->namespace)
 		if (ops->type == KOBJ_NS_TYPE_NET)
-			net = kobj->ktype->namespace(kobj);
+			ns = kobj->ktype->namespace(kobj);
 
-	if (!net)
+	if (!ns)
 		ret = uevent_net_broadcast_untagged(env, action_string,
 						    devpath);
-	else
+	else {
+		const struct net *net = container_of(ns, struct net, ns);
+
 		ret = uevent_net_broadcast_tagged(net->uevent_sock->sk, env,
 						  action_string, devpath);
+	}
 #endif
 
 	return ret;
@@ -432,8 +436,23 @@ static void zap_modalias_env(struct kobj_uevent_env *env)
 		len = strlen(env->envp[i]) + 1;
 
 		if (i != env->envp_idx - 1) {
+			/* @env->envp[] contains pointers to @env->buf[]
+			 * with @env->buflen chars, and we are removing
+			 * variable MODALIAS here pointed by @env->envp[i]
+			 * with length @len as shown below:
+			 *
+			 * 0               @env->buf[]      @env->buflen
+			 * ---------------------------------------------
+			 * ^             ^              ^              ^
+			 * |             |->   @len   <-| target block |
+			 * @env->envp[0] @env->envp[i]  @env->envp[i + 1]
+			 *
+			 * so the "target block" indicated above is moved
+			 * backward by @len, and its right size is
+			 * @env->buflen - (@env->envp[i + 1] - @env->envp[0]).
+			 */
 			memmove(env->envp[i], env->envp[i + 1],
-				env->buflen - len);
+				env->buflen - (env->envp[i + 1] - env->envp[0]));
 
 			for (j = i; j < env->envp_idx - 1; j++)
 				env->envp[j] = env->envp[j + 1] - len;
@@ -521,7 +540,7 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 	}
 
 	/* environment buffer */
-	env = kzalloc(sizeof(struct kobj_uevent_env), GFP_KERNEL);
+	env = kzalloc_obj(struct kobj_uevent_env);
 	if (!env)
 		return -ENOMEM;
 
@@ -583,16 +602,14 @@ int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 		break;
 	}
 
-	mutex_lock(&uevent_sock_mutex);
 	/* we will send an event, so request a new sequence number */
-	retval = add_uevent_var(env, "SEQNUM=%llu", ++uevent_seqnum);
-	if (retval) {
-		mutex_unlock(&uevent_sock_mutex);
+	retval = add_uevent_var(env, "SEQNUM=%llu",
+				atomic64_inc_return(&uevent_seqnum));
+	if (retval)
 		goto exit;
-	}
+
 	retval = kobject_uevent_net_broadcast(kobj, env, action_string,
 					      devpath);
-	mutex_unlock(&uevent_sock_mutex);
 
 #ifdef CONFIG_UEVENT_HELPER
 	/* call uevent_helper, usually only enabled during early boot */
@@ -688,7 +705,8 @@ static int uevent_net_broadcast(struct sock *usk, struct sk_buff *skb,
 	int ret;
 
 	/* bump and prepare sequence number */
-	ret = snprintf(buf, sizeof(buf), "SEQNUM=%llu", ++uevent_seqnum);
+	ret = snprintf(buf, sizeof(buf), "SEQNUM=%llu",
+		       atomic64_inc_return(&uevent_seqnum));
 	if (ret < 0 || (size_t)ret >= sizeof(buf))
 		return -ENOMEM;
 	ret++;
@@ -742,9 +760,7 @@ static int uevent_net_rcv_skb(struct sk_buff *skb, struct nlmsghdr *nlh,
 		return -EPERM;
 	}
 
-	mutex_lock(&uevent_sock_mutex);
 	ret = uevent_net_broadcast(net->uevent_sock->sk, skb, extack);
-	mutex_unlock(&uevent_sock_mutex);
 
 	return ret;
 }
@@ -763,7 +779,7 @@ static int uevent_net_init(struct net *net)
 		.flags	= NL_CFG_F_NONROOT_RECV
 	};
 
-	ue_sk = kzalloc(sizeof(*ue_sk), GFP_KERNEL);
+	ue_sk = kzalloc_obj(*ue_sk);
 	if (!ue_sk)
 		return -ENOMEM;
 
@@ -812,4 +828,24 @@ static int __init kobject_uevent_init(void)
 
 
 postcore_initcall(kobject_uevent_init);
+#endif
+
+#ifdef CONFIG_UEVENT_HELPER
+static const struct ctl_table uevent_helper_sysctl_table[] = {
+	{
+		.procname	= "hotplug",
+		.data		= &uevent_helper,
+		.maxlen		= UEVENT_HELPER_PATH_LEN,
+		.mode		= 0644,
+		.proc_handler	= proc_dostring,
+	},
+};
+
+static int __init init_uevent_helper_sysctl(void)
+{
+	register_sysctl_init("kernel", uevent_helper_sysctl_table);
+	return 0;
+}
+
+postcore_initcall(init_uevent_helper_sysctl);
 #endif

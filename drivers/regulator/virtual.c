@@ -309,8 +309,7 @@ static int regulator_virtual_probe(struct platform_device *pdev)
 		pr_warn("**********************************************************\n");
 	}
 
-	drvdata = devm_kzalloc(&pdev->dev, sizeof(struct virtual_consumer_data),
-			       GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(&pdev->dev, struct virtual_consumer_data);
 	if (drvdata == NULL)
 		return -ENOMEM;
 
@@ -357,7 +356,7 @@ static void regulator_virtual_remove(struct platform_device *pdev)
 
 static struct platform_driver regulator_virtual_consumer_driver = {
 	.probe		= regulator_virtual_probe,
-	.remove_new	= regulator_virtual_remove,
+	.remove		= regulator_virtual_remove,
 	.driver		= {
 		.name		= "reg-virt-consumer",
 		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,

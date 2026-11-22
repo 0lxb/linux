@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include "../pci.h"
+#include "pci-host-common.h"
 
 #if defined(CONFIG_PCI_HOST_THUNDER_PEM) || (defined(CONFIG_ACPI) && defined(CONFIG_PCI_QUIRKS))
 
@@ -308,7 +309,7 @@ static int thunder_pem_init(struct device *dev, struct pci_config_window *cfg,
 	struct thunder_pem_pci *pem_pci;
 	resource_size_t bar4_start;
 
-	pem_pci = devm_kzalloc(dev, sizeof(*pem_pci), GFP_KERNEL);
+	pem_pci = devm_kzalloc_obj(dev, *pem_pci);
 	if (!pem_pci)
 		return -ENOMEM;
 
@@ -384,7 +385,7 @@ static int thunder_pem_acpi_init(struct pci_config_window *cfg)
 	struct resource *res_pem;
 	int ret;
 
-	res_pem = devm_kzalloc(&adev->dev, sizeof(*res_pem), GFP_KERNEL);
+	res_pem = devm_kzalloc_obj(&adev->dev, *res_pem);
 	if (!res_pem)
 		return -ENOMEM;
 
@@ -400,9 +401,9 @@ static int thunder_pem_acpi_init(struct pci_config_window *cfg)
 		 * Reserve 64K size PEM specific resources. The full 16M range
 		 * size is required for thunder_pem_init() call.
 		 */
-		res_pem->end = res_pem->start + SZ_64K - 1;
+		resource_set_size(res_pem, SZ_64K);
 		thunder_pem_reserve_range(dev, root->segment, res_pem);
-		res_pem->end = res_pem->start + SZ_16M - 1;
+		resource_set_size(res_pem, SZ_16M);
 
 		/* Reserve PCI configuration space as well. */
 		thunder_pem_reserve_range(dev, root->segment, &cfg->res);

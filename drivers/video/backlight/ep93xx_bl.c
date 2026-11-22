@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 
 #define EP93XX_MAX_COUNT		255
@@ -58,7 +57,7 @@ static int ep93xxbl_probe(struct platform_device *dev)
 	struct backlight_properties props;
 	struct resource *res;
 
-	ep93xxbl = devm_kzalloc(&dev->dev, sizeof(*ep93xxbl), GFP_KERNEL);
+	ep93xxbl = devm_kzalloc_obj(&dev->dev, *ep93xxbl);
 	if (!ep93xxbl)
 		return -ENOMEM;
 

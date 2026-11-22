@@ -815,7 +815,7 @@ static int max77843_muic_probe(struct platform_device *pdev)
 	bool attached;
 	int i, ret;
 
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(&pdev->dev, *info);
 	if (!info)
 		return -ENOMEM;
 
@@ -928,7 +928,7 @@ err_muic_irq:
 	return ret;
 }
 
-static int max77843_muic_remove(struct platform_device *pdev)
+static void max77843_muic_remove(struct platform_device *pdev)
 {
 	struct max77843_muic_info *info = platform_get_drvdata(pdev);
 	struct max77693_dev *max77843 = info->max77843;
@@ -936,8 +936,6 @@ static int max77843_muic_remove(struct platform_device *pdev)
 	cancel_work_sync(&info->irq_work);
 	regmap_del_irq_chip(max77843->irq, max77843->irq_data_muic);
 	i2c_unregister_device(max77843->i2c_muic);
-
-	return 0;
 }
 
 static const struct platform_device_id max77843_muic_id[] = {

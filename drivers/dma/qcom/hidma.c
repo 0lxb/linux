@@ -45,12 +45,10 @@
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/of_dma.h>
 #include <linux/property.h>
 #include <linux/delay.h>
 #include <linux/acpi.h>
@@ -196,7 +194,7 @@ static int hidma_chan_init(struct hidma_dev *dmadev, u32 dma_sig)
 	struct hidma_chan *mchan;
 	struct dma_device *ddev;
 
-	mchan = devm_kzalloc(dmadev->ddev.dev, sizeof(*mchan), GFP_KERNEL);
+	mchan = devm_kzalloc_obj(dmadev->ddev.dev, *mchan);
 	if (!mchan)
 		return -ENOMEM;
 
@@ -353,7 +351,7 @@ static int hidma_alloc_chan_resources(struct dma_chan *dmach)
 
 	/* Alloc descriptors for this channel */
 	for (i = 0; i < dmadev->nr_descriptors; i++) {
-		mdesc = kzalloc(sizeof(struct hidma_desc), GFP_NOWAIT);
+		mdesc = kzalloc_obj(struct hidma_desc, GFP_NOWAIT);
 		if (!mdesc) {
 			rc = -ENOMEM;
 			break;
@@ -625,12 +623,10 @@ static ssize_t hidma_show_values(struct device *dev,
 {
 	struct hidma_dev *mdev = dev_get_drvdata(dev);
 
-	buf[0] = 0;
-
 	if (strcmp(attr->attr.name, "chid") == 0)
-		sprintf(buf, "%d\n", mdev->chidx);
+		return sysfs_emit(buf, "%d\n", mdev->chidx);
 
-	return strlen(buf);
+	return 0;
 }
 
 static inline void  hidma_sysfs_uninit(struct hidma_dev *dev)
@@ -644,8 +640,7 @@ hidma_create_sysfs_entry(struct hidma_dev *dev, char *name, int mode)
 	struct device_attribute *attrs;
 	char *name_copy;
 
-	attrs = devm_kmalloc(dev->ddev.dev, sizeof(struct device_attribute),
-			     GFP_KERNEL);
+	attrs = devm_kmalloc_obj(dev->ddev.dev, struct device_attribute);
 	if (!attrs)
 		return NULL;
 
@@ -787,7 +782,7 @@ static int hidma_probe(struct platform_device *pdev)
 		goto bailout;
 	}
 
-	dmadev = devm_kzalloc(&pdev->dev, sizeof(*dmadev), GFP_KERNEL);
+	dmadev = devm_kzalloc_obj(&pdev->dev, *dmadev);
 	if (!dmadev) {
 		rc = -ENOMEM;
 		goto bailout;
@@ -939,33 +934,24 @@ static void hidma_remove(struct platform_device *pdev)
 
 #if IS_ENABLED(CONFIG_ACPI)
 static const struct acpi_device_id hidma_acpi_ids[] = {
-	{"QCOM8061"},
-	{"QCOM8062", HIDMA_MSI_CAP},
-	{"QCOM8063", (HIDMA_MSI_CAP | HIDMA_IDENTITY_CAP)},
-	{},
+	{ .id = "QCOM8061" },
+	{ .id = "QCOM8062", .driver_data = HIDMA_MSI_CAP },
+	{ .id = "QCOM8063", .driver_data = (HIDMA_MSI_CAP | HIDMA_IDENTITY_CAP) },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, hidma_acpi_ids);
 #endif
 
-static const struct of_device_id hidma_match[] = {
-	{.compatible = "qcom,hidma-1.0",},
-	{.compatible = "qcom,hidma-1.1", .data = (void *)(HIDMA_MSI_CAP),},
-	{.compatible = "qcom,hidma-1.2",
-	 .data = (void *)(HIDMA_MSI_CAP | HIDMA_IDENTITY_CAP),},
-	{},
-};
-MODULE_DEVICE_TABLE(of, hidma_match);
-
 static struct platform_driver hidma_driver = {
 	.probe = hidma_probe,
-	.remove_new = hidma_remove,
+	.remove = hidma_remove,
 	.shutdown = hidma_shutdown,
 	.driver = {
 		   .name = "hidma",
-		   .of_match_table = hidma_match,
 		   .acpi_match_table = ACPI_PTR(hidma_acpi_ids),
 	},
 };
 
 module_platform_driver(hidma_driver);
+MODULE_DESCRIPTION("Qualcomm Technologies HIDMA Channel support");
 MODULE_LICENSE("GPL v2");

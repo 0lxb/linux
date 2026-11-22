@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright Amazon.com Inc. or its affiliates. */
-#include "bpf_iter.h"
+#include <vmlinux.h>
 #include "bpf_tracing_net.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -35,10 +35,9 @@ int dump_unix(struct bpf_iter__unix *ctx)
 	seq = ctx->meta->seq;
 	seq_num = ctx->meta->seq_num;
 	if (seq_num == 0)
-		BPF_SEQ_PRINTF(seq, "Num               RefCount Protocol Flags    Type St    Inode Path\n");
+		BPF_SEQ_PRINTF(seq, "Num       RefCount Protocol Flags    Type St    Inode Path\n");
 
-	BPF_SEQ_PRINTF(seq, "%pK: %08X %08X %08X %04X %02X %8lu",
-		       unix_sk,
+	BPF_SEQ_PRINTF(seq, "%08u: %08X %08X %08X %04X %02X %8lu", 0,
 		       sk->sk_refcnt.refs.counter,
 		       0,
 		       sk->sk_state == TCP_LISTEN ? __SO_ACCEPTCON : 0,
@@ -64,7 +63,7 @@ int dump_unix(struct bpf_iter__unix *ctx)
 
 			for (i = 1; i < len; i++) {
 				/* unix_validate_addr() tests this upper bound. */
-				if (i >= sizeof(struct sockaddr_un))
+				if (i >= sizeof(unix_sk->addr->name->sun_path))
 					break;
 
 				BPF_SEQ_PRINTF(seq, "%c",

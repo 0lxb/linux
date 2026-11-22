@@ -50,7 +50,7 @@ MODULE_PARM_DESC(slots, "Module names assigned to the slots.");
 static int module_slot_match(struct module *module, int idx)
 {
 	int match = 1;
-#ifdef MODULE
+#ifdef CONFIG_MODULES
 	const char *s1, *s2;
 
 	if (!module || !*module->name || !slots[idx])
@@ -77,13 +77,29 @@ static int module_slot_match(struct module *module, int idx)
 		if (!c1)
 			break;
 	}
-#endif /* MODULE */
+#endif /* CONFIG_MODULES */
 	return match;
 }
 
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
-int (*snd_mixer_oss_notify_callback)(struct snd_card *card, int free_flag);
-EXPORT_SYMBOL(snd_mixer_oss_notify_callback);
+static DEFINE_MUTEX(mixer_oss_notify_mutex);
+static int (*mixer_oss_notify_callback)(struct snd_card *card, int cmd);
+
+void snd_mixer_oss_notify(struct snd_card *card, int cmd)
+{
+	guard(mutex)(&mixer_oss_notify_mutex);
+	if (mixer_oss_notify_callback)
+		mixer_oss_notify_callback(card, cmd);
+}
+EXPORT_SYMBOL(snd_mixer_oss_notify);
+
+void snd_mixer_oss_set_notify(int (*callback)(struct snd_card *, int))
+{
+	/* Wait for callbacks, including a final module_put(), to return. */
+	guard(mutex)(&mixer_oss_notify_mutex);
+	mixer_oss_notify_callback = callback;
+}
+EXPORT_SYMBOL(snd_mixer_oss_set_notify);
 #endif
 
 static int check_empty_slot(struct module *module, int slot)
@@ -129,7 +145,7 @@ int snd_device_alloc(struct device **dev_p, struct snd_card *card)
 	struct device *dev;
 
 	*dev_p = NULL;
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	dev = kzalloc_obj(*dev);
 	if (!dev)
 		return -ENOMEM;
 	device_initialize(dev);
@@ -181,7 +197,7 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 
 	if (extra_size < 0)
 		extra_size = 0;
-	card = kzalloc(sizeof(*card) + extra_size, GFP_KERNEL);
+	card = kzalloc_flex(*card, private_data_area, extra_size);
 	if (!card)
 		return -ENOMEM;
 
@@ -216,11 +232,13 @@ static void __snd_card_release(struct device *dev, void *data)
  * is added automatically.  In that way, the resource disconnection is assured
  * at first, then released in the expected order.
  *
- * If an error happens at the probe before snd_card_register() is called and
- * there have been other devres resources, you'd need to free the card manually
- * via snd_card_free() call in the error; otherwise it may lead to UAF due to
- * devres call orders.  You can use snd_card_free_on_error() helper for
- * handling it more easily.
+ * Caveat: if an error happens at the probe before snd_card_register() is
+ * called and there have been other devres resources that are referred at the
+ * card-level destructor call, you'd still need to free the card manually;
+ * otherwise it may lead to UAF due to devres call orders.  Instead of a manual
+ * snd_card_free() call, you can use the automatic clean-up for the card
+ * pointer via __free(snd_card_free), too.  In this case, don't forget to do
+ * NULL-clear the card pointer before the successful return!
  *
  * Return: zero if successful, or a negative error code
  */
@@ -232,7 +250,8 @@ int snd_devm_card_new(struct device *parent, int idx, const char *xid,
 	int err;
 
 	*card_ret = NULL;
-	card = devres_alloc(__snd_card_release, sizeof(*card) + extra_size,
+	card = devres_alloc(__snd_card_release,
+			    struct_size(card, private_data_area, extra_size),
 			    GFP_KERNEL);
 	if (!card)
 		return -ENOMEM;
@@ -249,30 +268,6 @@ int snd_devm_card_new(struct device *parent, int idx, const char *xid,
 }
 EXPORT_SYMBOL_GPL(snd_devm_card_new);
 
-/**
- * snd_card_free_on_error - a small helper for handling devm probe errors
- * @dev: the managed device object
- * @ret: the return code from the probe callback
- *
- * This function handles the explicit snd_card_free() call at the error from
- * the probe callback.  It's just a small helper for simplifying the error
- * handling with the managed devices.
- *
- * Return: zero if successful, or a negative error code
- */
-int snd_card_free_on_error(struct device *dev, int ret)
-{
-	struct snd_card *card;
-
-	if (!ret)
-		return 0;
-	card = devres_find(dev, __snd_card_release, NULL, NULL);
-	if (card)
-		snd_card_free(card);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(snd_card_free_on_error);
-
 static int snd_card_init(struct snd_card *card, struct device *parent,
 			 int idx, const char *xid, struct module *module,
 			 size_t extra_size)
@@ -280,7 +275,7 @@ static int snd_card_init(struct snd_card *card, struct device *parent,
 	int err;
 
 	if (extra_size > 0)
-		card->private_data = (char *)card + sizeof(struct snd_card);
+		card->private_data = card->private_data_area;
 	if (xid)
 		strscpy(card->id, xid, sizeof(card->id));
 	err = 0;
@@ -309,15 +304,13 @@ static int snd_card_init(struct snd_card *card, struct device *parent,
 			kfree(card); /* manually free here, as no destructor called */
 		return err;
 	}
-	card->dev = parent;
+	card->dev = get_device(parent);
 	card->number = idx;
-#ifdef MODULE
-	WARN_ON(!module);
+	WARN_ON(IS_MODULE(CONFIG_SND) && !module);
 	card->module = module;
-#endif
 	INIT_LIST_HEAD(&card->devices);
 	init_rwsem(&card->controls_rwsem);
-	rwlock_init(&card->ctl_files_rwlock);
+	rwlock_init(&card->controls_rwlock);
 	INIT_LIST_HEAD(&card->controls);
 	INIT_LIST_HEAD(&card->ctl_files);
 #ifdef CONFIG_SND_CTL_FAST_LOOKUP
@@ -329,8 +322,7 @@ static int snd_card_init(struct snd_card *card, struct device *parent,
 	mutex_init(&card->memory_mutex);
 #ifdef CONFIG_PM
 	init_waitqueue_head(&card->power_sleep);
-	init_waitqueue_head(&card->power_ref_sleep);
-	atomic_set(&card->power_ref, 0);
+	snd_refcount_init(&card->power_ref);
 #endif
 	init_waitqueue_head(&card->remove_sleep);
 	card->sync_irq = -1;
@@ -358,20 +350,25 @@ static int snd_card_init(struct snd_card *card, struct device *parent,
 	err = snd_info_card_create(card);
 	if (err < 0) {
 		dev_err(parent, "unable to create card info\n");
-		goto __error_ctl;
+		goto __error;
 	}
 
 #ifdef CONFIG_SND_DEBUG
 	card->debugfs_root = debugfs_create_dir(dev_name(&card->card_dev),
 						sound_debugfs_root);
 #endif
+#ifdef CONFIG_SND_CTL_DEBUG
+	card->value_buf = kmalloc_obj(*card->value_buf);
+	if (!card->value_buf) {
+		err = -ENOMEM;
+		goto __error;
+	}
+#endif
 	return 0;
 
-      __error_ctl:
-	snd_device_free_all(card);
       __error:
-	put_device(&card->card_dev);
-  	return err;
+	snd_card_free(card);
+	return err;
 }
 
 /**
@@ -463,20 +460,19 @@ static int snd_disconnect_fasync(int fd, struct file *file, int on)
 	return -ENODEV;
 }
 
-static const struct file_operations snd_shutdown_f_ops =
-{
-	.owner = 	THIS_MODULE,
-	.llseek =	snd_disconnect_llseek,
-	.read = 	snd_disconnect_read,
-	.write =	snd_disconnect_write,
-	.release =	snd_disconnect_release,
-	.poll =		snd_disconnect_poll,
-	.unlocked_ioctl = snd_disconnect_ioctl,
+static const struct file_operations snd_shutdown_f_ops = {
+	.owner		=	THIS_MODULE,
+	.llseek		=	snd_disconnect_llseek,
+	.read		=	snd_disconnect_read,
+	.write		=	snd_disconnect_write,
+	.release	=	snd_disconnect_release,
+	.poll		=	snd_disconnect_poll,
+	.unlocked_ioctl	=	snd_disconnect_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl = snd_disconnect_ioctl,
+	.compat_ioctl	=	snd_disconnect_ioctl,
 #endif
-	.mmap =		snd_disconnect_mmap,
-	.fasync =	snd_disconnect_fasync
+	.mmap		=	snd_disconnect_mmap,
+	.fasync		=	snd_disconnect_fasync
 };
 
 /**
@@ -516,12 +512,19 @@ void snd_card_disconnect(struct snd_card *card)
 		}
 	}
 
+#ifdef CONFIG_PM
+	/* wake up sleepers here before other callbacks for avoiding potential
+	 * deadlocks with other locks (e.g. in kctls);
+	 * then this notifies the shutdown and sleepers would abort immediately
+	 */
+	wake_up_all(&card->power_sleep);
+#endif
+
 	/* notify all connected devices about disconnection */
 	/* at this point, they cannot respond to any calls except release() */
 
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
-	if (snd_mixer_oss_notify_callback)
-		snd_mixer_oss_notify_callback(card, SND_MIXER_OSS_NOTIFY_DISCONNECT);
+	snd_mixer_oss_notify(card, SND_MIXER_OSS_NOTIFY_DISCONNECT);
 #endif
 
 	/* notify all devices that we are disconnected */
@@ -531,6 +534,11 @@ void snd_card_disconnect(struct snd_card *card)
 		synchronize_irq(card->sync_irq);
 
 	snd_info_card_disconnect(card);
+#ifdef CONFIG_SND_DEBUG
+	debugfs_remove(card->debugfs_root);
+	card->debugfs_root = NULL;
+#endif
+
 	if (card->registered) {
 		device_del(&card->card_dev);
 		card->registered = false;
@@ -542,10 +550,9 @@ void snd_card_disconnect(struct snd_card *card)
 		clear_bit(card->number, snd_cards_lock);
 	}
 
-#ifdef CONFIG_PM
-	wake_up(&card->power_sleep);
+	/* order card->shutdown store against power_ref read */
+	smp_mb();
 	snd_power_sync_ref(card);
-#endif
 }
 EXPORT_SYMBOL(snd_card_disconnect);
 
@@ -571,25 +578,29 @@ EXPORT_SYMBOL_GPL(snd_card_disconnect_sync);
 
 static int snd_card_do_free(struct snd_card *card)
 {
+	bool managed = card->managed;
+
 	card->releasing = true;
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
-	if (snd_mixer_oss_notify_callback)
-		snd_mixer_oss_notify_callback(card, SND_MIXER_OSS_NOTIFY_FREE);
+	snd_mixer_oss_notify(card, SND_MIXER_OSS_NOTIFY_FREE);
 #endif
 	snd_device_free_all(card);
+	kfree(card->components);
+	card->components = NULL;
+	card->components_alloc_size = 0;
 	if (card->private_free)
 		card->private_free(card);
+#ifdef CONFIG_SND_CTL_DEBUG
+	kfree(card->value_buf);
+#endif
 	if (snd_info_card_free(card) < 0) {
 		dev_warn(card->dev, "unable to free card info\n");
 		/* Not fatal error */
 	}
-#ifdef CONFIG_SND_DEBUG
-	debugfs_remove(card->debugfs_root);
-	card->debugfs_root = NULL;
-#endif
+	put_device(card->dev);
 	if (card->release_completion)
 		complete(card->release_completion);
-	if (!card->managed)
+	if (!managed)
 		kfree(card);
 	return 0;
 }
@@ -650,13 +661,19 @@ void snd_card_free(struct snd_card *card)
 }
 EXPORT_SYMBOL(snd_card_free);
 
+/* check, if the character is in the valid ASCII range */
+static inline bool safe_ascii_char(char c)
+{
+	return isascii(c) && isalnum(c);
+}
+
 /* retrieve the last word of shortname or longname */
 static const char *retrieve_id_from_card_name(const char *name)
 {
 	const char *spos = name;
 
 	while (*name) {
-		if (isspace(*name) && isalnum(name[1]))
+		if (isspace(*name) && safe_ascii_char(name[1]))
 			spos = name + 1;
 		name++;
 	}
@@ -683,12 +700,12 @@ static void copy_valid_id_string(struct snd_card *card, const char *src,
 {
 	char *id = card->id;
 
-	while (*nid && !isalnum(*nid))
+	while (*nid && !safe_ascii_char(*nid))
 		nid++;
 	if (isdigit(*nid))
 		*id++ = isalpha(*src) ? *src : 'D';
 	while (*nid && (size_t)(id - card->id) < sizeof(card->id) - 1) {
-		if (isalnum(*nid))
+		if (safe_ascii_char(*nid))
 			*id++ = *nid;
 		nid++;
 	}
@@ -704,7 +721,7 @@ static void snd_card_set_id_no_lock(struct snd_card *card, const char *src,
 	int len, loops;
 	bool is_default = false;
 	char *id;
-	
+
 	copy_valid_id_string(card, src, nid);
 	id = card->id;
 
@@ -713,27 +730,25 @@ static void snd_card_set_id_no_lock(struct snd_card *card, const char *src,
 	 * ("card" conflicts with proc directories)
 	 */
 	if (!*id || !strncmp(id, "card", 4)) {
-		strcpy(id, "Default");
+		strscpy(card->id, "Default");
 		is_default = true;
 	}
 
 	len = strlen(id);
 	for (loops = 0; loops < SNDRV_CARDS; loops++) {
-		char *spos;
 		char sfxstr[5]; /* "_012" */
-		int sfxlen;
+		int sfxlen, slen;
 
 		if (card_id_ok(card, id))
 			return; /* OK */
 
 		/* Add _XYZ suffix */
-		sprintf(sfxstr, "_%X", loops + 1);
-		sfxlen = strlen(sfxstr);
+		sfxlen = scnprintf(sfxstr, sizeof(sfxstr), "_%X", loops + 1);
 		if (len + sfxlen >= sizeof(card->id))
-			spos = id + sizeof(card->id) - sfxlen - 1;
+			slen = sizeof(card->id) - sfxlen - 1;
 		else
-			spos = id + len;
-		strcpy(spos, sfxstr);
+			slen = len;
+		strscpy(id + slen, sfxstr, sizeof(card->id) - slen);
 	}
 	/* fallback to the default id */
 	if (!is_default) {
@@ -783,7 +798,7 @@ static ssize_t id_store(struct device *dev, struct device_attribute *attr,
 
 	for (idx = 0; idx < copy; idx++) {
 		c = buf[idx];
-		if (!isalnum(c) && c != '_' && c != '-')
+		if (!safe_ascii_char(c) && c != '_' && c != '-')
 			return -EINVAL;
 	}
 	memcpy(buf1, buf, copy);
@@ -791,7 +806,7 @@ static ssize_t id_store(struct device *dev, struct device_attribute *attr,
 	guard(mutex)(&snd_card_mutex);
 	if (!card_id_ok(NULL, buf1))
 		return -EEXIST;
-	strcpy(card->id, buf1);
+	strscpy(card->id, buf1);
 	snd_info_card_id_change(card);
 
 	return count;
@@ -911,8 +926,7 @@ int snd_card_register(struct snd_card *card)
 		return err;
 
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
-	if (snd_mixer_oss_notify_callback)
-		snd_mixer_oss_notify_callback(card, SND_MIXER_OSS_NOTIFY_REGISTER);
+	snd_mixer_oss_notify(card, SND_MIXER_OSS_NOTIFY_REGISTER);
 #endif
 	return 0;
 }
@@ -964,7 +978,7 @@ void snd_card_info_read_oss(struct snd_info_buffer *buffer)
 
 #endif
 
-#ifdef MODULE
+#ifdef CONFIG_MODULES
 static void snd_card_module_info_read(struct snd_info_entry *entry,
 				      struct snd_info_buffer *buffer)
 {
@@ -992,7 +1006,7 @@ int __init snd_card_info_init(void)
 	if (snd_info_register(entry) < 0)
 		return -ENOMEM; /* freed in error path */
 
-#ifdef MODULE
+#ifdef CONFIG_MODULES
 	entry = snd_info_create_module_entry(THIS_MODULE, "modules", NULL);
 	if (!entry)
 		return -ENOMEM;
@@ -1015,21 +1029,44 @@ int __init snd_card_info_init(void)
  *
  *  Return: Zero otherwise a negative error code.
  */
-  
+
 int snd_component_add(struct snd_card *card, const char *component)
 {
 	char *ptr;
 	int len = strlen(component);
+	unsigned int cur_len, need_len;
 
-	ptr = strstr(card->components, component);
-	if (ptr != NULL) {
-		if (ptr[len] == '\0' || ptr[len] == ' ')	/* already there */
-			return 1;
+	guard(rwsem_write)(&snd_ioctl_rwsem);
+
+	if (card->components) {
+		ptr = strstr(card->components, component);
+		if (ptr) {
+			if (ptr[len] == '\0' || ptr[len] == ' ')	/* already there */
+				return 1;
+		}
+		cur_len = strlen(card->components) + 1;
+	} else {
+		cur_len = 0;
 	}
-	if (strlen(card->components) + 1 + len + 1 > sizeof(card->components)) {
+
+	need_len = cur_len + len + 1;
+	if (need_len > 512) {
 		snd_BUG();
 		return -ENOMEM;
 	}
+
+	if (need_len > card->components_alloc_size) {
+		unsigned int new_alloc = roundup(need_len, 32);
+
+		ptr = krealloc(card->components, new_alloc, GFP_KERNEL);
+		if (!ptr)
+			return -ENOMEM;
+		if (!card->components)
+			ptr[0] = '\0';
+		card->components = ptr;
+		card->components_alloc_size = new_alloc;
+	}
+
 	if (card->components[0] != '\0')
 		strcat(card->components, " ");
 	strcat(card->components, component);
@@ -1052,7 +1089,7 @@ int snd_card_file_add(struct snd_card *card, struct file *file)
 {
 	struct snd_monitor_file *mfile;
 
-	mfile = kmalloc(sizeof(*mfile), GFP_KERNEL);
+	mfile = kmalloc_obj(*mfile);
 	if (mfile == NULL)
 		return -ENOMEM;
 	mfile->file = file;
@@ -1123,20 +1160,26 @@ EXPORT_SYMBOL(snd_card_file_remove);
  * typically around calling control ops.
  *
  * The caller needs to pull down the refcount via snd_power_unref() later
- * no matter whether the error is returned from this function or not.
+ * when this function returns 0.
  *
  * Return: Zero if successful, or a negative error code.
  */
 int snd_power_ref_and_wait(struct snd_card *card)
 {
 	snd_power_ref(card);
-	if (snd_power_get_state(card) == SNDRV_CTL_POWER_D0)
-		return 0;
-	wait_event_cmd(card->power_sleep,
-		       card->shutdown ||
-		       snd_power_get_state(card) == SNDRV_CTL_POWER_D0,
-		       snd_power_unref(card), snd_power_ref(card));
-	return card->shutdown ? -ENODEV : 0;
+	/* order power_ref increment against card->shutdown read */
+	smp_mb__after_atomic();
+	if (snd_power_get_state(card) != SNDRV_CTL_POWER_D0) {
+		wait_event_cmd(card->power_sleep,
+			       card->shutdown ||
+			       snd_power_get_state(card) == SNDRV_CTL_POWER_D0,
+			       snd_power_unref(card), snd_power_ref(card));
+	}
+	if (card->shutdown) {
+		snd_power_unref(card);
+		return  -ENODEV;
+	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_power_ref_and_wait);
 
@@ -1153,7 +1196,8 @@ int snd_power_wait(struct snd_card *card)
 	int ret;
 
 	ret = snd_power_ref_and_wait(card);
-	snd_power_unref(card);
+	if (!ret)
+		snd_power_unref(card);
 	return ret;
 }
 EXPORT_SYMBOL(snd_power_wait);

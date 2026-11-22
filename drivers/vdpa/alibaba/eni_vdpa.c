@@ -216,7 +216,10 @@ static void eni_vdpa_set_status(struct vdpa_device *vdpa, u8 status)
 
 	if (status & VIRTIO_CONFIG_S_DRIVER_OK &&
 	    !(s & VIRTIO_CONFIG_S_DRIVER_OK)) {
-		eni_vdpa_request_irq(eni_vdpa);
+		if (eni_vdpa_request_irq(eni_vdpa)) {
+			WARN_ON(1);
+			return;
+		}
 	}
 
 	vp_legacy_set_status(ldev, status);
@@ -252,6 +255,13 @@ static u16 eni_vdpa_get_vq_num_min(struct vdpa_device *vdpa)
 	struct virtio_pci_legacy_device *ldev = vdpa_to_ldev(vdpa);
 
 	return vp_legacy_get_queue_size(ldev, 0);
+}
+
+static u16 eni_vdpa_get_vq_size(struct vdpa_device *vdpa, u16 qid)
+{
+	struct virtio_pci_legacy_device *ldev = vdpa_to_ldev(vdpa);
+
+	return vp_legacy_get_queue_size(ldev, qid);
 }
 
 static int eni_vdpa_get_vq_state(struct vdpa_device *vdpa, u16 qid,
@@ -416,6 +426,7 @@ static const struct vdpa_config_ops eni_vdpa_ops = {
 	.reset		= eni_vdpa_reset,
 	.get_vq_num_max	= eni_vdpa_get_vq_num_max,
 	.get_vq_num_min	= eni_vdpa_get_vq_num_min,
+	.get_vq_size	= eni_vdpa_get_vq_size,
 	.get_vq_state	= eni_vdpa_get_vq_state,
 	.set_vq_state	= eni_vdpa_set_vq_state,
 	.set_vq_cb	= eni_vdpa_set_vq_cb,
@@ -470,7 +481,8 @@ static int eni_vdpa_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 
 	eni_vdpa = vdpa_alloc_device(struct eni_vdpa, vdpa,
-				     dev, &eni_vdpa_ops, 1, 1, NULL, false);
+				     dev, &eni_vdpa_ops, NULL,
+				     1, 1, NULL, false);
 	if (IS_ERR(eni_vdpa)) {
 		ENI_ERR(pdev, "failed to allocate vDPA structure\n");
 		return PTR_ERR(eni_vdpa);
@@ -488,12 +500,11 @@ static int eni_vdpa_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, eni_vdpa);
 
-	eni_vdpa->vdpa.dma_dev = &pdev->dev;
+	eni_vdpa->vdpa.vmap.dma_dev = &pdev->dev;
 	eni_vdpa->queues = eni_vdpa_get_num_queues(eni_vdpa);
 
-	eni_vdpa->vring = devm_kcalloc(&pdev->dev, eni_vdpa->queues,
-				      sizeof(*eni_vdpa->vring),
-				      GFP_KERNEL);
+	eni_vdpa->vring = devm_kzalloc_objs(&pdev->dev, *eni_vdpa->vring,
+					    eni_vdpa->queues);
 	if (!eni_vdpa->vring) {
 		ret = -ENOMEM;
 		ENI_ERR(pdev, "failed to allocate virtqueues\n");
@@ -536,6 +547,7 @@ static struct pci_device_id eni_pci_ids[] = {
 			 VIRTIO_ID_NET) },
 	{ 0 },
 };
+MODULE_DEVICE_TABLE(pci, eni_pci_ids);
 
 static struct pci_driver eni_vdpa_driver = {
 	.name		= "alibaba-eni-vdpa",

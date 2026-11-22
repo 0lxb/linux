@@ -95,9 +95,9 @@ static void _rtl92cu_phy_param_tab_init(struct ieee80211_hw *hw)
 	}
 }
 
-static void _rtl92cu_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
-						 bool autoload_fail,
-						 u8 *hwinfo)
+static noinline_for_stack void
+_rtl92cu_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
+				     bool autoload_fail, u8 *hwinfo)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
@@ -163,20 +163,9 @@ static void _rtl92cu_read_txpower_info_from_hwpg(struct ieee80211_hw *hw,
 			rtlefuse->txpwrlevel_ht40_1s[rf_path][i] =
 			    rtlefuse->
 			    eeprom_chnlarea_txpwr_ht40_1s[rf_path][index];
-			if ((rtlefuse->
-			     eeprom_chnlarea_txpwr_ht40_1s[rf_path][index] -
-			     rtlefuse->
-			     eprom_chnl_txpwr_ht40_2sdf[rf_path][index])
-			    > 0) {
-				rtlefuse->txpwrlevel_ht40_2s[rf_path][i] =
-				    rtlefuse->
-				    eeprom_chnlarea_txpwr_ht40_1s[rf_path]
-				    [index] - rtlefuse->
-				    eprom_chnl_txpwr_ht40_2sdf[rf_path]
-				    [index];
-			} else {
-				rtlefuse->txpwrlevel_ht40_2s[rf_path][i] = 0;
-			}
+			rtlefuse->txpwrlevel_ht40_2s[rf_path][i] =
+				max(rtlefuse->eeprom_chnlarea_txpwr_ht40_1s[rf_path][index] -
+				    rtlefuse->eprom_chnl_txpwr_ht40_2sdf[rf_path][index], 0);
 		}
 		for (i = 0; i < 14; i++) {
 			RTPRINT(rtlpriv, FINIT, INIT_TXPOWER,
@@ -489,7 +478,6 @@ static int _rtl92cu_init_power_on(struct ieee80211_hw *hw)
 }
 
 static void _rtl92cu_init_queue_reserved_page(struct ieee80211_hw *hw,
-					      bool wmm_enable,
 					      u8 out_ep_num,
 					      u8 queue_sel)
 {
@@ -505,66 +493,39 @@ static void _rtl92cu_init_queue_reserved_page(struct ieee80211_hw *hw,
 	u8 value8;
 	u32 txqpagenum, txqpageunit, txqremaininpage;
 
-	if (!wmm_enable) {
-		numpubq = (ischipn) ? CHIP_B_PAGE_NUM_PUBQ :
-			  CHIP_A_PAGE_NUM_PUBQ;
-		txqpagenum = TX_TOTAL_PAGE_NUMBER - numpubq;
+	numpubq = (ischipn) ? CHIP_B_PAGE_NUM_PUBQ :
+		CHIP_A_PAGE_NUM_PUBQ;
+	txqpagenum = TX_TOTAL_PAGE_NUMBER - numpubq;
 
-		txqpageunit = txqpagenum / outepnum;
-		txqremaininpage = txqpagenum % outepnum;
-		if (queue_sel & TX_SELE_HQ)
-			numhq = txqpageunit;
-		if (queue_sel & TX_SELE_LQ)
-			numlq = txqpageunit;
-		/* HIGH priority queue always present in the configuration of
-		 * 2 out-ep. Remainder pages have assigned to High queue */
-		if (outepnum > 1 && txqremaininpage)
-			numhq += txqremaininpage;
-		/* NOTE: This step done before writing REG_RQPN. */
-		if (ischipn) {
-			if (queue_sel & TX_SELE_NQ)
-				numnq = txqpageunit;
-			value8 = (u8)_NPQ(numnq);
-			rtl_write_byte(rtlpriv,  REG_RQPN_NPQ, value8);
-		}
-	} else {
-		/* for WMM ,number of out-ep must more than or equal to 2! */
-		numpubq = ischipn ? WMM_CHIP_B_PAGE_NUM_PUBQ :
-			  WMM_CHIP_A_PAGE_NUM_PUBQ;
-		if (queue_sel & TX_SELE_HQ) {
-			numhq = ischipn ? WMM_CHIP_B_PAGE_NUM_HPQ :
-				WMM_CHIP_A_PAGE_NUM_HPQ;
-		}
-		if (queue_sel & TX_SELE_LQ) {
-			numlq = ischipn ? WMM_CHIP_B_PAGE_NUM_LPQ :
-				WMM_CHIP_A_PAGE_NUM_LPQ;
-		}
-		/* NOTE: This step done before writing REG_RQPN. */
-		if (ischipn) {
-			if (queue_sel & TX_SELE_NQ)
-				numnq = WMM_CHIP_B_PAGE_NUM_NPQ;
-			value8 = (u8)_NPQ(numnq);
-			rtl_write_byte(rtlpriv, REG_RQPN_NPQ, value8);
-		}
+	txqpageunit = txqpagenum / outepnum;
+	txqremaininpage = txqpagenum % outepnum;
+	if (queue_sel & TX_SELE_HQ)
+		numhq = txqpageunit;
+	if (queue_sel & TX_SELE_LQ)
+		numlq = txqpageunit;
+	/* HIGH priority queue always present in the configuration of
+	 * 2 out-ep. Remainder pages have assigned to High queue.
+	 */
+	if (outepnum > 1 && txqremaininpage)
+		numhq += txqremaininpage;
+	/* NOTE: This step done before writing REG_RQPN. */
+	if (ischipn) {
+		if (queue_sel & TX_SELE_NQ)
+			numnq = txqpageunit;
+		value8 = (u8)_NPQ(numnq);
+		rtl_write_byte(rtlpriv,  REG_RQPN_NPQ, value8);
 	}
 	/* TX DMA */
 	value32 = _HPQ(numhq) | _LPQ(numlq) | _PUBQ(numpubq) | LD_RQPN;
 	rtl_write_dword(rtlpriv, REG_RQPN, value32);
 }
 
-static void _rtl92c_init_trx_buffer(struct ieee80211_hw *hw, bool wmm_enable)
+static void _rtl92c_init_trx_buffer(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
-	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
-	u8	txpktbuf_bndy;
+	u8	txpktbuf_bndy = TX_PAGE_BOUNDARY;
 	u8	value8;
 
-	if (!wmm_enable)
-		txpktbuf_bndy = TX_PAGE_BOUNDARY;
-	else /* for WMM */
-		txpktbuf_bndy = (IS_NORMAL_CHIP(rtlhal->version))
-						? WMM_CHIP_B_TX_PAGE_BOUNDARY
-						: WMM_CHIP_A_TX_PAGE_BOUNDARY;
 	rtl_write_byte(rtlpriv, REG_TXPKTBUF_BCNQ_BDNY, txpktbuf_bndy);
 	rtl_write_byte(rtlpriv, REG_TXPKTBUF_MGQ_BDNY, txpktbuf_bndy);
 	rtl_write_byte(rtlpriv, REG_TXPKTBUF_WMAC_LBK_BF_HD, txpktbuf_bndy);
@@ -589,7 +550,6 @@ static void _rtl92c_init_chipn_reg_priority(struct ieee80211_hw *hw, u16 beq,
 }
 
 static void _rtl92cu_init_chipn_one_out_ep_priority(struct ieee80211_hw *hw,
-						    bool wmm_enable,
 						    u8 queue_sel)
 {
 	u16 value;
@@ -614,7 +574,6 @@ static void _rtl92cu_init_chipn_one_out_ep_priority(struct ieee80211_hw *hw,
 }
 
 static void _rtl92cu_init_chipn_two_out_ep_priority(struct ieee80211_hw *hw,
-						     bool wmm_enable,
 						     u8 queue_sel)
 {
 	u16 beq, bkq, viq, voq, mgtq, hiq;
@@ -638,67 +597,47 @@ static void _rtl92cu_init_chipn_two_out_ep_priority(struct ieee80211_hw *hw,
 		valuelow = QUEUE_NORMAL;
 		break;
 	}
-	if (!wmm_enable) {
-		beq = valuelow;
-		bkq = valuelow;
-		viq = valuehi;
-		voq = valuehi;
-		mgtq = valuehi;
-		hiq = valuehi;
-	} else {/* for WMM ,CONFIG_OUT_EP_WIFI_MODE */
-		beq = valuehi;
-		bkq = valuelow;
-		viq = valuelow;
-		voq = valuehi;
-		mgtq = valuehi;
-		hiq = valuehi;
-	}
+
+	beq = valuelow;
+	bkq = valuelow;
+	viq = valuehi;
+	voq = valuehi;
+	mgtq = valuehi;
+	hiq = valuehi;
+
 	_rtl92c_init_chipn_reg_priority(hw, beq, bkq, viq, voq, mgtq, hiq);
 	pr_info("Tx queue select: 0x%02x\n", queue_sel);
 }
 
 static void _rtl92cu_init_chipn_three_out_ep_priority(struct ieee80211_hw *hw,
-						      bool wmm_enable,
 						      u8 queue_sel)
 {
 	u16 beq, bkq, viq, voq, mgtq, hiq;
 
-	if (!wmm_enable) { /* typical setting */
-		beq	= QUEUE_LOW;
-		bkq	= QUEUE_LOW;
-		viq	= QUEUE_NORMAL;
-		voq	= QUEUE_HIGH;
-		mgtq	= QUEUE_HIGH;
-		hiq	= QUEUE_HIGH;
-	} else { /* for WMM */
-		beq	= QUEUE_LOW;
-		bkq	= QUEUE_NORMAL;
-		viq	= QUEUE_NORMAL;
-		voq	= QUEUE_HIGH;
-		mgtq	= QUEUE_HIGH;
-		hiq	= QUEUE_HIGH;
-	}
+	beq	= QUEUE_LOW;
+	bkq	= QUEUE_LOW;
+	viq	= QUEUE_NORMAL;
+	voq	= QUEUE_HIGH;
+	mgtq	= QUEUE_HIGH;
+	hiq	= QUEUE_HIGH;
+
 	_rtl92c_init_chipn_reg_priority(hw, beq, bkq, viq, voq, mgtq, hiq);
 	pr_info("Tx queue select :0x%02x..\n", queue_sel);
 }
 
 static void _rtl92cu_init_chipn_queue_priority(struct ieee80211_hw *hw,
-					       bool wmm_enable,
 					       u8 out_ep_num,
 					       u8 queue_sel)
 {
 	switch (out_ep_num) {
 	case 1:
-		_rtl92cu_init_chipn_one_out_ep_priority(hw, wmm_enable,
-							queue_sel);
+		_rtl92cu_init_chipn_one_out_ep_priority(hw, queue_sel);
 		break;
 	case 2:
-		_rtl92cu_init_chipn_two_out_ep_priority(hw, wmm_enable,
-							queue_sel);
+		_rtl92cu_init_chipn_two_out_ep_priority(hw, queue_sel);
 		break;
 	case 3:
-		_rtl92cu_init_chipn_three_out_ep_priority(hw, wmm_enable,
-							  queue_sel);
+		_rtl92cu_init_chipn_three_out_ep_priority(hw, queue_sel);
 		break;
 	default:
 		WARN_ON(1); /* Shall not reach here! */
@@ -707,7 +646,6 @@ static void _rtl92cu_init_chipn_queue_priority(struct ieee80211_hw *hw,
 }
 
 static void _rtl92cu_init_chipt_queue_priority(struct ieee80211_hw *hw,
-					       bool wmm_enable,
 					       u8 out_ep_num,
 					       u8 queue_sel)
 {
@@ -716,12 +654,7 @@ static void _rtl92cu_init_chipt_queue_priority(struct ieee80211_hw *hw,
 
 	switch (out_ep_num) {
 	case 2:	/* (TX_SELE_HQ|TX_SELE_LQ) */
-		if (!wmm_enable) /* typical setting */
-			hq_sele =  HQSEL_VOQ | HQSEL_VIQ | HQSEL_MGTQ |
-				   HQSEL_HIQ;
-		else	/* for WMM */
-			hq_sele = HQSEL_VOQ | HQSEL_BEQ | HQSEL_MGTQ |
-				  HQSEL_HIQ;
+		hq_sele =  HQSEL_VOQ | HQSEL_VIQ | HQSEL_MGTQ |	HQSEL_HIQ;
 		break;
 	case 1:
 		if (TX_SELE_LQ == queue_sel) {
@@ -742,18 +675,15 @@ static void _rtl92cu_init_chipt_queue_priority(struct ieee80211_hw *hw,
 }
 
 static void _rtl92cu_init_queue_priority(struct ieee80211_hw *hw,
-						bool wmm_enable,
 						u8 out_ep_num,
 						u8 queue_sel)
 {
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 
 	if (IS_NORMAL_CHIP(rtlhal->version))
-		_rtl92cu_init_chipn_queue_priority(hw, wmm_enable, out_ep_num,
-						   queue_sel);
+		_rtl92cu_init_chipn_queue_priority(hw, out_ep_num, queue_sel);
 	else
-		_rtl92cu_init_chipt_queue_priority(hw, wmm_enable, out_ep_num,
-						   queue_sel);
+		_rtl92cu_init_chipt_queue_priority(hw, out_ep_num, queue_sel);
 }
 
 static void _rtl92cu_init_wmac_setting(struct ieee80211_hw *hw)
@@ -810,8 +740,7 @@ static int _rtl92cu_init_mac(struct ieee80211_hw *hw)
 	struct rtl_usb_priv *usb_priv = rtl_usbpriv(hw);
 	struct rtl_usb *rtlusb = rtl_usbdev(usb_priv);
 	int err = 0;
-	u32	boundary = 0;
-	u8 wmm_enable = false; /* TODO */
+	u32 boundary = TX_PAGE_BOUNDARY;
 	u8 out_ep_nums = rtlusb->out_ep_nums;
 	u8 queue_sel = rtlusb->out_queue_sel;
 
@@ -821,22 +750,13 @@ static int _rtl92cu_init_mac(struct ieee80211_hw *hw)
 		pr_err("Failed to init power on!\n");
 		return err;
 	}
-	if (!wmm_enable) {
-		boundary = TX_PAGE_BOUNDARY;
-	} else { /* for WMM */
-		boundary = (IS_NORMAL_CHIP(rtlhal->version))
-					? WMM_CHIP_B_TX_PAGE_BOUNDARY
-					: WMM_CHIP_A_TX_PAGE_BOUNDARY;
-	}
 	if (!rtl92c_init_llt_table(hw, boundary)) {
 		pr_err("Failed to init LLT Table!\n");
 		return -EINVAL;
 	}
-	_rtl92cu_init_queue_reserved_page(hw, wmm_enable, out_ep_nums,
-					  queue_sel);
-	_rtl92c_init_trx_buffer(hw, wmm_enable);
-	_rtl92cu_init_queue_priority(hw, wmm_enable, out_ep_nums,
-				     queue_sel);
+	_rtl92cu_init_queue_reserved_page(hw, out_ep_nums, queue_sel);
+	_rtl92c_init_trx_buffer(hw);
+	_rtl92cu_init_queue_priority(hw, out_ep_nums, queue_sel);
 	/* Get Rx PHY status in order to report RSSI and others. */
 	rtl92c_init_driver_info_size(hw, RTL92C_DRIVER_INFO_SIZE);
 	rtl92c_init_interrupt(hw);
@@ -1553,7 +1473,6 @@ void rtl92cu_set_hw_reg(struct ieee80211_hw *hw, u8 variable, u8 *val)
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
-	enum wireless_mode wirelessmode = mac->mode;
 	u8 idx = 0;
 
 	switch (variable) {
@@ -1605,36 +1524,15 @@ void rtl92cu_set_hw_reg(struct ieee80211_hw *hw, u8 variable, u8 *val)
 		}
 	case HW_VAR_SLOT_TIME:{
 			u8 e_aci;
-			u8 QOS_MODE = 1;
 
 			rtl_write_byte(rtlpriv, REG_SLOT, val[0]);
 			rtl_dbg(rtlpriv, COMP_MLME, DBG_LOUD,
 				"HW_VAR_SLOT_TIME %x\n", val[0]);
-			if (QOS_MODE) {
-				for (e_aci = 0; e_aci < AC_MAX; e_aci++)
-					rtlpriv->cfg->ops->set_hw_reg(hw,
-								HW_VAR_AC_PARAM,
-								&e_aci);
-			} else {
-				u8 sifstime = 0;
-				u8	u1baifs;
 
-				if (IS_WIRELESS_MODE_A(wirelessmode) ||
-				    IS_WIRELESS_MODE_N_24G(wirelessmode) ||
-				    IS_WIRELESS_MODE_N_5G(wirelessmode))
-					sifstime = 16;
-				else
-					sifstime = 10;
-				u1baifs = sifstime + (2 *  val[0]);
-				rtl_write_byte(rtlpriv, REG_EDCA_VO_PARAM,
-					       u1baifs);
-				rtl_write_byte(rtlpriv, REG_EDCA_VI_PARAM,
-					       u1baifs);
-				rtl_write_byte(rtlpriv, REG_EDCA_BE_PARAM,
-					       u1baifs);
-				rtl_write_byte(rtlpriv, REG_EDCA_BK_PARAM,
-					       u1baifs);
-			}
+			for (e_aci = 0; e_aci < AC_MAX; e_aci++)
+				rtlpriv->cfg->ops->set_hw_reg(hw,
+							      HW_VAR_AC_PARAM,
+							      &e_aci);
 			break;
 		}
 	case HW_VAR_ACK_PREAMBLE:{
@@ -1911,10 +1809,9 @@ static void rtl92cu_update_hal_rate_table(struct ieee80211_hw *hw,
 	struct rtl_phy *rtlphy = &(rtlpriv->phy);
 	struct rtl_mac *mac = rtl_mac(rtl_priv(hw));
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
-	u32 ratr_value;
+	u32 ratr_value, ratr_mask;
 	u8 ratr_index = 0;
 	u8 nmode = mac->ht_enable;
-	u8 mimo_ps = IEEE80211_SMPS_OFF;
 	u16 shortgi_rate;
 	u32 tmp_ratr_value;
 	u8 curtxbw_40mhz = mac->bw_40;
@@ -1946,19 +1843,14 @@ static void rtl92cu_update_hal_rate_table(struct ieee80211_hw *hw,
 	case WIRELESS_MODE_N_24G:
 	case WIRELESS_MODE_N_5G:
 		nmode = 1;
-		if (mimo_ps == IEEE80211_SMPS_STATIC) {
-			ratr_value &= 0x0007F005;
-		} else {
-			u32 ratr_mask;
 
-			if (get_rf_type(rtlphy) == RF_1T2R ||
-			    get_rf_type(rtlphy) == RF_1T1R)
-				ratr_mask = 0x000ff005;
-			else
-				ratr_mask = 0x0f0ff005;
+		if (get_rf_type(rtlphy) == RF_1T2R ||
+		    get_rf_type(rtlphy) == RF_1T1R)
+			ratr_mask = 0x000ff005;
+		else
+			ratr_mask = 0x0f0ff005;
 
-			ratr_value &= ratr_mask;
-		}
+		ratr_value &= ratr_mask;
 		break;
 	default:
 		if (rtlphy->rf_type == RF_1T2R)
@@ -2013,7 +1905,6 @@ static void rtl92cu_update_hal_rate_mask(struct ieee80211_hw *hw,
 	bool shortgi = false;
 	u8 rate_mask[5];
 	u8 macid = 0;
-	u8 mimo_ps = IEEE80211_SMPS_OFF;
 
 	sta_entry = (struct rtl_sta_info *) sta->drv_priv;
 	wirelessmode = sta_entry->wireless_mode;
@@ -2058,47 +1949,38 @@ static void rtl92cu_update_hal_rate_mask(struct ieee80211_hw *hw,
 	case WIRELESS_MODE_N_5G:
 		ratr_index = RATR_INX_WIRELESS_NGB;
 
-		if (mimo_ps == IEEE80211_SMPS_STATIC) {
-			if (rssi_level == 1)
-				ratr_bitmap &= 0x00070000;
-			else if (rssi_level == 2)
-				ratr_bitmap &= 0x0007f000;
-			else
-				ratr_bitmap &= 0x0007f005;
-		} else {
-			if (rtlphy->rf_type == RF_1T2R ||
-			    rtlphy->rf_type == RF_1T1R) {
-				if (curtxbw_40mhz) {
-					if (rssi_level == 1)
-						ratr_bitmap &= 0x000f0000;
-					else if (rssi_level == 2)
-						ratr_bitmap &= 0x000ff000;
-					else
-						ratr_bitmap &= 0x000ff015;
-				} else {
-					if (rssi_level == 1)
-						ratr_bitmap &= 0x000f0000;
-					else if (rssi_level == 2)
-						ratr_bitmap &= 0x000ff000;
-					else
-						ratr_bitmap &= 0x000ff005;
-				}
+		if (rtlphy->rf_type == RF_1T2R ||
+		    rtlphy->rf_type == RF_1T1R) {
+			if (curtxbw_40mhz) {
+				if (rssi_level == 1)
+					ratr_bitmap &= 0x000f0000;
+				else if (rssi_level == 2)
+					ratr_bitmap &= 0x000ff000;
+				else
+					ratr_bitmap &= 0x000ff015;
 			} else {
-				if (curtxbw_40mhz) {
-					if (rssi_level == 1)
-						ratr_bitmap &= 0x0f0f0000;
-					else if (rssi_level == 2)
-						ratr_bitmap &= 0x0f0ff000;
-					else
-						ratr_bitmap &= 0x0f0ff015;
-				} else {
-					if (rssi_level == 1)
-						ratr_bitmap &= 0x0f0f0000;
-					else if (rssi_level == 2)
-						ratr_bitmap &= 0x0f0ff000;
-					else
-						ratr_bitmap &= 0x0f0ff005;
-				}
+				if (rssi_level == 1)
+					ratr_bitmap &= 0x000f0000;
+				else if (rssi_level == 2)
+					ratr_bitmap &= 0x000ff000;
+				else
+					ratr_bitmap &= 0x000ff005;
+			}
+		} else {
+			if (curtxbw_40mhz) {
+				if (rssi_level == 1)
+					ratr_bitmap &= 0x0f0f0000;
+				else if (rssi_level == 2)
+					ratr_bitmap &= 0x0f0ff000;
+				else
+					ratr_bitmap &= 0x0f0ff015;
+			} else {
+				if (rssi_level == 1)
+					ratr_bitmap &= 0x0f0f0000;
+				else if (rssi_level == 2)
+					ratr_bitmap &= 0x0f0ff000;
+				else
+					ratr_bitmap &= 0x0f0ff005;
 			}
 		}
 

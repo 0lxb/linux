@@ -8,7 +8,6 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/lcd.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
@@ -225,7 +224,7 @@ static int hx8357_spi_write_then_read(struct lcd_device *lcdev,
 	if (txlen) {
 		int i;
 
-		local_txbuf = kcalloc(txlen, sizeof(*local_txbuf), GFP_KERNEL);
+		local_txbuf = kzalloc_objs(*local_txbuf, txlen);
 
 		if (!local_txbuf)
 			return -ENOMEM;
@@ -532,7 +531,7 @@ static int hx8369_lcd_init(struct lcd_device *lcdev)
 	return 0;
 }
 
-#define POWER_IS_ON(pwr)	((pwr) <= FB_BLANK_NORMAL)
+#define POWER_IS_ON(pwr)	((pwr) <= LCD_POWER_REDUCED)
 
 static int hx8357_set_power(struct lcd_device *lcdev, int power)
 {
@@ -559,7 +558,7 @@ static int hx8357_get_power(struct lcd_device *lcdev)
 	return lcd->state;
 }
 
-static struct lcd_ops hx8357_ops = {
+static const struct lcd_ops hx8357_ops = {
 	.set_power	= hx8357_set_power,
 	.get_power	= hx8357_get_power,
 };
@@ -574,7 +573,7 @@ static int hx8357_probe(struct spi_device *spi)
 	hx8357_init_fn init_fn;
 	int i, ret;
 
-	lcd = devm_kzalloc(dev, sizeof(*lcd), GFP_KERNEL);
+	lcd = devm_kzalloc_obj(dev, *lcd);
 	if (!lcd)
 		return -ENOMEM;
 

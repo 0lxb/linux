@@ -421,7 +421,7 @@ static int sierra_write(struct tty_struct *tty, struct usb_serial_port *port,
 	unsigned long flags;
 	unsigned char *buffer;
 	struct urb *urb;
-	size_t writesize = min((size_t)count, (size_t)MAX_TRANSFER);
+	size_t writesize = min_t(size_t, count, MAX_TRANSFER);
 	int retval = 0;
 
 	/* verify that we actually have some data to write */
@@ -575,12 +575,24 @@ static void sierra_instat_callback(struct urb *urb)
 				__func__);
 			return;
 		}
+		if (urb->actual_length < sizeof(*req_pkt)) {
+			dev_err(&port->dev, "%s: short transfer\n",
+				__func__);
+			return;
+		}
 		if ((req_pkt->bRequestType == 0xA1) &&
 				(req_pkt->bRequest == 0x20)) {
 			int old_dcd_state;
-			unsigned char signals = *((unsigned char *)
-					urb->transfer_buffer +
-					sizeof(struct usb_ctrlrequest));
+			unsigned char signals;
+
+			if (urb->actual_length < sizeof(*req_pkt) + 1) {
+				dev_err(&port->dev,
+					"%s: short interrupt transfer\n",
+					__func__);
+				return;
+			}
+			signals = *((unsigned char *)urb->transfer_buffer +
+					sizeof(*req_pkt));
 
 			dev_dbg(&port->dev, "%s: signal x%x\n", __func__,
 				signals);
@@ -828,7 +840,7 @@ static int sierra_startup(struct usb_serial *serial)
 {
 	struct sierra_intf_private *intfdata;
 
-	intfdata = kzalloc(sizeof(*intfdata), GFP_KERNEL);
+	intfdata = kzalloc_obj(*intfdata);
 	if (!intfdata)
 		return -ENOMEM;
 
@@ -861,7 +873,7 @@ static int sierra_port_probe(struct usb_serial_port *port)
 	const struct sierra_iface_list *himemory_list;
 	u8 ifnum;
 
-	portdata = kzalloc(sizeof(*portdata), GFP_KERNEL);
+	portdata = kzalloc_obj(*portdata);
 	if (!portdata)
 		return -ENOMEM;
 
@@ -972,12 +984,13 @@ static int sierra_submit_delayed_urbs(struct usb_serial_port *port)
 			intfdata->in_flight--;
 			usb_unanchor_urb(urb);
 			kfree(urb->transfer_buffer);
-			usb_free_urb(urb);
 
 			spin_lock(&portdata->lock);
 			portdata->outstanding_urbs--;
 			spin_unlock(&portdata->lock);
 		}
+
+		usb_put_urb(urb);
 	}
 
 	if (ec)
@@ -1021,7 +1034,6 @@ static int sierra_resume(struct usb_serial *serial)
 
 static struct usb_serial_driver sierra_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"sierra",
 	},
 	.description       = "Sierra USB modem",

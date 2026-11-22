@@ -34,29 +34,6 @@ static inline struct bcm2835_pwm *to_bcm2835_pwm(struct pwm_chip *chip)
 	return pwmchip_get_drvdata(chip);
 }
 
-static int bcm2835_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
-{
-	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
-	u32 value;
-
-	value = readl(pc->base + PWM_CONTROL);
-	value &= ~(PWM_CONTROL_MASK << PWM_CONTROL_SHIFT(pwm->hwpwm));
-	value |= (PWM_MODE << PWM_CONTROL_SHIFT(pwm->hwpwm));
-	writel(value, pc->base + PWM_CONTROL);
-
-	return 0;
-}
-
-static void bcm2835_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
-{
-	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
-	u32 value;
-
-	value = readl(pc->base + PWM_CONTROL);
-	value &= ~(PWM_CONTROL_MASK << PWM_CONTROL_SHIFT(pwm->hwpwm));
-	writel(value, pc->base + PWM_CONTROL);
-}
-
 static int bcm2835_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			     const struct pwm_state *state)
 {
@@ -102,6 +79,9 @@ static int bcm2835_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	/* set polarity */
 	val = readl(pc->base + PWM_CONTROL);
 
+	val &= ~(PWM_CONTROL_MASK << PWM_CONTROL_SHIFT(pwm->hwpwm));
+	val |= PWM_MODE << PWM_CONTROL_SHIFT(pwm->hwpwm);
+
 	if (state->polarity == PWM_POLARITY_NORMAL)
 		val &= ~(PWM_POLARITY << PWM_CONTROL_SHIFT(pwm->hwpwm));
 	else
@@ -119,25 +99,17 @@ static int bcm2835_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 }
 
 static const struct pwm_ops bcm2835_pwm_ops = {
-	.request = bcm2835_pwm_request,
-	.free = bcm2835_pwm_free,
 	.apply = bcm2835_pwm_apply,
 };
 
-static void devm_clk_rate_exclusive_put(void *data)
-{
-	struct clk *clk = data;
-
-	clk_rate_exclusive_put(clk);
-}
-
 static int bcm2835_pwm_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	struct pwm_chip *chip;
 	struct bcm2835_pwm *pc;
 	int ret;
 
-	chip = devm_pwmchip_alloc(&pdev->dev, 2, sizeof(*pc));
+	chip = devm_pwmchip_alloc(dev, 2, sizeof(*pc));
 	if (IS_ERR(chip))
 		return PTR_ERR(chip);
 	pc = to_bcm2835_pwm(chip);
@@ -146,24 +118,19 @@ static int bcm2835_pwm_probe(struct platform_device *pdev)
 	if (IS_ERR(pc->base))
 		return PTR_ERR(pc->base);
 
-	pc->clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	pc->clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(pc->clk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(pc->clk),
+		return dev_err_probe(dev, PTR_ERR(pc->clk),
 				     "clock not found\n");
 
-	ret = clk_rate_exclusive_get(pc->clk);
+	ret = devm_clk_rate_exclusive_get(dev, pc->clk);
 	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
+		return dev_err_probe(dev, ret,
 				     "fail to get exclusive rate\n");
-
-	ret = devm_add_action_or_reset(&pdev->dev, devm_clk_rate_exclusive_put,
-				       pc->clk);
-	if (ret)
-		return ret;
 
 	pc->rate = clk_get_rate(pc->clk);
 	if (!pc->rate)
-		return dev_err_probe(&pdev->dev, -EINVAL,
+		return dev_err_probe(dev, -EINVAL,
 				     "failed to get clock rate\n");
 
 	chip->ops = &bcm2835_pwm_ops;
@@ -171,10 +138,9 @@ static int bcm2835_pwm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pc);
 
-	ret = devm_pwmchip_add(&pdev->dev, chip);
+	ret = devm_pwmchip_add(dev, chip);
 	if (ret < 0)
-		return dev_err_probe(&pdev->dev, ret,
-				     "failed to add pwmchip\n");
+		return dev_err_probe(dev, ret, "failed to add pwmchip\n");
 
 	return 0;
 }
@@ -199,7 +165,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(bcm2835_pwm_pm_ops, bcm2835_pwm_suspend,
 				bcm2835_pwm_resume);
 
 static const struct of_device_id bcm2835_pwm_of_match[] = {
-	{ .compatible = "brcm,bcm2835-pwm", },
+	{ .compatible = "brcm,bcm2835-pwm" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, bcm2835_pwm_of_match);

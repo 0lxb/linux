@@ -5,9 +5,11 @@ config DRM_PL111
 	depends on ARM || ARM64 || COMPILE_TEST
 	depends on VEXPRESS_CONFIG || VEXPRESS_CONFIG=n
 	depends on COMMON_CLK
+	select DRM_CLIENT_SELECTION
 	select DRM_KMS_HELPER
 	select DRM_GEM_DMA_HELPER
 	select DRM_BRIDGE
+	select DRM_PANEL
 	select DRM_PANEL_BRIDGE
 	help
 	  Choose this option for DRM support for the PL111 CLCD controller.

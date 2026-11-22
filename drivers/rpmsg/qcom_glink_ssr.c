@@ -128,7 +128,7 @@ static int qcom_glink_ssr_probe(struct rpmsg_device *rpdev)
 {
 	struct glink_ssr *ssr;
 
-	ssr = devm_kzalloc(&rpdev->dev, sizeof(*ssr), GFP_KERNEL);
+	ssr = devm_kzalloc_obj(&rpdev->dev, *ssr);
 	if (!ssr)
 		return -ENOMEM;
 
@@ -154,6 +154,7 @@ static const struct rpmsg_device_id qcom_glink_ssr_match[] = {
 	{ "glink_ssr" },
 	{}
 };
+MODULE_DEVICE_TABLE(rpmsg, qcom_glink_ssr_match);
 
 static struct rpmsg_driver qcom_glink_ssr_driver = {
 	.probe = qcom_glink_ssr_probe,

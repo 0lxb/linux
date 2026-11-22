@@ -10,10 +10,10 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
+#include <linux/freezer.h>
 #include "fs.h"
 
 struct inode;
-struct page;
 struct btrfs_fs_info;
 struct btrfs_path;
 struct btrfs_trans_handle;
@@ -56,6 +56,11 @@ static inline bool btrfs_free_space_trimming_bitmap(
 	return (info->trim_state == BTRFS_TRIM_STATE_TRIMMING);
 }
 
+static inline bool btrfs_trim_interrupted(void)
+{
+	return fatal_signal_pending(current) || freezing(current);
+}
+
 /*
  * Deltas are an effective way to populate global statistics.  Give macro names
  * to make it clear what we're doing.  An example is discard_extents in
@@ -68,62 +73,28 @@ enum {
 };
 
 struct btrfs_free_space_ctl {
-	spinlock_t tree_lock;
 	struct rb_root free_space_offset;
 	struct rb_root_cached free_space_bytes;
-	u64 free_space;
+	spinlock_t tree_lock;
 	int extents_thresh;
 	int free_extents;
 	int total_bitmaps;
-	int unit;
-	u64 start;
+	u64 free_space;
 	s32 discardable_extents[BTRFS_STAT_NR_ENTRIES];
 	s64 discardable_bytes[BTRFS_STAT_NR_ENTRIES];
-	const struct btrfs_free_space_op *op;
 	struct btrfs_block_group *block_group;
-	struct mutex cache_writeout_mutex;
-	struct list_head trimming_ranges;
-};
-
-struct btrfs_free_space_op {
-	bool (*use_bitmap)(struct btrfs_free_space_ctl *ctl,
-			   struct btrfs_free_space *info);
-};
-
-struct btrfs_io_ctl {
-	void *cur, *orig;
-	struct page *page;
-	struct page **pages;
-	struct btrfs_fs_info *fs_info;
-	struct inode *inode;
-	unsigned long size;
-	int index;
-	int num_pages;
-	int entries;
-	int bitmaps;
 };
 
 int __init btrfs_free_space_init(void);
 void __cold btrfs_free_space_exit(void);
 struct inode *lookup_free_space_inode(struct btrfs_block_group *block_group,
 		struct btrfs_path *path);
-int create_free_space_inode(struct btrfs_trans_handle *trans,
-			    struct btrfs_block_group *block_group,
-			    struct btrfs_path *path);
 int btrfs_remove_free_space_inode(struct btrfs_trans_handle *trans,
 				  struct inode *inode,
 				  struct btrfs_block_group *block_group);
 
 int btrfs_truncate_free_space_cache(struct btrfs_trans_handle *trans,
-				    struct btrfs_block_group *block_group,
 				    struct inode *inode);
-int load_free_space_cache(struct btrfs_block_group *block_group);
-int btrfs_wait_cache_io(struct btrfs_trans_handle *trans,
-			struct btrfs_block_group *block_group,
-			struct btrfs_path *path);
-int btrfs_write_out_cache(struct btrfs_trans_handle *trans,
-			  struct btrfs_block_group *block_group,
-			  struct btrfs_path *path);
 
 void btrfs_init_free_space_ctl(struct btrfs_block_group *block_group,
 			       struct btrfs_free_space_ctl *ctl);
@@ -160,11 +131,14 @@ int btrfs_trim_block_group_extents(struct btrfs_block_group *block_group,
 int btrfs_trim_block_group_bitmaps(struct btrfs_block_group *block_group,
 				   u64 *trimmed, u64 start, u64 end, u64 minlen,
 				   u64 maxlen, bool async);
+void btrfs_trim_fully_remapped_block_group(struct btrfs_block_group *bg);
 
 bool btrfs_free_space_cache_v1_active(struct btrfs_fs_info *fs_info);
-int btrfs_set_free_space_cache_v1_active(struct btrfs_fs_info *fs_info, bool active);
+int btrfs_cleanup_free_space_cache_v1(struct btrfs_fs_info *fs_info);
 /* Support functions for running our sanity tests */
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
+bool btrfs_use_bitmap(struct btrfs_free_space_ctl *ctl,
+		      struct btrfs_free_space *info);
 int test_add_free_space_entry(struct btrfs_block_group *cache,
 			      u64 offset, u64 bytes, bool bitmap);
 int test_check_exists(struct btrfs_block_group *cache, u64 offset, u64 bytes);

@@ -660,7 +660,7 @@ sti_tvout_create_dvo_encoder(struct drm_device *dev,
 	struct sti_tvout_encoder *encoder;
 	struct drm_encoder *drm_encoder;
 
-	encoder = devm_kzalloc(tvout->dev, sizeof(*encoder), GFP_KERNEL);
+	encoder = devm_kzalloc_obj(tvout->dev, *encoder);
 	if (!encoder)
 		return NULL;
 
@@ -712,7 +712,7 @@ static struct drm_encoder *sti_tvout_create_hda_encoder(struct drm_device *dev,
 	struct sti_tvout_encoder *encoder;
 	struct drm_encoder *drm_encoder;
 
-	encoder = devm_kzalloc(tvout->dev, sizeof(*encoder), GFP_KERNEL);
+	encoder = devm_kzalloc_obj(tvout->dev, *encoder);
 	if (!encoder)
 		return NULL;
 
@@ -760,7 +760,7 @@ static struct drm_encoder *sti_tvout_create_hdmi_encoder(struct drm_device *dev,
 	struct sti_tvout_encoder *encoder;
 	struct drm_encoder *drm_encoder;
 
-	encoder = devm_kzalloc(tvout->dev, sizeof(*encoder), GFP_KERNEL);
+	encoder = devm_kzalloc_obj(tvout->dev, *encoder);
 	if (!encoder)
 		return NULL;
 
@@ -838,28 +838,20 @@ static int sti_tvout_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
 	struct sti_tvout *tvout;
-	struct resource *res;
 
 	DRM_INFO("%s\n", __func__);
 
 	if (!node)
 		return -ENODEV;
 
-	tvout = devm_kzalloc(dev, sizeof(*tvout), GFP_KERNEL);
+	tvout = devm_kzalloc_obj(dev, *tvout);
 	if (!tvout)
 		return -ENOMEM;
 
 	tvout->dev = dev;
-
-	/* get memory resources */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "tvout-reg");
-	if (!res) {
-		DRM_ERROR("Invalid glue resource\n");
-		return -ENOMEM;
-	}
-	tvout->regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!tvout->regs)
-		return -ENOMEM;
+	tvout->regs = devm_platform_ioremap_resource_byname(pdev, "tvout-reg");
+	if (IS_ERR(tvout->regs))
+		return PTR_ERR(tvout->regs);
 
 	/* get reset resources */
 	tvout->reset = devm_reset_control_get(dev, "tvout");
@@ -886,11 +878,10 @@ MODULE_DEVICE_TABLE(of, tvout_of_match);
 struct platform_driver sti_tvout_driver = {
 	.driver = {
 		.name = "sti-tvout",
-		.owner = THIS_MODULE,
 		.of_match_table = tvout_of_match,
 	},
 	.probe = sti_tvout_probe,
-	.remove_new = sti_tvout_remove,
+	.remove = sti_tvout_remove,
 };
 
 MODULE_AUTHOR("Benjamin Gaignard <benjamin.gaignard@st.com>");

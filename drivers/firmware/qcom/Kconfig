@@ -6,19 +6,45 @@
 
 menu "Qualcomm firmware drivers"
 
-config QCOM_SCM
-	tristate
-
-config QCOM_SCM_DOWNLOAD_MODE_DEFAULT
-	bool "Qualcomm download mode enabled by default"
-	depends on QCOM_SCM
+config QCOM_PAS
+	tristate "Qualcomm generic PAS interface driver" if COMPILE_TEST
 	help
-	  A device with "download mode" enabled will upon an unexpected
-	  warm-restart enter a special debug mode that allows the user to
-	  "download" memory content over USB for offline postmortem analysis.
-	  The feature can be enabled/disabled on the kernel command line.
+	  Enable the generic Peripheral Authentication Service (PAS) provided
+	  by the firmware. It acts as the common layer with different TZ
+	  backends plugged in whether it's an SCM implementation or a proper
+	  TEE bus based PAS service implementation.
 
-	  Say Y here to enable "download mode" by default.
+config QCOM_PAS_TEE
+	tristate "Qualcomm PAS TEE interface driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	select QCOM_PAS
+	depends on TEE
+	depends on !CPU_BIG_ENDIAN
+	default m if ARCH_QCOM
+	help
+	  Enable the generic Peripheral Authentication Service (PAS) provided
+	  by the firmware TEE implementation as the backend.
+
+config QCOM_SCM
+	tristate "Qualcomm PAS SCM interface driver" if ARCH_QCOM || COMPILE_TEST
+	select QCOM_PAS
+	select QCOM_TZMEM
+	default y if ARCH_QCOM
+
+config QCOM_TZMEM
+	tristate
+	select GENERIC_ALLOCATOR
+
+config QCOM_TZMEM_MODE_SHMBRIDGE
+	bool "TrustZone interface memory allocator: SHM Bridge"
+	depends on QCOM_TZMEM
+	help
+	  Use Qualcomm Shared Memory Bridge as memory allocator. The memory has the
+	  same alignment as in the 'Generic' allocator, which is used when this option
+	  is disabled, but is also explicitly marked as an SHM Bridge buffer.
+
+	  With this selected, all buffers passed to the TrustZone must be allocated
+	  using the TZMem allocator or else the TrustZone will refuse to use them.
 
 config QCOM_QSEECOM
 	bool "Qualcomm QSEECOM interface driver"

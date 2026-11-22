@@ -740,7 +740,7 @@ static int hisi_nfc_probe(struct platform_device *pdev)
 	struct mtd_info   *mtd;
 	struct device_node *np = dev->of_node;
 
-	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
+	host = devm_kzalloc_obj(dev, *host);
 	if (!host)
 		return -ENOMEM;
 	host->dev = dev;
@@ -858,7 +858,7 @@ static struct platform_driver hisi_nfc_driver = {
 		.pm = &hisi_nfc_pm_ops,
 	},
 	.probe		= hisi_nfc_probe,
-	.remove_new	= hisi_nfc_remove,
+	.remove		= hisi_nfc_remove,
 };
 
 module_platform_driver(hisi_nfc_driver);

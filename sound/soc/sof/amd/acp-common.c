@@ -16,6 +16,7 @@
 #include "acp.h"
 #include "acp-dsp-offset.h"
 #include <sound/sof/xtensa.h>
+#include "../../amd/acp/soc_amd_sdw_common.h"
 
 /**
  * amd_sof_ipc_dump() - This function is called when IPC tx times out.
@@ -131,6 +132,7 @@ static struct snd_soc_acpi_mach *amd_sof_sdw_machine_select(struct snd_sof_dev *
 	struct snd_soc_acpi_mach *mach;
 	const struct snd_soc_acpi_link_adr *link;
 	struct acp_dev_data *acp_data = sdev->pdata->hw_pdata;
+	struct amd_pdm_pdata *pdm_pdata;
 	int ret, i;
 
 	if (acp_data->info.count) {
@@ -145,17 +147,33 @@ static struct snd_soc_acpi_mach *amd_sof_sdw_machine_select(struct snd_sof_dev *
 			link = mach->links;
 			for (i = 0; i < acp_data->info.count && link->num_adr; link++, i++) {
 				if (!snd_soc_acpi_sdw_link_slaves_found(sdev->dev, link,
-									acp_data->sdw->ids,
-									acp_data->sdw->num_slaves))
+									acp_data->sdw->peripherals))
 					break;
 			}
 			if (i == acp_data->info.count || !link->num_adr)
-				break;
+				if (!mach->machine_check || mach->machine_check(acp_data->sdw))
+					break;
 		}
 		if (mach && mach->link_mask) {
+			mach->mach_params.subsystem_rev = acp_data->pci_rev;
+			mach->mach_params.subsystem_vendor = acp_data->subsystem_vendor;
+			mach->mach_params.subsystem_device = acp_data->subsystem_device;
+			mach->mach_params.subsystem_id_set = true;
 			mach->mach_params.links = mach->links;
 			mach->mach_params.link_mask = mach->link_mask;
 			mach->mach_params.platform = dev_name(sdev->dev);
+
+			if (acp_data->pdm_sel) {
+				pdm_pdata = devm_kzalloc_obj(sdev->dev,
+							     *pdm_pdata);
+				if (!pdm_pdata)
+					return NULL;
+				pdm_pdata->pdm_sel = acp_data->pdm_sel;
+				mach->pdata = pdm_pdata;
+			}
+
+			dev_dbg(sdev->dev, "SSID %x%04x\n", mach->mach_params.subsystem_vendor,
+				mach->mach_params.subsystem_device);
 			return mach;
 		}
 	}
@@ -173,8 +191,10 @@ static struct snd_soc_acpi_mach *amd_sof_sdw_machine_select(struct snd_sof_dev *
 struct snd_soc_acpi_mach *amd_sof_machine_select(struct snd_sof_dev *sdev)
 {
 	struct snd_sof_pdata *sof_pdata = sdev->pdata;
+	struct acp_dev_data *acp_data = sdev->pdata->hw_pdata;
 	const struct sof_dev_desc *desc = sof_pdata->desc;
 	struct snd_soc_acpi_mach *mach = NULL;
+	struct amd_pdm_pdata *pdm_pdata;
 
 	if (desc->machines)
 		mach = snd_soc_acpi_find_machine(desc->machines);
@@ -186,6 +206,22 @@ struct snd_soc_acpi_mach *amd_sof_machine_select(struct snd_sof_dev *sdev)
 		}
 	}
 
+	mach = devm_kmemdup(sdev->dev, mach, sizeof(*mach), GFP_KERNEL);
+	if (!mach) {
+		dev_err(sdev->dev, "failed to allocate machine entry copy\n");
+		return NULL;
+	}
+
+	mach->mach_params.subsystem_rev = acp_data->pci_rev;
+
+	if (acp_data->pdm_sel) {
+		pdm_pdata = devm_kzalloc_obj(sdev->dev, *pdm_pdata);
+		if (!pdm_pdata)
+			return NULL;
+		pdm_pdata->pdm_sel = acp_data->pdm_sel;
+		mach->pdata = pdm_pdata;
+	}
+
 	sof_pdata->tplg_filename = mach->sof_tplg_filename;
 	sof_pdata->fw_filename = mach->fw_filename;
 
@@ -193,7 +229,7 @@ struct snd_soc_acpi_mach *amd_sof_machine_select(struct snd_sof_dev *sdev)
 }
 
 /* AMD Common DSP ops */
-struct snd_sof_dsp_ops sof_acp_common_ops = {
+const struct snd_sof_dsp_ops sof_acp_common_ops = {
 	/* probe and remove */
 	.probe			= amd_sof_acp_probe,
 	.remove			= amd_sof_acp_remove,
@@ -256,10 +292,10 @@ struct snd_sof_dsp_ops sof_acp_common_ops = {
 	.register_ipc_clients = acp_probes_register,
 	.unregister_ipc_clients = acp_probes_unregister,
 };
-EXPORT_SYMBOL_NS(sof_acp_common_ops, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(sof_acp_common_ops, "SND_SOC_SOF_AMD_COMMON");
 
-MODULE_IMPORT_NS(SND_SOC_SOF_AMD_COMMON);
-MODULE_IMPORT_NS(SND_SOC_SOF_XTENSA);
-MODULE_IMPORT_NS(SOUNDWIRE_AMD_INIT);
-MODULE_DESCRIPTION("ACP SOF COMMON Driver");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("ACP SOF COMMON Driver");
+MODULE_IMPORT_NS("SND_SOC_SOF_AMD_COMMON");
+MODULE_IMPORT_NS("SND_SOC_SOF_XTENSA");
+MODULE_IMPORT_NS("SOUNDWIRE_AMD_INIT");

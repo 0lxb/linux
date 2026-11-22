@@ -8,7 +8,40 @@
 
 #include "intel_display_reg_defs.h"
 
-/* legacy palette */
+/* GMCH palette */
+#define _PALETTE_A		0xa000
+#define _PALETTE_B		0xa800
+#define _CHV_PALETTE_C		0xc000
+/* 8bit mode / i965+ 10.6 interpolated mode ldw/udw */
+#define   PALETTE_RED_MASK		REG_GENMASK(23, 16)
+#define   PALETTE_GREEN_MASK		REG_GENMASK(15, 8)
+#define   PALETTE_BLUE_MASK		REG_GENMASK(7, 0)
+/* pre-i965 10bit interpolated mode ldw */
+#define   PALETTE_10BIT_RED_LDW_MASK	REG_GENMASK(23, 16)
+#define   PALETTE_10BIT_GREEN_LDW_MASK	REG_GENMASK(15, 8)
+#define   PALETTE_10BIT_BLUE_LDW_MASK	REG_GENMASK(7, 0)
+/* pre-i965 10bit interpolated mode udw */
+#define   PALETTE_10BIT_RED_EXP_MASK	REG_GENMASK(23, 22)
+#define   PALETTE_10BIT_RED_MANT_MASK	REG_GENMASK(21, 18)
+#define   PALETTE_10BIT_RED_UDW_MASK	REG_GENMASK(17, 16)
+#define   PALETTE_10BIT_GREEN_EXP_MASK	REG_GENMASK(15, 14)
+#define   PALETTE_10BIT_GREEN_MANT_MASK	REG_GENMASK(13, 10)
+#define   PALETTE_10BIT_GREEN_UDW_MASK	REG_GENMASK(9, 8)
+#define   PALETTE_10BIT_BLUE_EXP_MASK	REG_GENMASK(7, 6)
+#define   PALETTE_10BIT_BLUE_MANT_MASK	REG_GENMASK(5, 2)
+#define   PALETTE_10BIT_BLUE_UDW_MASK	REG_GENMASK(1, 0)
+#define PALETTE(dev_priv, pipe, i) _MMIO(DISPLAY_MMIO_BASE(dev_priv) +			\
+			       _PICK_EVEN_2RANGES(pipe, 2,			\
+						  _PALETTE_A, _PALETTE_B,	\
+						  _CHV_PALETTE_C, _CHV_PALETTE_C) + \
+						  (i) * 4)
+
+/* i965/g4x/vlv/chv */
+#define  _PIPEAGCMAX			0x70010
+#define  _PIPEBGCMAX			0x71010
+#define PIPEGCMAX(dev_priv, pipe, i)	_MMIO_PIPE2(dev_priv, pipe, _PIPEAGCMAX + (i) * 4) /* u1.16 */
+
+/* ilk+ palette */
 #define _LGC_PALETTE_A           0x4a000
 #define _LGC_PALETTE_B           0x4a800
 /* see PALETTE_* for the bits */
@@ -228,12 +261,12 @@
 #define _PIPE_A_WGC_C21_C20	0x600C0 /* s2.10 */
 #define _PIPE_A_WGC_C22		0x600C4 /* s2.10 */
 
-#define PIPE_WGC_C01_C00(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C01_C00)
-#define PIPE_WGC_C02(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C02)
-#define PIPE_WGC_C11_C10(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C11_C10)
-#define PIPE_WGC_C12(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C12)
-#define PIPE_WGC_C21_C20(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C21_C20)
-#define PIPE_WGC_C22(pipe)		_MMIO_TRANS2(pipe, _PIPE_A_WGC_C22)
+#define PIPE_WGC_C01_C00(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C01_C00)
+#define PIPE_WGC_C02(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C02)
+#define PIPE_WGC_C11_C10(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C11_C10)
+#define PIPE_WGC_C12(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C12)
+#define PIPE_WGC_C21_C20(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C21_C20)
+#define PIPE_WGC_C22(dev_priv, pipe)		_MMIO_TRANS2(dev_priv, pipe, _PIPE_A_WGC_C22)
 
 /* pipe CSC & degamma/gamma LUTs on CHV */
 #define _CGM_PIPE_A_CSC_COEFF01	(VLV_DISPLAY_BASE + 0x67900)
@@ -282,5 +315,34 @@
 #define   SKL_BOTTOM_COLOR_GAMMA_ENABLE		REG_BIT(31)
 #define   SKL_BOTTOM_COLOR_CSC_ENABLE		REG_BIT(30)
 #define SKL_BOTTOM_COLOR(pipe)		_MMIO_PIPE(pipe, _SKL_BOTTOM_COLOR_A, _SKL_BOTTOM_COLOR_B)
+
+/* 3D LUT */
+#define _LUT_3D_CTL_A		0x490A4
+#define _LUT_3D_CTL_B		0x491A4
+#define LUT_3D_CTL(pipe)	_MMIO_PIPE(pipe, _LUT_3D_CTL_A, _LUT_3D_CTL_B)
+#define   LUT_3D_ENABLE			REG_BIT(31)
+#define   LUT_3D_READY			REG_BIT(30)
+#define   LUT_3D_BINDING_MASK		REG_GENMASK(23, 22)
+#define   LUT_3D_BIND_PIPE		REG_FIELD_PREP(LUT_3D_BINDING_MASK, 0)
+#define   LUT_3D_BIND_PLANE_1		REG_FIELD_PREP(LUT_3D_BINDING_MASK, 1)
+#define   LUT_3D_BIND_PLANE_2		REG_FIELD_PREP(LUT_3D_BINDING_MASK, 2)
+#define   LUT_3D_BIND_PLANE_3		REG_FIELD_PREP(LUT_3D_BINDING_MASK, 3)
+
+#define _LUT_3D_INDEX_A		0x490A8
+#define _LUT_3D_INDEX_B		0x491A8
+#define LUT_3D_INDEX(pipe)	_MMIO_PIPE(pipe, _LUT_3D_INDEX_A, _LUT_3D_INDEX_B)
+#define   LUT_3D_AUTO_INCREMENT		REG_BIT(13)
+#define   LUT_3D_INDEX_VALUE_MASK	REG_GENMASK(12, 0)
+#define   LUT_3D_INDEX_VALUE(x)		REG_FIELD_PREP(LUT_3D_INDEX_VALUE_MASK, (x))
+
+#define _LUT_3D_DATA_A		0x490AC
+#define _LUT_3D_DATA_B		0x491AC
+#define LUT_3D_DATA(pipe)	_MMIO_PIPE(pipe, _LUT_3D_DATA_A, _LUT_3D_DATA_B)
+#define   LUT_3D_DATA_RED_MASK		REG_GENMASK(29, 20)
+#define   LUT_3D_DATA_GREEN_MASK	REG_GENMASK(19, 10)
+#define   LUT_3D_DATA_BLUE_MASK		REG_GENMASK(9, 0)
+#define   LUT_3D_DATA_RED(x)		REG_FIELD_PREP(LUT_3D_DATA_RED_MASK, (x))
+#define   LUT_3D_DATA_GREEN(x)		REG_FIELD_PREP(LUT_3D_DATA_GREEN_MASK, (x))
+#define   LUT_3D_DATA_BLUE(x)		REG_FIELD_PREP(LUT_3D_DATA_BLUE_MASK, (x))
 
 #endif /* __INTEL_COLOR_REGS_H__ */

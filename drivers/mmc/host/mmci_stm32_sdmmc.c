@@ -190,7 +190,7 @@ static int sdmmc_idma_setup(struct mmci_host *host)
 	struct sdmmc_idma *idma;
 	struct device *dev = mmc_dev(host->mmc);
 
-	idma = devm_kzalloc(dev, sizeof(*idma), GFP_KERNEL);
+	idma = devm_kzalloc_obj(dev, *idma);
 	if (!idma)
 		return -ENOMEM;
 
@@ -213,7 +213,8 @@ static int sdmmc_idma_setup(struct mmci_host *host)
 		host->mmc->max_seg_size = host->mmc->max_req_size;
 	}
 
-	return dma_set_max_seg_size(dev, host->mmc->max_seg_size);
+	dma_set_max_seg_size(dev, host->mmc->max_seg_size);
+	return 0;
 }
 
 static int sdmmc_idma_start(struct mmci_host *host, unsigned int *datactrl)
@@ -733,7 +734,7 @@ void sdmmc_variant_init(struct mmci_host *host)
 	if (IS_ERR(base_dlyb))
 		return;
 
-	dlyb = devm_kzalloc(mmc_dev(host->mmc), sizeof(*dlyb), GFP_KERNEL);
+	dlyb = devm_kzalloc_obj(mmc_dev(host->mmc), *dlyb);
 	if (!dlyb)
 		return;
 

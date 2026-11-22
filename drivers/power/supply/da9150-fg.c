@@ -247,9 +247,9 @@ static int da9150_fg_current_avg(struct da9150_fg *fg,
 				      DA9150_QIF_SD_GAIN_SIZE);
 	da9150_fg_read_sync_end(fg);
 
-	div = (u64) (sd_gain * shunt_val * 65536ULL);
+	div = 65536ULL * sd_gain * shunt_val;
 	do_div(div, 1000000);
-	res = (u64) (iavg * 1000000ULL);
+	res = 1000000ULL * iavg;
 	do_div(res, div);
 
 	val->intval = (int) res;
@@ -420,7 +420,7 @@ static struct da9150_fg_pdata *da9150_fg_dt_pdata(struct device *dev)
 	struct device_node *fg_node = dev->of_node;
 	struct da9150_fg_pdata *pdata;
 
-	pdata = devm_kzalloc(dev, sizeof(struct da9150_fg_pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(dev, struct da9150_fg_pdata);
 	if (!pdata)
 		return NULL;
 
@@ -450,7 +450,7 @@ static int da9150_fg_probe(struct platform_device *pdev)
 	struct da9150_fg *fg;
 	int ver, irq, ret = 0;
 
-	fg = devm_kzalloc(dev, sizeof(*fg), GFP_KERNEL);
+	fg = devm_kzalloc_obj(dev, *fg);
 	if (fg == NULL)
 		return -ENOMEM;
 
@@ -524,10 +524,8 @@ static int da9150_fg_probe(struct platform_device *pdev)
 
 	ret = devm_request_threaded_irq(dev, irq, NULL, da9150_fg_irq,
 					IRQF_ONESHOT, "FG", fg);
-	if (ret) {
-		dev_err(dev, "Failed to request IRQ %d: %d\n", irq, ret);
+	if (ret)
 		return ret;
-	}
 
 	return 0;
 }

@@ -35,6 +35,11 @@
 #define OV5693_STOP_STREAMING			0x00
 #define OV5693_SW_RESET				0x01
 
+/* MIPI transmitter control */
+#define OV5693_MIPI_CTRL00_REG			CCI_REG8(0x4800)
+/* Gate the clock lane when there is no packet to transmit */
+#define OV5693_MIPI_CTRL00_CLOCK_LANE_GATE	BIT(5)
+
 #define OV5693_REG_CHIP_ID			CCI_REG16(0x300a)
 /* Yes, this is right. The datasheet for the OV5693 gives its ID as 0x5690 */
 #define OV5693_CHIP_ID				0x5690
@@ -141,9 +146,11 @@ struct ov5693_device {
 
 	struct gpio_desc *reset;
 	struct gpio_desc *powerdown;
-	struct gpio_desc *privacy_led;
 	struct regulator_bulk_data supplies[OV5693_NUM_SUPPLIES];
 	struct clk *xvclk;
+
+	/* Gate the MIPI clock lane when idle (CSI-2 non-continuous clock) */
+	bool clock_ncont;
 
 	struct ov5693_mode {
 		struct v4l2_rect crop;
@@ -612,6 +619,19 @@ static int ov5693_enable_streaming(struct ov5693_device *ov5693, bool enable)
 {
 	int ret = 0;
 
+	/*
+	 * Gate the MIPI clock lane while idle if the CSI-2 link is configured
+	 * for a non-continuous clock. Only that bit is touched, and only in
+	 * that case, so the register keeps whatever the platform left in it
+	 * and the clock stays free-running as before everywhere else. It
+	 * needs no counterpart at stream off: the link is down by then, and
+	 * the register returns to its default when the sensor is powered off.
+	 */
+	if (enable && ov5693->clock_ncont)
+		cci_update_bits(ov5693->regmap, OV5693_MIPI_CTRL00_REG,
+				OV5693_MIPI_CTRL00_CLOCK_LANE_GATE,
+				OV5693_MIPI_CTRL00_CLOCK_LANE_GATE, &ret);
+
 	cci_write(ov5693->regmap, OV5693_SW_STREAM_REG,
 		  enable ? OV5693_START_STREAMING : OV5693_STOP_STREAMING,
 		  &ret);
@@ -657,7 +677,6 @@ static int ov5693_sensor_init(struct ov5693_device *ov5693)
 
 static void ov5693_sensor_powerdown(struct ov5693_device *ov5693)
 {
-	gpiod_set_value_cansleep(ov5693->privacy_led, 0);
 	gpiod_set_value_cansleep(ov5693->reset, 1);
 	gpiod_set_value_cansleep(ov5693->powerdown, 1);
 
@@ -687,7 +706,6 @@ static int ov5693_sensor_powerup(struct ov5693_device *ov5693)
 
 	gpiod_set_value_cansleep(ov5693->powerdown, 0);
 	gpiod_set_value_cansleep(ov5693->reset, 0);
-	gpiod_set_value_cansleep(ov5693->privacy_led, 1);
 
 	usleep_range(5000, 7500);
 
@@ -810,6 +828,7 @@ static int ov5693_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov5693_set_fmt(struct v4l2_subdev *sd,
+			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *state,
 			  struct v4l2_subdev_format *format)
 {
@@ -885,6 +904,7 @@ static int ov5693_set_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov5693_get_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -918,6 +938,7 @@ static int ov5693_get_selection(struct v4l2_subdev *sd,
 }
 
 static int ov5693_set_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -1201,13 +1222,6 @@ static int ov5693_configure_gpios(struct ov5693_device *ov5693)
 		return PTR_ERR(ov5693->powerdown);
 	}
 
-	ov5693->privacy_led = devm_gpiod_get_optional(ov5693->dev, "privacy-led",
-						      GPIOD_OUT_LOW);
-	if (IS_ERR(ov5693->privacy_led)) {
-		dev_err(ov5693->dev, "Error fetching privacy-led GPIO\n");
-		return PTR_ERR(ov5693->privacy_led);
-	}
-
 	return 0;
 }
 
@@ -1232,9 +1246,14 @@ static int ov5693_check_hwcfg(struct ov5693_device *ov5693)
 	unsigned int i;
 	int ret;
 
+	/*
+	 * Sometimes the fwnode graph is initialized by the bridge driver
+	 * Bridge drivers doing this may also add GPIO mappings, wait for this.
+	 */
 	endpoint = fwnode_graph_get_next_endpoint(fwnode, NULL);
 	if (!endpoint)
-		return -EPROBE_DEFER; /* Could be provided by cio2-bridge */
+		return dev_err_probe(ov5693->dev, -EPROBE_DEFER,
+				     "waiting for fwnode graph endpoint\n");
 
 	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &bus_cfg);
 	fwnode_handle_put(endpoint);
@@ -1264,6 +1283,9 @@ static int ov5693_check_hwcfg(struct ov5693_device *ov5693)
 		goto out_free_bus_cfg;
 	}
 
+	ov5693->clock_ncont = bus_cfg.bus.mipi_csi2.flags &
+			      V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK;
+
 out_free_bus_cfg:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
 
@@ -1276,7 +1298,7 @@ static int ov5693_probe(struct i2c_client *client)
 	u32 xvclk_rate;
 	int ret = 0;
 
-	ov5693 = devm_kzalloc(&client->dev, sizeof(*ov5693), GFP_KERNEL);
+	ov5693 = devm_kzalloc_obj(&client->dev, *ov5693);
 	if (!ov5693)
 		return -ENOMEM;
 
@@ -1294,25 +1316,13 @@ static int ov5693_probe(struct i2c_client *client)
 
 	v4l2_i2c_subdev_init(&ov5693->sd, client, &ov5693_ops);
 
-	ov5693->xvclk = devm_clk_get_optional(&client->dev, "xvclk");
+	ov5693->xvclk = devm_v4l2_sensor_clk_get(&client->dev, "xvclk");
 	if (IS_ERR(ov5693->xvclk))
 		return dev_err_probe(&client->dev, PTR_ERR(ov5693->xvclk),
-				     "failed to get xvclk: %ld\n",
-				     PTR_ERR(ov5693->xvclk));
+				     "failed to get xvclk: %pe\n",
+				     ov5693->xvclk);
 
-	if (ov5693->xvclk) {
-		xvclk_rate = clk_get_rate(ov5693->xvclk);
-	} else {
-		ret = fwnode_property_read_u32(dev_fwnode(&client->dev),
-				     "clock-frequency",
-				     &xvclk_rate);
-
-		if (ret) {
-			dev_err(&client->dev, "can't get clock frequency");
-			return ret;
-		}
-	}
-
+	xvclk_rate = clk_get_rate(ov5693->xvclk);
 	if (xvclk_rate != OV5693_XVCLK_FREQ)
 		dev_warn(&client->dev, "Found clk freq %u, expected %u\n",
 			 xvclk_rate, OV5693_XVCLK_FREQ);
@@ -1413,6 +1423,7 @@ static const struct dev_pm_ops ov5693_pm_ops = {
 
 static const struct acpi_device_id ov5693_acpi_match[] = {
 	{"INT33BE"},
+	{"OVTI5693"},
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, ov5693_acpi_match);

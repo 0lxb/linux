@@ -55,7 +55,7 @@ static int ci_hdrc_usb2_probe(struct platform_device *pdev)
 	int ret;
 
 	if (!ci_pdata) {
-		ci_pdata = devm_kmalloc(dev, sizeof(*ci_pdata), GFP_KERNEL);
+		ci_pdata = devm_kmalloc_obj(dev, *ci_pdata);
 		if (!ci_pdata)
 			return -ENOMEM;
 		*ci_pdata = ci_default_pdata;	/* struct copy */
@@ -66,7 +66,7 @@ static int ci_hdrc_usb2_probe(struct platform_device *pdev)
 		/* struct copy */
 		*ci_pdata = *data;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -116,7 +116,7 @@ static void ci_hdrc_usb2_remove(struct platform_device *pdev)
 
 static struct platform_driver ci_hdrc_usb2_driver = {
 	.probe	= ci_hdrc_usb2_probe,
-	.remove_new = ci_hdrc_usb2_remove,
+	.remove = ci_hdrc_usb2_remove,
 	.driver	= {
 		.name		= "chipidea-usb2",
 		.of_match_table	= ci_hdrc_usb2_of_match,

@@ -244,7 +244,7 @@ static int sun4i_ts_probe(struct platform_device *pdev)
 	u32 tp_sensitive_adjust = 15;
 	u32 filter_type = 1;
 
-	ts = devm_kzalloc(dev, sizeof(struct sun4i_ts_data), GFP_KERNEL);
+	ts = devm_kzalloc_obj(dev, struct sun4i_ts_data);
 	if (!ts)
 		return -ENOMEM;
 
@@ -396,12 +396,12 @@ static const struct of_device_id sun4i_ts_of_match[] = {
 MODULE_DEVICE_TABLE(of, sun4i_ts_of_match);
 
 static struct platform_driver sun4i_ts_driver = {
-	.driver = {
+	.driver	= {
 		.name	= "sun4i-ts",
 		.of_match_table = sun4i_ts_of_match,
 	},
 	.probe	= sun4i_ts_probe,
-	.remove_new = sun4i_ts_remove,
+	.remove	= sun4i_ts_remove,
 };
 
 module_platform_driver(sun4i_ts_driver);

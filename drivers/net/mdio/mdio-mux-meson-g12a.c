@@ -223,7 +223,7 @@ static int g12a_ephy_glue_clk_register(struct device *dev)
 {
 	struct g12a_mdio_mux *priv = dev_get_drvdata(dev);
 	const char *parent_names[PLL_MUX_NUM_PARENT];
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	struct g12a_ephy_pll *pll;
 	struct clk_mux *mux;
 	struct clk *clk;
@@ -244,7 +244,7 @@ static int g12a_ephy_glue_clk_register(struct device *dev)
 	}
 
 	/* create the input mux */
-	mux = devm_kzalloc(dev, sizeof(*mux), GFP_KERNEL);
+	mux = devm_kzalloc_obj(dev, *mux);
 	if (!mux)
 		return -ENOMEM;
 
@@ -271,7 +271,7 @@ static int g12a_ephy_glue_clk_register(struct device *dev)
 	}
 
 	/* create the pll */
-	pll = devm_kzalloc(dev, sizeof(*pll), GFP_KERNEL);
+	pll = devm_kzalloc_obj(dev, *pll);
 	if (!pll)
 		return -ENOMEM;
 
@@ -308,7 +308,7 @@ static int g12a_mdio_mux_probe(struct platform_device *pdev)
 	struct clk *pclk;
 	int ret;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -348,7 +348,7 @@ static void g12a_mdio_mux_remove(struct platform_device *pdev)
 
 static struct platform_driver g12a_mdio_mux_driver = {
 	.probe		= g12a_mdio_mux_probe,
-	.remove_new	= g12a_mdio_mux_remove,
+	.remove		= g12a_mdio_mux_remove,
 	.driver		= {
 		.name	= "g12a-mdio_mux",
 		.of_match_table = g12a_mdio_mux_match,

@@ -28,6 +28,9 @@
 
 #define MES_API_VERSION 1
 
+/* Maximum log buffer size for MES. Needs to be updated if MES expands MES_EVT_INTR_HIST_LOG */
+#define  AMDGPU_MES_LOG_BUFFER_SIZE  0x4000
+
 /* Driver submits one API(cmd) as a single Frame and this command size is same
  * for all API to ease the debugging and parsing of ring buffer.
  */
@@ -61,6 +64,7 @@ enum MES_SCH_API_OPCODE {
 	MES_SCH_API_MISC			= 14,
 	MES_SCH_API_UPDATE_ROOT_PAGE_TABLE      = 15,
 	MES_SCH_API_AMD_LOG                     = 16,
+	MES_SCH_API_SET_HW_RSRC_1               = 19,
 	MES_SCH_API_MAX				= 0xFF
 };
 
@@ -226,16 +230,49 @@ union MESAPI_SET_HW_RESOURCES {
 				uint32_t disable_add_queue_wptr_mc_addr : 1;
 				uint32_t enable_mes_event_int_logging : 1;
 				uint32_t enable_reg_active_poll : 1;
-				uint32_t reserved	: 21;
+				uint32_t use_disable_queue_in_legacy_uq_preemption : 1;
+				uint32_t send_write_data : 1;
+				uint32_t os_tdr_timeout_override : 1;
+				uint32_t use_rs64mem_for_proc_gang_ctx : 1;
+				uint32_t use_add_queue_unmap_flag_addr : 1;
+				uint32_t enable_mes_sch_stb_log : 1;
+				uint32_t limit_single_process : 1;
+				uint32_t is_strix_tmz_wa_enabled  :1;
+				uint32_t enable_lr_compute_wa : 2;
+				uint32_t enable_compute_pipe_reset : 1;
+				uint32_t reserved : 10;
 			};
 			uint32_t	uint32_t_all;
 		};
 		uint32_t	oversubscription_timer;
 		uint64_t        doorbell_info;
 		uint64_t        event_intr_history_gpu_mc_ptr;
+		uint64_t	timestamp;
+		uint32_t	os_tdr_timeout_in_sec;
 	};
 
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
+};
+
+union MESAPI_SET_HW_RESOURCES_1 {
+	struct {
+		union MES_API_HEADER				header;
+		struct MES_API_STATUS			   api_status;
+		uint64_t							timestamp;
+		union {
+			struct {
+				uint32_t enable_mes_info_ctx : 1;
+				uint32_t reserved : 31;
+			};
+			uint32_t uint32_all;
+		};
+		uint64_t							mes_info_ctx_mc_addr;
+		uint32_t							mes_info_ctx_size;
+		uint64_t							reserved1;
+		uint64_t							cleaner_shader_fence_mc_addr;
+	};
+
+	uint32_t max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
 };
 
 union MESAPI__ADD_QUEUE {
@@ -278,10 +315,22 @@ union MESAPI__ADD_QUEUE {
 			uint32_t skip_process_ctx_clear : 1;
 			uint32_t map_legacy_kq		: 1;
 			uint32_t exclusively_scheduled	: 1;
-			uint32_t reserved		: 17;
+			uint32_t is_long_running        : 1;
+			uint32_t is_dwm_queue           : 1;
+			uint32_t is_video_blit_queue    : 1;
+			uint32_t reserved               : 14;
 		};
-		struct MES_API_STATUS		api_status;
-		uint64_t                        tma_addr;
+		struct MES_API_STATUS       api_status;
+		uint64_t                    tma_addr;
+		uint32_t                    sch_id;
+		uint64_t                    timestamp;
+		uint32_t                    process_context_array_index;
+		uint32_t                    gang_context_array_index;
+		uint32_t                    pipe_id;
+		uint32_t                    queue_id;
+		uint32_t                    alignment_mode_setting;
+		uint32_t                    full_sh_mem_config_data;
+		uint64_t                    unmap_flag_addr;
 	};
 
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
@@ -298,7 +347,8 @@ union MESAPI__REMOVE_QUEUE {
 			uint32_t unmap_kiq_utility_queue  : 1;
 			uint32_t preempt_legacy_gfx_queue : 1;
 			uint32_t unmap_legacy_queue       : 1;
-			uint32_t reserved                 : 28;
+			uint32_t remove_queue_after_reset : 1;
+			uint32_t reserved                 : 27;
 		};
 		struct MES_API_STATUS	    api_status;
 
@@ -309,6 +359,8 @@ union MESAPI__REMOVE_QUEUE {
 		uint32_t                    tf_data;
 
 		enum MES_QUEUE_TYPE         queue_type;
+		uint64_t                    timestamp;
+		uint32_t                    gang_context_array_index;
 	};
 
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
@@ -379,6 +431,7 @@ union MESAPI__SUSPEND {
 		uint32_t		suspend_fence_value;
 
 		struct MES_API_STATUS	api_status;
+		uint32_t		doorbell_offset;
 	};
 
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
@@ -396,6 +449,7 @@ union MESAPI__RESUME {
 		uint64_t		gang_context_addr;
 
 		struct MES_API_STATUS	api_status;
+		uint32_t		doorbell_offset;
 	};
 
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
@@ -465,14 +519,50 @@ union MESAPI__SET_LOGGING_BUFFER {
 	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
 };
 
+enum MES_API_QUERY_MES_OPCODE {
+	MES_API_QUERY_MES__GET_CTX_ARRAY_SIZE,
+	MES_API_QUERY_MES__GET_CAPS = MES_API_QUERY_MES__GET_CTX_ARRAY_SIZE,
+	MES_API_QUERY_MES__CHECK_HEALTHY,
+	MES_API_QUERY_MES__MAX,
+};
+
+enum { QUERY_MES_MAX_SIZE_IN_DWORDS = 20 };
+
+/**
+ * Obsolete
+ * to be removed once KMD stopped refering to it.
+ * use MES_API_QUERY_MES__CAPS instead
+*/
+struct MES_API_QUERY_MES__CTX_ARRAY_SIZE {
+    uint64_t    proc_ctx_array_size_addr;
+    uint64_t    gang_ctx_array_size_addr;
+};
+
+struct MES_API_QUERY_MES__HEALTHY_CHECK {
+    uint64_t    healthy_addr;
+};
+
+struct MES_API_QUERY_MES__CAPS {
+    uint64_t    proc_ctx_array_size_addr;
+    uint64_t    gang_ctx_array_size_addr;
+    uint64_t    features_enablement_addr;
+};
+
 union MESAPI__QUERY_MES_STATUS {
 	struct {
-		union MES_API_HEADER	header;
-		bool			mes_healthy; /* 0 - not healthy, 1 - healthy */
-		struct MES_API_STATUS	api_status;
+		union MES_API_HEADER            header;
+		enum MES_API_QUERY_MES_OPCODE   subopcode;
+		struct MES_API_STATUS           api_status;
+		uint64_t                        timestamp;
+		union {
+			struct MES_API_QUERY_MES__CTX_ARRAY_SIZE    ctx_array_size;
+			struct MES_API_QUERY_MES__CAPS              caps;
+			struct MES_API_QUERY_MES__HEALTHY_CHECK     healthy_check;
+			uint32_t data[QUERY_MES_MAX_SIZE_IN_DWORDS];
+		};
 	};
 
-	uint32_t	max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
+	uint32_t max_dwords_in_api[API_FRAME_SIZE_IN_DWORDS];
 };
 
 union MESAPI__PROGRAM_GDS {
@@ -528,6 +618,12 @@ enum MESAPI_MISC_OPCODE {
 	MESAPI_MISC__READ_REG,
 	MESAPI_MISC__WAIT_REG_MEM,
 	MESAPI_MISC__SET_SHADER_DEBUGGER,
+	MESAPI_MISC__NOTIFY_WORK_ON_UNMAPPED_QUEUE,
+	MESAPI_MISC__NOTIFY_TO_UNMAP_PROCESSES,
+	MESAPI_MISC__CHANGE_CONFIG,
+	MESAPI_MISC__LAUNCH_CLEANER_SHADER,
+	MESAPI_MISC__SETUP_MES_DBGEXT,
+
 	MESAPI_MISC__MAX,
 };
 
@@ -582,6 +678,47 @@ struct SET_SHADER_DEBUGGER {
 	uint32_t trap_en;
 };
 
+enum MESAPI_MISC__CHANGE_CONFIG_OPTION {
+	MESAPI_MISC__CHANGE_CONFIG_OPTION_LIMIT_SINGLE_PROCESS = 0,
+	MESAPI_MISC__CHANGE_CONFIG_OPTION_ENABLE_HWS_LOGGING_BUFFER = 1,
+	MESAPI_MISC__CHANGE_CONFIG_OPTION_CHANGE_TDR_CONFIG    = 2,
+
+	MESAPI_MISC__CHANGE_CONFIG_OPTION_MAX = 0x1F
+};
+
+struct CHANGE_CONFIG {
+	enum MESAPI_MISC__CHANGE_CONFIG_OPTION opcode;
+	union {
+		struct {
+			uint32_t limit_single_process : 1;
+			uint32_t enable_hws_logging_buffer : 1;
+			uint32_t reserved : 31;
+		} bits;
+		uint32_t all;
+	} option;
+
+	struct {
+		uint32_t tdr_level;
+		uint32_t tdr_delay;
+	} tdr_config;
+};
+
+/*
+ * MES firmware debug extension ("mes_dbgext"): the driver hands the MES a
+ * GART/GTT log buffer; the MES firmware writes text/binary log items into a
+ * circular, zone-partitioned buffer that the driver drains and prints.
+ */
+struct MES_DBGEXT_INIT_DATA {
+	uint64_t dbg_ext_mc_addr;
+	union {
+		struct {
+			uint64_t trigger_interrupt_per_new_msg : 1;
+			uint64_t reserved : 63;
+		};
+		uint64_t u64_all;
+	};
+};
+
 union MESAPI__MISC {
 	struct {
 		union MES_API_HEADER	header;
@@ -596,6 +733,8 @@ union MESAPI__MISC {
 			struct          WAIT_REG_MEM wait_reg_mem;
 			struct		SET_SHADER_DEBUGGER set_shader_debugger;
 			enum MES_AMD_PRIORITY_LEVEL queue_sch_level;
+			struct		CHANGE_CONFIG change_config;
+			struct		MES_DBGEXT_INIT_DATA dbgext_init_data;
 
 			uint32_t	data[MISC_DATA_MAX_SIZE_IN_DWORDS];
 		};

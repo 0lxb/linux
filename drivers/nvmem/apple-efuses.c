@@ -6,7 +6,6 @@
  */
 
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/nvmem-provider.h>
 #include <linux/platform_device.h>
@@ -46,7 +45,7 @@ static int apple_efuses_probe(struct platform_device *pdev)
 		.root_only = true,
 	};
 
-	priv = devm_kzalloc(config.dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(config.dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -78,4 +77,5 @@ static struct platform_driver apple_efuses_driver = {
 module_platform_driver(apple_efuses_driver);
 
 MODULE_AUTHOR("Sven Peter <sven@svenpeter.dev>");
+MODULE_DESCRIPTION("Apple SoC eFuse driver");
 MODULE_LICENSE("GPL");

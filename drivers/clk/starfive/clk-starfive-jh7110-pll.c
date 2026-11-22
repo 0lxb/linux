@@ -453,13 +453,13 @@ static struct clk_hw *jh7110_pll_get(struct of_phandle_args *clkspec, void *data
 	return ERR_PTR(-EINVAL);
 }
 
-static int jh7110_pll_probe(struct platform_device *pdev)
+static int __init jh7110_pll_probe(struct platform_device *pdev)
 {
 	struct jh7110_pll_priv *priv;
 	unsigned int idx;
 	int ret;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

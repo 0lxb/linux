@@ -57,7 +57,7 @@ struct cs42l51_private {
 static int cs42l51_get_chan_mix(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	unsigned long value = snd_soc_component_read(component, CS42L51_PCM_MIXER)&3;
 
 	switch (value) {
@@ -85,7 +85,7 @@ static int cs42l51_get_chan_mix(struct snd_kcontrol *kcontrol,
 static int cs42l51_set_chan_mix(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	unsigned char val;
 
 	switch (ucontrol->value.enumerated.item[0]) {
@@ -322,10 +322,10 @@ static int cs42l51_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	}
 
 	switch (format & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		cs42l51->func = MODE_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		cs42l51->func = MODE_SLAVE_AUTO;
 		break;
 	default:
@@ -533,11 +533,18 @@ static int cs42l51_of_xlate_dai_id(struct snd_soc_component *component,
 	return 0;
 }
 
+static const u64 cs42l51_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_RIGHT_J	|
+	SND_SOC_POSSIBLE_DAIFMT_LEFT_J;
+
 static const struct snd_soc_dai_ops cs42l51_dai_ops = {
 	.hw_params      = cs42l51_hw_params,
 	.set_sysclk     = cs42l51_set_dai_sysclk,
 	.set_fmt        = cs42l51_set_dai_fmt,
 	.mute_stream    = cs42l51_dai_mute,
+	.auto_selectable_formats	= &cs42l51_selectable_formats,
+	.num_auto_selectable_formats	= 1,
 	.no_capture_mute = 1,
 };
 
@@ -567,7 +574,7 @@ static int cs42l51_component_probe(struct snd_soc_component *component)
 	struct cs42l51_private *cs42l51;
 
 	cs42l51 = snd_soc_component_get_drvdata(component);
-	dapm = snd_soc_component_get_dapm(component);
+	dapm = snd_soc_component_to_dapm(component);
 
 	if (cs42l51->mclk_handle)
 		snd_soc_dapm_new_controls(dapm, cs42l51_dapm_mclk_widgets, 1);
@@ -716,8 +723,7 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	cs42l51 = devm_kzalloc(dev, sizeof(struct cs42l51_private),
-			       GFP_KERNEL);
+	cs42l51 = devm_kzalloc_obj(dev, struct cs42l51_private);
 	if (!cs42l51)
 		return -ENOMEM;
 
@@ -747,8 +753,10 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
 
 	cs42l51->reset_gpio = devm_gpiod_get_optional(dev, "reset",
 						      GPIOD_OUT_LOW);
-	if (IS_ERR(cs42l51->reset_gpio))
-		return PTR_ERR(cs42l51->reset_gpio);
+	if (IS_ERR(cs42l51->reset_gpio)) {
+		ret = PTR_ERR(cs42l51->reset_gpio);
+		goto error;
+	}
 
 	if (cs42l51->reset_gpio) {
 		dev_dbg(dev, "Release reset gpio\n");
@@ -780,6 +788,7 @@ int cs42l51_probe(struct device *dev, struct regmap *regmap)
 	return 0;
 
 error:
+	gpiod_set_value_cansleep(cs42l51->reset_gpio, 1);
 	regulator_bulk_disable(ARRAY_SIZE(cs42l51->supplies),
 			       cs42l51->supplies);
 	return ret;
@@ -802,7 +811,7 @@ void cs42l51_remove(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(cs42l51_remove);
 
-int __maybe_unused cs42l51_suspend(struct device *dev)
+int cs42l51_suspend(struct device *dev)
 {
 	struct cs42l51_private *cs42l51 = dev_get_drvdata(dev);
 
@@ -813,7 +822,7 @@ int __maybe_unused cs42l51_suspend(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(cs42l51_suspend);
 
-int __maybe_unused cs42l51_resume(struct device *dev)
+int cs42l51_resume(struct device *dev)
 {
 	struct cs42l51_private *cs42l51 = dev_get_drvdata(dev);
 

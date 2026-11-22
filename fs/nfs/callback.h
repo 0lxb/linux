@@ -46,14 +46,15 @@ struct cb_compound_hdr_res {
 
 struct cb_getattrargs {
 	struct nfs_fh fh;
-	uint32_t bitmap[2];
+	uint32_t bitmap[3];
 };
 
 struct cb_getattrres {
 	__be32 status;
-	uint32_t bitmap[2];
+	uint32_t bitmap[3];
 	uint64_t size;
 	uint64_t change_attr;
+	struct timespec64 atime;
 	struct timespec64 ctime;
 	struct timespec64 mtime;
 };
@@ -63,8 +64,6 @@ struct cb_recallargs {
 	nfs4_stateid stateid;
 	uint32_t truncate;
 };
-
-#if defined(CONFIG_NFS_V4_1)
 
 struct referring_call {
 	uint32_t			rc_sequenceid;
@@ -167,7 +166,6 @@ struct cb_notify_lock_args {
 
 extern __be32 nfs4_callback_notify_lock(void *argp, void *resp,
 					 struct cb_process_state *cps);
-#endif /* CONFIG_NFS_V4_1 */
 #ifdef CONFIG_NFS_V4_2
 struct cb_offloadargs {
 	struct nfs_fh		coa_fh;
@@ -187,7 +185,8 @@ extern __be32 nfs4_callback_recall(void *argp, void *resp,
 				   struct cb_process_state *cps);
 #if IS_ENABLED(CONFIG_NFS_V4)
 extern int nfs_callback_up(u32 minorversion, struct rpc_xprt *xprt);
-extern void nfs_callback_down(int minorversion, struct net *net);
+extern void nfs_callback_down(int minorversion, struct net *net,
+			      struct rpc_xprt *xprt);
 #endif /* CONFIG_NFS_V4 */
 /*
  * nfs41: Callbacks are expected to not cause substantial latency,

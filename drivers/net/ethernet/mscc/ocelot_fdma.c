@@ -665,8 +665,7 @@ static int ocelot_fdma_prepare_skb(struct ocelot *ocelot, int port, u32 rew_op,
 
 	ifh = skb_push(skb, OCELOT_TAG_LEN);
 	skb_put(skb, ETH_FCS_LEN);
-	memset(ifh, 0, OCELOT_TAG_LEN);
-	ocelot_ifh_port_set(ifh, port, rew_op, skb_vlan_tag_get(skb));
+	ocelot_ifh_set_basic(ifh, ocelot, port, rew_op, skb);
 
 	return 0;
 }
@@ -818,7 +817,7 @@ void ocelot_fdma_init(struct platform_device *pdev, struct ocelot *ocelot)
 	struct ocelot_fdma *fdma;
 	int ret;
 
-	fdma = devm_kzalloc(dev, sizeof(*fdma), GFP_KERNEL);
+	fdma = devm_kzalloc_obj(dev, *fdma);
 	if (!fdma)
 		return;
 

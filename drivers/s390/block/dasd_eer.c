@@ -7,6 +7,7 @@
  *  Author(s): Stefan Weinhuber <wein@de.ibm.com>
  */
 
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
@@ -210,7 +211,7 @@ static void dasd_eer_free_buffer_pages(char **buf, int no_pages)
 	int i;
 
 	for (i = 0; i < no_pages; i++)
-		free_page((unsigned long) buf[i]);
+		kfree(buf[i]);
 }
 
 /*
@@ -221,7 +222,7 @@ static int dasd_eer_allocate_buffer_pages(char **buf, int no_pages)
 	int i;
 
 	for (i = 0; i < no_pages; i++) {
-		buf[i] = (char *) get_zeroed_page(GFP_KERNEL);
+		buf[i] = kzalloc(PAGE_SIZE, GFP_KERNEL);
 		if (!buf[i]) {
 			dasd_eer_free_buffer_pages(buf, i);
 			return -ENOMEM;
@@ -485,7 +486,7 @@ int dasd_eer_enable(struct dasd_device *device)
 	ccw->cmd_code = DASD_ECKD_CCW_SNSS;
 	ccw->count = SNSS_DATA_SIZE;
 	ccw->flags = 0;
-	ccw->cda = (__u32)virt_to_phys(cqr->data);
+	ccw->cda = virt_to_dma32(cqr->data);
 
 	cqr->buildclk = get_tod_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -543,7 +544,7 @@ static int dasd_eer_open(struct inode *inp, struct file *filp)
 	struct eerbuffer *eerb;
 	unsigned long flags;
 
-	eerb = kzalloc(sizeof(struct eerbuffer), GFP_KERNEL);
+	eerb = kzalloc_obj(struct eerbuffer);
 	if (!eerb)
 		return -ENOMEM;
 	eerb->buffer_page_count = eer_pages;
@@ -688,7 +689,7 @@ int __init dasd_eer_init(void)
 {
 	int rc;
 
-	dasd_eer_dev = kzalloc(sizeof(*dasd_eer_dev), GFP_KERNEL);
+	dasd_eer_dev = kzalloc_obj(*dasd_eer_dev);
 	if (!dasd_eer_dev)
 		return -ENOMEM;
 

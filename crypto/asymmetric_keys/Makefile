@@ -24,6 +24,8 @@ x509_key_parser-y := \
 	x509_public_key.o
 obj-$(CONFIG_FIPS_SIGNATURE_SELFTEST) += x509_selftest.o
 x509_selftest-y += selftest.o
+x509_selftest-$(CONFIG_FIPS_SIGNATURE_SELFTEST_RSA) += selftest_rsa.o
+x509_selftest-$(CONFIG_FIPS_SIGNATURE_SELFTEST_ECDSA) += selftest_ecdsa.o
 
 $(obj)/x509_cert_parser.o: \
 	$(obj)/x509.asn1.h \
@@ -77,3 +79,5 @@ verify_signed_pefile-y := \
 
 $(obj)/mscode_parser.o: $(obj)/mscode.asn1.h $(obj)/mscode.asn1.h
 $(obj)/mscode.asn1.o: $(obj)/mscode.asn1.c $(obj)/mscode.asn1.h
+
+obj-$(CONFIG_VERIFY_PEFILE_KUNIT_TEST) += verify_pefile_test.o

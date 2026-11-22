@@ -14,7 +14,7 @@
  */
 
 #include <linux/acpi.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -215,7 +215,7 @@ static int surface_hotplug_probe(struct platform_device *pdev)
 	if (status)
 		return status;
 
-	sdev = devm_kzalloc(&pdev->dev, sizeof(*sdev), GFP_KERNEL);
+	sdev = devm_kzalloc_obj(&pdev->dev, *sdev);
 	if (!sdev)
 		return -ENOMEM;
 
@@ -259,7 +259,7 @@ MODULE_DEVICE_TABLE(acpi, surface_hotplug_acpi_match);
 
 static struct platform_driver surface_hotplug_driver = {
 	.probe = surface_hotplug_probe,
-	.remove_new = surface_hotplug_remove,
+	.remove = surface_hotplug_remove,
 	.driver = {
 		.name = "surface_hotplug",
 		.acpi_match_table = surface_hotplug_acpi_match,

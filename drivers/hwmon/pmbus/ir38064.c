@@ -53,11 +53,11 @@ static int ir38064_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ir38064_id[] = {
-	{"ir38060", 0},
-	{"ir38064", 0},
-	{"ir38164", 0},
-	{"ir38263", 0},
-	{}
+	{ .name = "ir38060" },
+	{ .name = "ir38064" },
+	{ .name = "ir38164" },
+	{ .name = "ir38263" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, ir38064_id);
@@ -87,4 +87,4 @@ module_i2c_driver(ir38064_driver);
 MODULE_AUTHOR("Maxim Sloyko <maxims@google.com>");
 MODULE_DESCRIPTION("PMBus driver for Infineon IR38064 and compatible chips");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

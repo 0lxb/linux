@@ -107,8 +107,7 @@ static int adp5520_led_probe(struct platform_device *pdev)
 		return -EFAULT;
 	}
 
-	led = devm_kcalloc(&pdev->dev, pdata->num_leds, sizeof(*led),
-				GFP_KERNEL);
+	led = devm_kzalloc_objs(&pdev->dev, *led, pdata->num_leds);
 	if (!led)
 		return -ENOMEM;
 
@@ -184,7 +183,7 @@ static struct platform_driver adp5520_led_driver = {
 		.name	= "adp5520-led",
 	},
 	.probe		= adp5520_led_probe,
-	.remove_new	= adp5520_led_remove,
+	.remove		= adp5520_led_remove,
 };
 
 module_platform_driver(adp5520_led_driver);

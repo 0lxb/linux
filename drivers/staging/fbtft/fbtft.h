@@ -37,7 +37,7 @@ struct fbtft_par;
  * @write: Writes to interface bus
  * @read: Reads from interface bus
  * @write_vmem: Writes video memory to display
- * @write_reg: Writes to controller register
+ * @write_register: Writes to controller register
  * @set_addr_win: Set the GRAM update window
  * @reset: Reset the LCD controller
  * @mkdirty: Marks display lines for update
@@ -46,7 +46,6 @@ struct fbtft_par;
  * @blank: Blank the display (optional)
  * @request_gpios_match: Do pinname to gpio matching
  * @request_gpios: Request gpios from the kernel
- * @free_gpios: Free previously requested gpios
  * @verify_gpios: Verify that necessary gpios is present (optional)
  * @register_backlight: Used to register backlight device (optional)
  * @unregister_backlight: Unregister backlight device (optional)
@@ -202,6 +201,7 @@ struct fbtft_par {
 	u8 *buf;
 	u8 startbyte;
 	struct fbtft_ops fbtftops;
+	/* Spinlock to ensure thread-safe access to dirty_lines_start and dirty_lines_end */
 	spinlock_t dirty_lock;
 	unsigned int dirty_lines_start;
 	unsigned int dirty_lines_end;
@@ -218,6 +218,7 @@ struct fbtft_par {
 	} gpio;
 	const s16 *init_sequence;
 	struct {
+		/* Mutex to synchronize access to gamma curve locking */
 		struct mutex lock;
 		u32 *curves;
 		int num_values;
@@ -260,7 +261,6 @@ int fbtft_write_spi_emulate_9(struct fbtft_par *par, void *buf, size_t len);
 int fbtft_read_spi(struct fbtft_par *par, void *buf, size_t len);
 int fbtft_write_gpio8_wr(struct fbtft_par *par, void *buf, size_t len);
 int fbtft_write_gpio16_wr(struct fbtft_par *par, void *buf, size_t len);
-int fbtft_write_gpio16_wr_latched(struct fbtft_par *par, void *buf, size_t len);
 
 /* fbtft-bus.c */
 int fbtft_write_vmem8_bus8(struct fbtft_par *par, size_t offset, size_t len);
@@ -328,7 +328,7 @@ static struct platform_driver fbtft_driver_platform_driver = {             \
 		.of_match_table = dt_ids,                                  \
 	},                                                                 \
 	.probe  = fbtft_driver_probe_pdev,                                 \
-	.remove_new = fbtft_driver_remove_pdev,				   \
+	.remove = fbtft_driver_remove_pdev,				   \
 };                                                                         \
 									   \
 static int __init fbtft_driver_module_init(void)                           \

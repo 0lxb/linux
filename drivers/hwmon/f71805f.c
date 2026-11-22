@@ -1378,8 +1378,7 @@ static int f71805f_probe(struct platform_device *pdev)
 		"f71872f",
 	};
 
-	data = devm_kzalloc(&pdev->dev, sizeof(struct f71805f_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, struct f71805f_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -1497,7 +1496,7 @@ static struct platform_driver f71805f_driver = {
 		.name	= DRVNAME,
 	},
 	.probe		= f71805f_probe,
-	.remove_new	= f71805f_remove,
+	.remove		= f71805f_remove,
 };
 
 static int __init f71805f_device_add(unsigned short address,

@@ -147,7 +147,7 @@ static int rt5033_battery_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE))
 		return -EIO;
 
-	battery = devm_kzalloc(&client->dev, sizeof(*battery), GFP_KERNEL);
+	battery = devm_kzalloc_obj(&client->dev, *battery);
 	if (!battery)
 		return -ENOMEM;
 
@@ -159,7 +159,8 @@ static int rt5033_battery_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	psy_cfg.of_node = client->dev.of_node;
+	i2c_set_clientdata(client, battery);
+	psy_cfg.fwnode = dev_fwnode(&client->dev);
 	psy_cfg.drv_data = battery;
 
 	battery->psy = devm_power_supply_register(&client->dev,
@@ -173,7 +174,7 @@ static int rt5033_battery_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id rt5033_battery_id[] = {
-	{ "rt5033-battery", },
+	{ .name = "rt5033-battery" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5033_battery_id);

@@ -248,7 +248,7 @@ static int dw_hdmi_cec_probe(struct platform_device *pdev)
 	 * hardware device here, so that userspace can see the association
 	 * between the HDMI hardware and its associated CEC chardev.
 	 */
-	cec = devm_kzalloc(&pdev->dev, sizeof(*cec), GFP_KERNEL);
+	cec = devm_kzalloc_obj(&pdev->dev, *cec);
 	if (!cec)
 		return -ENOMEM;
 
@@ -312,7 +312,7 @@ static void dw_hdmi_cec_remove(struct platform_device *pdev)
 	cec_unregister_adapter(cec->adap);
 }
 
-static int __maybe_unused dw_hdmi_cec_resume(struct device *dev)
+static int dw_hdmi_cec_resume(struct device *dev)
 {
 	struct dw_hdmi_cec *cec = dev_get_drvdata(dev);
 
@@ -328,7 +328,7 @@ static int __maybe_unused dw_hdmi_cec_resume(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused dw_hdmi_cec_suspend(struct device *dev)
+static int dw_hdmi_cec_suspend(struct device *dev)
 {
 	struct dw_hdmi_cec *cec = dev_get_drvdata(dev);
 
@@ -341,15 +341,15 @@ static int __maybe_unused dw_hdmi_cec_suspend(struct device *dev)
 }
 
 static const struct dev_pm_ops dw_hdmi_cec_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(dw_hdmi_cec_suspend, dw_hdmi_cec_resume)
+	SYSTEM_SLEEP_PM_OPS(dw_hdmi_cec_suspend, dw_hdmi_cec_resume)
 };
 
 static struct platform_driver dw_hdmi_cec_driver = {
 	.probe	= dw_hdmi_cec_probe,
-	.remove_new = dw_hdmi_cec_remove,
+	.remove = dw_hdmi_cec_remove,
 	.driver = {
 		.name = "dw-hdmi-cec",
-		.pm = &dw_hdmi_cec_pm,
+		.pm = pm_ptr(&dw_hdmi_cec_pm),
 	},
 };
 module_platform_driver(dw_hdmi_cec_driver);

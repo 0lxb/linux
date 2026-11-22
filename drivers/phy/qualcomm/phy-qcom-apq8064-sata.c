@@ -205,7 +205,7 @@ static int qcom_apq8064_sata_phy_probe(struct platform_device *pdev)
 	struct phy *generic_phy;
 	int ret;
 
-	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
+	phy = devm_kzalloc_obj(dev, *phy);
 	if (!phy)
 		return -ENOMEM;
 
@@ -257,12 +257,12 @@ static const struct of_device_id qcom_apq8064_sata_phy_of_match[] = {
 MODULE_DEVICE_TABLE(of, qcom_apq8064_sata_phy_of_match);
 
 static struct platform_driver qcom_apq8064_sata_phy_driver = {
-	.probe	= qcom_apq8064_sata_phy_probe,
-	.remove_new = qcom_apq8064_sata_phy_remove,
+	.probe = qcom_apq8064_sata_phy_probe,
+	.remove = qcom_apq8064_sata_phy_remove,
 	.driver = {
-		.name	= "qcom-apq8064-sata-phy",
-		.of_match_table	= qcom_apq8064_sata_phy_of_match,
-	}
+		.name = "qcom-apq8064-sata-phy",
+		.of_match_table = qcom_apq8064_sata_phy_of_match,
+	},
 };
 module_platform_driver(qcom_apq8064_sata_phy_driver);
 

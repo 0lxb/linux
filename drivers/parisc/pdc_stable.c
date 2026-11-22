@@ -483,7 +483,7 @@ static struct attribute *paths_subsys_attrs[] = {
 ATTRIBUTE_GROUPS(paths_subsys);
 
 /* Specific kobject type for our PDC paths */
-static struct kobj_type ktype_pdcspath = {
+static const struct kobj_type ktype_pdcspath = {
 	.sysfs_ops = &pdcspath_attr_ops,
 	.default_groups = paths_subsys_groups,
 };
@@ -586,7 +586,7 @@ static ssize_t pdcs_autosearch_read(struct kobject *kobj,
  * @attr: The kobject attributes.
  * @buf: The output buffer to write to.
  *
- * The value of the timer field correponds to a number of seconds in powers of 2.
+ * The value of the timer field corresponds to a number of seconds in powers of 2.
  */
 static ssize_t pdcs_timer_read(struct kobject *kobj,
 			       struct kobj_attribute *attr, char *buf)

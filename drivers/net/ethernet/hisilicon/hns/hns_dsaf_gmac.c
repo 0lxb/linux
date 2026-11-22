@@ -669,16 +669,15 @@ static void hns_gmac_get_stats(void *mac_drv, u64 *data)
 	}
 }
 
-static void hns_gmac_get_strings(u32 stringset, u8 *data)
+static void hns_gmac_get_strings(u32 stringset, u8 **data)
 {
-	u8 *buff = data;
 	u32 i;
 
 	if (stringset != ETH_SS_STATS)
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(g_gmac_stats_string); i++)
-		ethtool_puts(&buff, g_gmac_stats_string[i].desc);
+		ethtool_puts(data, g_gmac_stats_string[i].desc);
 }
 
 static int hns_gmac_get_sset_count(int stringset)
@@ -698,7 +697,7 @@ void *hns_gmac_config(struct hns_mac_cb *mac_cb, struct mac_params *mac_param)
 {
 	struct mac_driver *mac_drv;
 
-	mac_drv = devm_kzalloc(mac_cb->dev, sizeof(*mac_drv), GFP_KERNEL);
+	mac_drv = devm_kzalloc_obj(mac_cb->dev, *mac_drv);
 	if (!mac_drv)
 		return NULL;
 

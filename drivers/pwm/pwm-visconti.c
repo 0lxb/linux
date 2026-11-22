@@ -156,7 +156,7 @@ static int visconti_pwm_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id visconti_pwm_of_match[] = {
-	{ .compatible = "toshiba,visconti-pwm", },
+	{ .compatible = "toshiba,visconti-pwm" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, visconti_pwm_of_match);
@@ -170,6 +170,7 @@ static struct platform_driver visconti_pwm_driver = {
 };
 module_platform_driver(visconti_pwm_driver);
 
+MODULE_DESCRIPTION("Toshiba Visconti Pulse Width Modulator driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Nobuhiro Iwamatsu <nobuhiro1.iwamatsu@toshiba.co.jp>");
 MODULE_ALIAS("platform:pwm-visconti");

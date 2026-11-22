@@ -9,7 +9,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/of.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "rmi_driver.h"
 
 #define RMI_PRODUCT_ID_LENGTH    10
@@ -397,7 +397,7 @@ static int rmi_f01_probe(struct rmi_function *fn)
 			return error;
 	}
 
-	f01 = devm_kzalloc(&fn->dev, sizeof(struct f01_data), GFP_KERNEL);
+	f01 = devm_kzalloc_obj(&fn->dev, struct f01_data);
 	if (!f01)
 		return -ENOMEM;
 

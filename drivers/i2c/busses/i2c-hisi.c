@@ -13,7 +13,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/units.h>
@@ -197,8 +196,8 @@ static void hisi_i2c_reset_xfer(struct hisi_i2c_controller *ctlr)
  * wait for the transfer done. The major transfer process is performed
  * in the IRQ handler.
  */
-static int hisi_i2c_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
-				int num)
+static int hisi_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
+			 int num)
 {
 	struct hisi_i2c_controller *ctlr = i2c_get_adapdata(adap);
 	DECLARE_COMPLETION_ONSTACK(done);
@@ -236,8 +235,8 @@ static u32 hisi_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm hisi_i2c_algo = {
-	.master_xfer	= hisi_i2c_master_xfer,
-	.functionality	= hisi_i2c_functionality,
+	.xfer = hisi_i2c_xfer,
+	.functionality = hisi_i2c_functionality,
 };
 
 static int hisi_i2c_read_rx_fifo(struct hisi_i2c_controller *ctlr)
@@ -464,7 +463,7 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 	u32 hw_version;
 	int ret;
 
-	ctlr = devm_kzalloc(dev, sizeof(*ctlr), GFP_KERNEL);
+	ctlr = devm_kzalloc_obj(dev, *ctlr);
 	if (!ctlr)
 		return -ENOMEM;
 
@@ -482,7 +481,7 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 
 	ret = devm_request_irq(dev, ctlr->irq, hisi_i2c_irq, 0, "hisi-i2c", ctlr);
 	if (ret)
-		return dev_err_probe(dev, ret, "failed to request irq handler\n");
+		return ret;
 
 	ctlr->clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
 	if (IS_ERR_OR_NULL(ctlr->clk)) {
@@ -517,7 +516,7 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 }
 
 static const struct acpi_device_id hisi_i2c_acpi_ids[] = {
-	{ "HISI03D1", 0 },
+	{ .id = "HISI03D1" },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, hisi_i2c_acpi_ids);

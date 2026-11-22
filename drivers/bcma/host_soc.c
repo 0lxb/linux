@@ -208,7 +208,7 @@ static int bcma_host_soc_probe(struct platform_device *pdev)
 	int err;
 
 	/* Alloc */
-	bus = devm_kzalloc(dev, sizeof(*bus), GFP_KERNEL);
+	bus = devm_kzalloc_obj(dev, *bus);
 	if (!bus)
 		return -ENOMEM;
 
@@ -240,15 +240,13 @@ err_unmap_mmio:
 	return err;
 }
 
-static int bcma_host_soc_remove(struct platform_device *pdev)
+static void bcma_host_soc_remove(struct platform_device *pdev)
 {
 	struct bcma_bus *bus = platform_get_drvdata(pdev);
 
 	bcma_bus_unregister(bus);
 	iounmap(bus->mmio);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 static const struct of_device_id bcma_host_soc_of_match[] = {

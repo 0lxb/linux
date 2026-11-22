@@ -32,29 +32,52 @@
 #include "gc/gc_11_0_0_sh_mask.h"
 
 MODULE_FIRMWARE("amdgpu/gc_11_0_0_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_0_0_imu_kicker.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_1_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_2_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_3_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_4_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_5_0_imu.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_5_1_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_2_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_3_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_4_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_6_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_0_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_0_imu_l.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_0_imu_p.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_1_imu.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_1_imu_l.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_7_1_imu_p.bin");
 
 static int imu_v11_0_init_microcode(struct amdgpu_device *adev)
 {
-	char fw_name[45];
 	char ucode_prefix[30];
 	int err;
 	const struct imu_firmware_header_v1_0 *imu_hdr;
 	struct amdgpu_firmware_info *info = NULL;
+	bool imu_in_ifwi;
+	enum amdgpu_ucode_required required;
 
 	DRM_DEBUG("\n");
 
-	amdgpu_ucode_ip_version_decode(adev, GC_HWIP, ucode_prefix, sizeof(ucode_prefix));
+	/* On GFX 11 APUs, ASP loads the IFWI IMU ucode by default. */
+	imu_in_ifwi = adev->firmware.load_type == AMDGPU_FW_LOAD_PSP &&
+		      (adev->flags & AMD_IS_APU);
+	required = imu_in_ifwi ? AMDGPU_UCODE_OPTIONAL : AMDGPU_UCODE_REQUIRED;
 
-	snprintf(fw_name, sizeof(fw_name), "amdgpu/%s_imu.bin", ucode_prefix);
-	err = amdgpu_ucode_request(adev, &adev->gfx.imu_fw, fw_name);
+	amdgpu_ucode_ip_version_decode(adev, GC_HWIP, ucode_prefix, sizeof(ucode_prefix));
+	if (amdgpu_is_kicker_fw(adev))
+		err = amdgpu_ucode_request(adev, &adev->gfx.imu_fw, required,
+					   "amdgpu/%s_imu_kicker.bin", ucode_prefix);
+	else
+		err = amdgpu_ucode_request(adev, &adev->gfx.imu_fw, required,
+					   "amdgpu/%s_imu.bin", ucode_prefix);
+	if (err == -ENODEV && imu_in_ifwi)
+		return 0;
 	if (err)
 		goto out;
+
 	imu_hdr = (const struct imu_firmware_header_v1_0 *)adev->gfx.imu_fw->data;
 	//adev->gfx.imu_feature_version = le32_to_cpu(imu_hdr->ucode_feature_version);
 	
@@ -75,8 +98,8 @@ static int imu_v11_0_init_microcode(struct amdgpu_device *adev)
 out:
 	if (err) {
 		dev_err(adev->dev,
-			"gfx11: Failed to load firmware \"%s\"\n",
-			fw_name);
+			"gfx11: Failed to load firmware \"%s_imu.bin\"\n",
+			ucode_prefix);
 		amdgpu_ucode_release(&adev->gfx.imu_fw);
 	}
 
@@ -154,7 +177,7 @@ static void imu_v11_0_setup(struct amdgpu_device *adev)
 		WREG32_SOC15(GC, 0, regGFX_IMU_C2PMSG_16, imu_reg_val);
 	}
 
-	//disble imu Rtavfs, SmsRepair, DfllBTC, and ClkB
+	//disable imu Rtavfs, SmsRepair, DfllBTC, and ClkB
 	imu_reg_val = RREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10);
 	imu_reg_val |= 0x10007;
 	WREG32_SOC15(GC, 0, regGFX_IMU_SCRATCH_10, imu_reg_val);
@@ -367,8 +390,9 @@ static void imu_v11_0_program_rlc_ram(struct amdgpu_device *adev)
 		imu_v11_0_3_program_rlc_ram(adev);
 		break;
 	default:
-		BUG();
-		break;
+		WARN(1, "Invalid GFX/IMU IP version 0x%08x\n",
+		     amdgpu_ip_version(adev, GC_HWIP, 0));
+		return;
 	}
 
 	//Indicate the contents of the RAM are valid

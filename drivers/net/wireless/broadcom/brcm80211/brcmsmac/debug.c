@@ -56,11 +56,6 @@ void brcms_debugfs_detach(struct brcms_pub *drvr)
 	debugfs_remove_recursive(drvr->dbgfs_dir);
 }
 
-struct dentry *brcms_debugfs_get_devdir(struct brcms_pub *drvr)
-{
-	return drvr->dbgfs_dir;
-}
-
 static
 int brcms_debugfs_hardware_read(struct seq_file *s, void *data)
 {
@@ -194,7 +189,7 @@ brcms_debugfs_add_entry(struct brcms_pub *drvr, const char *fn,
 	struct dentry *dentry =  drvr->dbgfs_dir;
 	struct brcms_debugfs_entry *entry;
 
-	entry = devm_kzalloc(dev, sizeof(*entry), GFP_KERNEL);
+	entry = devm_kzalloc_obj(dev, *entry);
 	if (!entry)
 		return;
 

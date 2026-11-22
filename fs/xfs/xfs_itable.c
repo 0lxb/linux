@@ -3,7 +3,7 @@
  * Copyright (c) 2000-2002,2005 Silicon Graphics, Inc.
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -36,6 +36,14 @@ struct xfs_bstat_chunk {
 	struct xfs_bulkstat	*buf;
 };
 
+static inline bool
+want_metadir_file(
+	struct xfs_inode	*ip,
+	struct xfs_ibulk	*breq)
+{
+	return xfs_is_metadir_inode(ip) && (breq->flags & XFS_IBULK_METADIR);
+}
+
 /*
  * Fill out the bulkstat info for a single inode and report it somewhere.
  *
@@ -55,7 +63,7 @@ struct xfs_bstat_chunk {
 STATIC int
 xfs_bulkstat_one_int(
 	struct xfs_mount	*mp,
-	struct mnt_idmap	*idmap,
+	const struct mnt_idmap	*idmap,
 	struct xfs_trans	*tp,
 	xfs_ino_t		ino,
 	struct xfs_bstat_chunk	*bc)
@@ -68,9 +76,6 @@ xfs_bulkstat_one_int(
 	int			error = -EINVAL;
 	vfsuid_t		vfsuid;
 	vfsgid_t		vfsgid;
-
-	if (xfs_internal_inum(mp, ino))
-		goto out_advance;
 
 	error = xfs_iget(mp, tp, ino,
 			 (XFS_IGET_DONTCACHE | XFS_IGET_UNTRUSTED),
@@ -92,10 +97,38 @@ xfs_bulkstat_one_int(
 	}
 
 	ASSERT(ip != NULL);
-	ASSERT(ip->i_imap.im_blkno != 0);
+	ASSERT(ip->i_imap.im_agbno != 0);
 	inode = VFS_I(ip);
 	vfsuid = i_uid_into_vfsuid(idmap, inode);
 	vfsgid = i_gid_into_vfsgid(idmap, inode);
+
+	/*
+	 * If caller wants files from the metadata directories, push out the
+	 * bare minimum information for enabling scrub.
+	 */
+	if (want_metadir_file(ip, bc->breq)) {
+		memset(buf, 0, sizeof(*buf));
+		buf->bs_ino = ino;
+		buf->bs_gen = inode->i_generation;
+		buf->bs_mode = inode->i_mode & S_IFMT;
+		xfs_bulkstat_health(ip, buf);
+		buf->bs_version = XFS_BULKSTAT_VERSION_V5;
+		xfs_iunlock(ip, XFS_ILOCK_SHARED);
+		xfs_irele(ip);
+
+		error = bc->formatter(bc->breq, buf);
+		if (!error || error == -ECANCELED)
+			goto out_advance;
+		goto out;
+	}
+
+	/* If this is a private inode, don't leak its details to userspace. */
+	if (IS_PRIVATE(inode) || xfs_is_sb_inum(mp, ino)) {
+		xfs_iunlock(ip, XFS_ILOCK_SHARED);
+		xfs_irele(ip);
+		error = -EINVAL;
+		goto out_advance;
+	}
 
 	/* xfs_iget returns the following without needing
 	 * further change.
@@ -197,8 +230,8 @@ xfs_bulkstat_one(
 
 	ASSERT(breq->icount == 1);
 
-	bc.buf = kzalloc(sizeof(struct xfs_bulkstat),
-			GFP_KERNEL | __GFP_RETRY_MAYFAIL);
+	bc.buf = kzalloc_obj(struct xfs_bulkstat,
+			     GFP_KERNEL | __GFP_RETRY_MAYFAIL);
 	if (!bc.buf)
 		return -ENOMEM;
 
@@ -206,14 +239,10 @@ xfs_bulkstat_one(
 	 * Grab an empty transaction so that we can use its recursive buffer
 	 * locking abilities to detect cycles in the inobt without deadlocking.
 	 */
-	error = xfs_trans_alloc_empty(breq->mp, &tp);
-	if (error)
-		goto out;
-
+	tp = xfs_trans_alloc_empty(breq->mp);
 	error = xfs_bulkstat_one_int(breq->mp, breq->idmap, tp,
 			breq->startino, &bc);
 	xfs_trans_cancel(tp);
-out:
 	kfree(bc.buf);
 
 	/*
@@ -278,7 +307,6 @@ xfs_bulkstat(
 		.breq		= breq,
 	};
 	struct xfs_trans	*tp;
-	unsigned int		iwalk_flags = 0;
 	int			error;
 
 	if (breq->idmap != &nop_mnt_idmap) {
@@ -289,8 +317,8 @@ xfs_bulkstat(
 	if (xfs_bulkstat_already_done(breq->mp, breq->startino))
 		return 0;
 
-	bc.buf = kzalloc(sizeof(struct xfs_bulkstat),
-			GFP_KERNEL | __GFP_RETRY_MAYFAIL);
+	bc.buf = kzalloc_obj(struct xfs_bulkstat,
+			     GFP_KERNEL | __GFP_RETRY_MAYFAIL);
 	if (!bc.buf)
 		return -ENOMEM;
 
@@ -298,17 +326,10 @@ xfs_bulkstat(
 	 * Grab an empty transaction so that we can use its recursive buffer
 	 * locking abilities to detect cycles in the inobt without deadlocking.
 	 */
-	error = xfs_trans_alloc_empty(breq->mp, &tp);
-	if (error)
-		goto out;
-
-	if (breq->flags & XFS_IBULK_SAME_AG)
-		iwalk_flags |= XFS_IWALK_SAME_AG;
-
-	error = xfs_iwalk(breq->mp, tp, breq->startino, iwalk_flags,
+	tp = xfs_trans_alloc_empty(breq->mp);
+	error = xfs_iwalk(breq->mp, tp, breq->startino, breq->iwalk_flags,
 			xfs_bulkstat_iwalk, breq->icount, &bc);
 	xfs_trans_cancel(tp);
-out:
 	kfree(bc.buf);
 
 	/*
@@ -431,14 +452,10 @@ xfs_inumbers(
 	 * Grab an empty transaction so that we can use its recursive buffer
 	 * locking abilities to detect cycles in the inobt without deadlocking.
 	 */
-	error = xfs_trans_alloc_empty(breq->mp, &tp);
-	if (error)
-		goto out;
-
-	error = xfs_inobt_walk(breq->mp, tp, breq->startino, breq->flags,
+	tp = xfs_trans_alloc_empty(breq->mp);
+	error = xfs_inobt_walk(breq->mp, tp, breq->startino, breq->iwalk_flags,
 			xfs_inumbers_walk, breq->icount, &ic);
 	xfs_trans_cancel(tp);
-out:
 
 	/*
 	 * We found some inode groups, so clear the error status and return

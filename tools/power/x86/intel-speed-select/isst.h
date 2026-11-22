@@ -30,7 +30,7 @@
 
 #include <linux/isst_if.h>
 
-#define BIT(x) (1 << (x))
+#define BIT(x) (1U << (x))
 #define BIT_ULL(nr) (1ULL << (nr))
 #define GENMASK(h, l) (((~0UL) << (l)) & (~0UL >> (sizeof(long) * 8 - 1 - (h))))
 #define GENMASK_ULL(h, l)                                                      \
@@ -80,7 +80,7 @@
 #define DISP_FREQ_MULTIPLIER 100
 
 #define MAX_PACKAGE_COUNT	32
-#define MAX_DIE_PER_PACKAGE	2
+#define MAX_DIE_PER_PACKAGE	16
 #define MAX_PUNIT_PER_DIE	8
 
 /* Unified structure to specific a CPU or a Power Domain */
@@ -147,6 +147,9 @@ struct isst_pkg_ctdp_level_info {
 	int uncore_p0;
 	int uncore_p1;
 	int uncore_pm;
+	int uncore1_p0;
+	int uncore1_p1;
+	int uncore1_pm;
 	int sse_p1;
 	int avx2_p1;
 	int avx512_p1;

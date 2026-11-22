@@ -217,7 +217,7 @@ static irqreturn_t iproc_touchscreen_interrupt(int irq, void *data)
 			"pen up-down (%d)\n", priv->pen_status);
 	}
 
-	/* coordinates in FIFO exceed the theshold */
+	/* coordinates in FIFO exceed the threshold */
 	if (intr_status & TS_FIFO_INTR_MASK) {
 		for (i = 0; i < priv->cfg_params.fifo_threshold; i++) {
 			regmap_read(priv->regmap, FIFO_DATA, &raw_coordinate);
@@ -420,7 +420,7 @@ static int iproc_ts_probe(struct platform_device *pdev)
 	int irq;
 	int error;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -459,7 +459,6 @@ static int iproc_ts_probe(struct platform_device *pdev)
 
 	/* Set input device info  */
 	idev->name = IPROC_TS_NAME;
-	idev->dev.parent = &pdev->dev;
 
 	idev->id.bustype = BUS_HOST;
 	idev->id.vendor = SERIO_UNKNOWN;

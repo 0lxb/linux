@@ -104,16 +104,6 @@ extern int add_temporary_entry(unsigned long entrylo0, unsigned long entrylo1,
 # define VMALLOC_END	(FIXADDR_START-2*PAGE_SIZE)
 #endif
 
-#ifdef CONFIG_PHYS_ADDR_T_64BIT
-#define pte_ERROR(e) \
-	printk("%s:%d: bad pte %016Lx.\n", __FILE__, __LINE__, pte_val(e))
-#else
-#define pte_ERROR(e) \
-	printk("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, pte_val(e))
-#endif
-#define pgd_ERROR(e) \
-	printk("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
-
 extern void load_pgd(unsigned long pg_dir);
 
 extern pte_t invalid_pte_table[PTRS_PER_PTE];
@@ -129,7 +119,7 @@ static inline int pmd_none(pmd_t pmd)
 static inline int pmd_bad(pmd_t pmd)
 {
 #ifdef CONFIG_MIPS_HUGE_TLB_SUPPORT
-	/* pmd_huge(pmd) but inline */
+	/* pmd_leaf(pmd) but inline */
 	if (unlikely(pmd_val(pmd) & _PAGE_HUGE))
 		return 0;
 #endif

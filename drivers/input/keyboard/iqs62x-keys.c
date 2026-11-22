@@ -45,7 +45,6 @@ struct iqs62x_keys_private {
 static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 				  struct iqs62x_keys_private *iqs62x_keys)
 {
-	struct fwnode_handle *child;
 	unsigned int val;
 	int ret, i;
 
@@ -68,7 +67,8 @@ static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 	}
 
 	for (i = 0; i < ARRAY_SIZE(iqs62x_keys->switches); i++) {
-		child = device_get_named_child_node(&pdev->dev,
+		struct fwnode_handle *child __free(fwnode_handle) =
+			device_get_named_child_node(&pdev->dev,
 						    iqs62x_switch_names[i]);
 		if (!child)
 			continue;
@@ -77,7 +77,6 @@ static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 		if (ret) {
 			dev_err(&pdev->dev, "Failed to read switch code: %d\n",
 				ret);
-			fwnode_handle_put(child);
 			return ret;
 		}
 		iqs62x_keys->switches[i].code = val;
@@ -91,8 +90,6 @@ static int iqs62x_keys_parse_prop(struct platform_device *pdev,
 			iqs62x_keys->switches[i].flag = (i == IQS62X_SW_HALL_N ?
 							 IQS62X_EVENT_HALL_N_T :
 							 IQS62X_EVENT_HALL_S_T);
-
-		fwnode_handle_put(child);
 	}
 
 	return 0;
@@ -254,8 +251,7 @@ static int iqs62x_keys_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int ret, i;
 
-	iqs62x_keys = devm_kzalloc(&pdev->dev, sizeof(*iqs62x_keys),
-				   GFP_KERNEL);
+	iqs62x_keys = devm_kzalloc_obj(&pdev->dev, *iqs62x_keys);
 	if (!iqs62x_keys)
 		return -ENOMEM;
 
@@ -326,7 +322,7 @@ static struct platform_driver iqs62x_keys_platform_driver = {
 		.name = "iqs62x-keys",
 	},
 	.probe = iqs62x_keys_probe,
-	.remove_new = iqs62x_keys_remove,
+	.remove = iqs62x_keys_remove,
 };
 module_platform_driver(iqs62x_keys_platform_driver);
 

@@ -16,7 +16,6 @@
  */
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -416,7 +415,7 @@ static u8 twl6032_channel_to_reg(int channel)
 {
 	/*
 	 * for any prior chosen channel, when the conversion is ready
-	 * the result is avalable in GPCH0_LSB, GPCH0_MSB.
+	 * the result is available in GPCH0_LSB, GPCH0_MSB.
 	 */
 
 	return TWL6032_GPADC_GPCH0_LSB;
@@ -519,7 +518,7 @@ static int twl6030_gpadc_read_raw(struct iio_dev *indio_dev,
 {
 	struct twl6030_gpadc_data *gpadc = iio_priv(indio_dev);
 	int ret;
-	long timeout;
+	long time_left;
 
 	mutex_lock(&gpadc->lock);
 
@@ -529,12 +528,12 @@ static int twl6030_gpadc_read_raw(struct iio_dev *indio_dev,
 		goto err;
 	}
 	/* wait for conversion to complete */
-	timeout = wait_for_completion_interruptible_timeout(
+	time_left = wait_for_completion_interruptible_timeout(
 				&gpadc->irq_complete, msecs_to_jiffies(5000));
-	if (timeout == 0) {
+	if (time_left == 0) {
 		ret = -ETIMEDOUT;
 		goto err;
-	} else if (timeout < 0) {
+	} else if (time_left < 0) {
 		ret = -EINTR;
 		goto err;
 	}
@@ -871,7 +870,7 @@ static const struct of_device_id of_twl6030_match_tbl[] = {
 		.compatible = "ti,twl6032-gpadc",
 		.data = &twl6032_pdata,
 	},
-	{ /* end */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, of_twl6030_match_tbl);
 
@@ -894,10 +893,8 @@ static int twl6030_gpadc_probe(struct platform_device *pdev)
 
 	gpadc = iio_priv(indio_dev);
 
-	gpadc->twl6030_cal_tbl = devm_kcalloc(dev,
-					pdata->nchannels,
-					sizeof(*gpadc->twl6030_cal_tbl),
-					GFP_KERNEL);
+	gpadc->twl6030_cal_tbl = devm_kzalloc_objs(dev, *gpadc->twl6030_cal_tbl,
+						   pdata->nchannels);
 	if (!gpadc->twl6030_cal_tbl)
 		return -ENOMEM;
 
@@ -1003,7 +1000,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(twl6030_gpadc_pm_ops, twl6030_gpadc_suspend,
 
 static struct platform_driver twl6030_gpadc_driver = {
 	.probe		= twl6030_gpadc_probe,
-	.remove_new	= twl6030_gpadc_remove,
+	.remove		= twl6030_gpadc_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
 		.pm	= pm_sleep_ptr(&twl6030_gpadc_pm_ops),

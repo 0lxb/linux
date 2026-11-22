@@ -77,7 +77,7 @@ struct mdp5_kms {
 struct mdp5_global_state {
 	struct drm_private_state base;
 
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct mdp5_kms *mdp5_kms;
 
 	struct mdp5_hw_pipe_state hwpipe;
@@ -86,7 +86,7 @@ struct mdp5_global_state {
 };
 
 struct mdp5_global_state * mdp5_get_existing_global_state(struct mdp5_kms *mdp5_kms);
-struct mdp5_global_state *__must_check mdp5_get_global_state(struct drm_atomic_state *s);
+struct mdp5_global_state *__must_check mdp5_get_global_state(struct drm_atomic_commit *s);
 
 /* Atomic plane state.  Subclasses the base drm_plane_state in order to
  * track assigned hwpipe and hw specific state.
@@ -171,13 +171,13 @@ struct mdp5_encoder {
 static inline void mdp5_write(struct mdp5_kms *mdp5_kms, u32 reg, u32 data)
 {
 	WARN_ON(mdp5_kms->enable_count <= 0);
-	msm_writel(data, mdp5_kms->mmio + reg);
+	writel(data, mdp5_kms->mmio + reg);
 }
 
 static inline u32 mdp5_read(struct mdp5_kms *mdp5_kms, u32 reg)
 {
 	WARN_ON(mdp5_kms->enable_count <= 0);
-	return msm_readl(mdp5_kms->mmio + reg);
+	return readl(mdp5_kms->mmio + reg);
 }
 
 static inline const char *stage2name(enum mdp_mixer_stage_id stage)

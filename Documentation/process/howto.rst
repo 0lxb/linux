@@ -305,7 +305,7 @@ The maintainers of the various kernel subsystems --- and also many
 kernel subsystem developers --- expose their current state of
 development in source repositories.  That way, others can see what is
 happening in the different areas of the kernel.  In areas where
-development is rapid, a developer may be asked to base his submissions
+development is rapid, a developer may be asked to base their submissions
 onto such a subsystem kernel tree so that conflicts between the
 submission and other already ongoing work are avoided.
 
@@ -331,7 +331,7 @@ they need to be integration-tested.  For this purpose, a special
 testing repository exists into which virtually all subsystem trees are
 pulled on an almost daily basis:
 
-	https://git.kernel.org/?p=linux/kernel/git/next/linux-next.git
+	https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git
 
 This way, the linux-next gives a summary outlook onto what will be
 expected to go into the mainline kernel at the next merge period.
@@ -373,12 +373,12 @@ As some of the above documents describe, the majority of the core kernel
 developers participate on the Linux Kernel Mailing list.  Details on how
 to subscribe and unsubscribe from the list can be found at:
 
-	http://vger.kernel.org/vger-lists.html#linux-kernel
+	https://subspace.kernel.org/subscribing.html
 
 There are archives of the mailing list on the web in many different
 places.  Use a search engine to find these archives.  For example:
 
-	https://lore.kernel.org/lkml/
+	https://lore.kernel.org/linux-kernel/
 
 It is highly recommended that you search the archives about the topic
 you want to bring up, before you post it to the list. A lot of things
@@ -393,13 +393,13 @@ groups.
 Many of the lists are hosted on kernel.org. Information on them can be
 found at:
 
-	http://vger.kernel.org/vger-lists.html
+	https://subspace.kernel.org
 
 Please remember to follow good behavioral habits when using the lists.
 Though a bit cheesy, the following URL has some simple guidelines for
 interacting with the list (or any list):
 
-	http://www.albion.com/netiquette/
+	https://subspace.kernel.org/etiquette.html
 
 If multiple people respond to your mail, the CC: list of recipients may
 get pretty large. Don't remove anybody from the CC: list without a good

@@ -258,7 +258,7 @@ static int cdns_rtc_probe(struct platform_device *pdev)
 	int ret;
 	unsigned long ref_clk_freq;
 
-	crtc = devm_kzalloc(&pdev->dev, sizeof(*crtc), GFP_KERNEL);
+	crtc = devm_kzalloc_obj(&pdev->dev, *crtc);
 	if (!crtc)
 		return -ENOMEM;
 
@@ -359,7 +359,7 @@ static void cdns_rtc_remove(struct platform_device *pdev)
 	struct cdns_rtc *crtc = platform_get_drvdata(pdev);
 
 	cdns_rtc_alarm_irq_enable(&pdev->dev, 0);
-	device_init_wakeup(&pdev->dev, 0);
+	device_init_wakeup(&pdev->dev, false);
 
 	clk_disable_unprepare(crtc->pclk);
 	clk_disable_unprepare(crtc->ref_clk);
@@ -402,7 +402,7 @@ static struct platform_driver cdns_rtc_driver = {
 		.pm = &cdns_rtc_pm_ops,
 	},
 	.probe = cdns_rtc_probe,
-	.remove_new = cdns_rtc_remove,
+	.remove = cdns_rtc_remove,
 };
 module_platform_driver(cdns_rtc_driver);
 

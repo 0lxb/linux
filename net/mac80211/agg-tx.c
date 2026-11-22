@@ -9,7 +9,7 @@
  * Copyright 2007, Michael Wu <flamingice@sourmilk.net>
  * Copyright 2007-2010, Intel Corporation
  * Copyright(c) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2023 Intel Corporation
+ * Copyright (C) 2018-2026 Intel Corporation
  */
 
 #include <linux/ieee80211.h>
@@ -58,55 +58,47 @@
  * complete.
  */
 
-static void ieee80211_send_addba_request(struct ieee80211_sub_if_data *sdata,
-					 const u8 *da, u16 tid,
+static void ieee80211_send_addba_request(struct sta_info *sta, u16 tid,
 					 u8 dialog_token, u16 start_seq_num,
-					 u16 agg_size, u16 timeout)
+					 u16 agg_size, u16 timeout, bool ndp)
 {
+	struct ieee80211_sub_if_data *sdata = sta->sdata;
 	struct ieee80211_local *local = sdata->local;
 	struct sk_buff *skb;
 	struct ieee80211_mgmt *mgmt;
 	u16 capab;
 
-	skb = dev_alloc_skb(sizeof(*mgmt) + local->hw.extra_tx_headroom);
-
+	skb = dev_alloc_skb(IEEE80211_MIN_ACTION_SIZE(addba_req) +
+			    2 + sizeof(struct ieee80211_addba_ext_ie) +
+			    local->hw.extra_tx_headroom);
 	if (!skb)
 		return;
 
 	skb_reserve(skb, local->hw.extra_tx_headroom);
-	mgmt = skb_put_zero(skb, 24);
-	memcpy(mgmt->da, da, ETH_ALEN);
-	memcpy(mgmt->sa, sdata->vif.addr, ETH_ALEN);
-	if (sdata->vif.type == NL80211_IFTYPE_AP ||
-	    sdata->vif.type == NL80211_IFTYPE_AP_VLAN ||
-	    sdata->vif.type == NL80211_IFTYPE_MESH_POINT)
-		memcpy(mgmt->bssid, sdata->vif.addr, ETH_ALEN);
-	else if (sdata->vif.type == NL80211_IFTYPE_STATION)
-		memcpy(mgmt->bssid, sdata->vif.cfg.ap_addr, ETH_ALEN);
-	else if (sdata->vif.type == NL80211_IFTYPE_ADHOC)
-		memcpy(mgmt->bssid, sdata->u.ibss.bssid, ETH_ALEN);
+	mgmt = ieee80211_mgmt_ba(skb, sta->sta.addr, sdata);
 
-	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
-					  IEEE80211_STYPE_ACTION);
-
-	skb_put(skb, 1 + sizeof(mgmt->u.action.u.addba_req));
+	skb_put(skb, 2 + sizeof(mgmt->u.action.addba_req));
 
 	mgmt->u.action.category = WLAN_CATEGORY_BACK;
-	mgmt->u.action.u.addba_req.action_code = WLAN_ACTION_ADDBA_REQ;
+	mgmt->u.action.action_code = ndp ?
+		WLAN_ACTION_NDP_ADDBA_REQ : WLAN_ACTION_ADDBA_REQ;
 
-	mgmt->u.action.u.addba_req.dialog_token = dialog_token;
+	mgmt->u.action.addba_req.dialog_token = dialog_token;
 	capab = IEEE80211_ADDBA_PARAM_AMSDU_MASK;
 	capab |= IEEE80211_ADDBA_PARAM_POLICY_MASK;
 	capab |= u16_encode_bits(tid, IEEE80211_ADDBA_PARAM_TID_MASK);
 	capab |= u16_encode_bits(agg_size, IEEE80211_ADDBA_PARAM_BUF_SIZE_MASK);
 
-	mgmt->u.action.u.addba_req.capab = cpu_to_le16(capab);
+	mgmt->u.action.addba_req.capab = cpu_to_le16(capab);
 
-	mgmt->u.action.u.addba_req.timeout = cpu_to_le16(timeout);
-	mgmt->u.action.u.addba_req.start_seq_num =
+	mgmt->u.action.addba_req.timeout = cpu_to_le16(timeout);
+	mgmt->u.action.addba_req.start_seq_num =
 					cpu_to_le16(start_seq_num << 4);
 
-	ieee80211_tx_skb_tid(sdata, skb, tid, -1);
+	if (sta->sta.deflink.he_cap.has_he)
+		ieee80211_add_addbaext(skb, 0, agg_size);
+
+	ieee80211_tx_skb_tid(sdata, skb, NULL, tid, -1);
 }
 
 void ieee80211_send_bar(struct ieee80211_vif *vif, u8 *ra, u16 tid, u16 ssn)
@@ -135,7 +127,7 @@ void ieee80211_send_bar(struct ieee80211_vif *vif, u8 *ra, u16 tid, u16 ssn)
 
 	IEEE80211_SKB_CB(skb)->flags |= IEEE80211_TX_INTFL_DONT_ENCRYPT |
 					IEEE80211_TX_CTL_REQ_TX_STATUS;
-	ieee80211_tx_skb_tid(sdata, skb, tid, -1);
+	ieee80211_tx_skb_tid(sdata, skb, NULL, tid, -1);
 }
 EXPORT_SYMBOL(ieee80211_send_bar);
 
@@ -220,10 +212,7 @@ ieee80211_agg_start_txq(struct sta_info *sta, int tid, bool enable)
 
 	txqi = to_txq_info(txq);
 
-	if (enable)
-		set_bit(IEEE80211_TXQ_AMPDU, &txqi->flags);
-	else
-		clear_bit(IEEE80211_TXQ_AMPDU, &txqi->flags);
+	assign_bit(IEEE80211_TXQ_AMPDU, &txqi->flags, enable);
 
 	clear_bit(IEEE80211_TXQ_STOP, &txqi->flags);
 	local_bh_disable();
@@ -371,8 +360,8 @@ int __ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
 	ht_dbg(sta->sdata, "Tx BA session stop requested for %pM tid %u\n",
 	       sta->sta.addr, tid);
 
-	del_timer_sync(&tid_tx->addba_resp_timer);
-	del_timer_sync(&tid_tx->session_timer);
+	timer_delete_sync(&tid_tx->addba_resp_timer);
+	timer_delete_sync(&tid_tx->session_timer);
 
 	/*
 	 * After this packets are no longer handed right through
@@ -431,7 +420,8 @@ int __ieee80211_stop_tx_ba_session(struct sta_info *sta, u16 tid,
  */
 static void sta_addba_resp_timer_expired(struct timer_list *t)
 {
-	struct tid_ampdu_tx *tid_tx = from_timer(tid_tx, t, addba_resp_timer);
+	struct tid_ampdu_tx *tid_tx = timer_container_of(tid_tx, t,
+							 addba_resp_timer);
 	struct sta_info *sta = tid_tx->sta;
 	u8 tid = tid_tx->tid;
 
@@ -473,8 +463,13 @@ static void ieee80211_send_addba_with_timeout(struct sta_info *sta,
 	sta->ampdu_mlme.addba_req_num[tid]++;
 	spin_unlock_bh(&sta->lock);
 
-	if (sta->sta.deflink.he_cap.has_he) {
+	if (sta->sta.valid_links ||
+	    sta->sta.deflink.eht_cap.has_eht ||
+	    ieee80211_hw_check(&local->hw, STRICT)) {
 		buf_size = local->hw.max_tx_aggregation_subframes;
+	} else if (sta->sta.deflink.he_cap.has_he) {
+		buf_size = min_t(u16, local->hw.max_tx_aggregation_subframes,
+				 IEEE80211_MAX_AMPDU_BUF_HE);
 	} else {
 		/*
 		 * We really should use what the driver told us it will
@@ -486,9 +481,9 @@ static void ieee80211_send_addba_with_timeout(struct sta_info *sta,
 	}
 
 	/* send AddBA request */
-	ieee80211_send_addba_request(sdata, sta->sta.addr, tid,
-				     tid_tx->dialog_token, tid_tx->ssn,
-				     buf_size, tid_tx->timeout);
+	ieee80211_send_addba_request(sta, tid, tid_tx->dialog_token,
+				     tid_tx->ssn, buf_size, tid_tx->timeout,
+				     tid_tx->ndp);
 
 	WARN_ON(test_and_set_bit(HT_AGG_STATE_SENT_ADDBA, &tid_tx->state));
 }
@@ -525,6 +520,7 @@ void ieee80211_tx_ba_session_handle_start(struct sta_info *sta, int tid)
 	 */
 	synchronize_net();
 
+	tid_tx->ndp = ieee80211_s1g_use_ndp_ba(sdata, sta);
 	params.ssn = sta->tid_seq[tid] >> 4;
 	ret = drv_ampdu_action(local, sdata, &params);
 	tid_tx->ssn = params.ssn;
@@ -579,7 +575,8 @@ EXPORT_SYMBOL(ieee80211_refresh_tx_agg_session_timer);
  */
 static void sta_tx_agg_session_timer_expired(struct timer_list *t)
 {
-	struct tid_ampdu_tx *tid_tx = from_timer(tid_tx, t, session_timer);
+	struct tid_ampdu_tx *tid_tx = timer_container_of(tid_tx, t,
+							 session_timer);
 	struct sta_info *sta = tid_tx->sta;
 	u8 tid = tid_tx->tid;
 	unsigned long timeout;
@@ -615,8 +612,12 @@ int ieee80211_start_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid,
 		 "Requested to start BA session on reserved tid=%d", tid))
 		return -EINVAL;
 
-	if (!pubsta->deflink.ht_cap.ht_supported &&
-	    sta->sdata->vif.bss_conf.chanreq.oper.chan->band != NL80211_BAND_6GHZ)
+	if (!pubsta->valid_links &&
+	    !pubsta->deflink.ht_cap.ht_supported &&
+	    !pubsta->deflink.vht_cap.vht_supported &&
+	    !pubsta->deflink.he_cap.has_he &&
+	    !pubsta->deflink.eht_cap.has_eht &&
+	    !pubsta->deflink.s1g_cap.s1g)
 		return -EINVAL;
 
 	if (WARN_ON_ONCE(!local->ops->ampdu_action))
@@ -637,7 +638,8 @@ int ieee80211_start_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid,
 	    sdata->vif.type != NL80211_IFTYPE_MESH_POINT &&
 	    sdata->vif.type != NL80211_IFTYPE_AP_VLAN &&
 	    sdata->vif.type != NL80211_IFTYPE_AP &&
-	    sdata->vif.type != NL80211_IFTYPE_ADHOC)
+	    sdata->vif.type != NL80211_IFTYPE_ADHOC &&
+	    sdata->vif.type != NL80211_IFTYPE_NAN_DATA)
 		return -EINVAL;
 
 	if (test_sta_flag(sta, WLAN_STA_BLOCK_BA)) {
@@ -709,7 +711,7 @@ int ieee80211_start_tx_ba_session(struct ieee80211_sta *pubsta, u16 tid,
 	}
 
 	/* prepare A-MPDU MLME for Tx aggregation */
-	tid_tx = kzalloc(sizeof(struct tid_ampdu_tx), GFP_ATOMIC);
+	tid_tx = kzalloc_obj(struct tid_ampdu_tx, GFP_ATOMIC);
 	if (!tid_tx) {
 		ret = -ENOMEM;
 		goto err_unlock_sta;
@@ -808,7 +810,7 @@ void ieee80211_start_tx_ba_cb(struct sta_info *sta, int tid,
 
 	if (!test_bit(HT_AGG_STATE_SENT_ADDBA, &tid_tx->state)) {
 		ieee80211_send_addba_with_timeout(sta, tid_tx);
-		/* RESPONSE_RECEIVED state whould trigger the flow again */
+		/* RESPONSE_RECEIVED state would trigger the flow again */
 		return;
 	}
 
@@ -910,6 +912,7 @@ void ieee80211_stop_tx_ba_cb(struct sta_info *sta, int tid,
 			     struct tid_ampdu_tx *tid_tx)
 {
 	struct ieee80211_sub_if_data *sdata = sta->sdata;
+	bool ndp = ndp = tid_tx->ndp;
 	bool send_delba = false;
 	bool start_txq = false;
 
@@ -929,6 +932,7 @@ void ieee80211_stop_tx_ba_cb(struct sta_info *sta, int tid,
 		send_delba = true;
 
 	ieee80211_remove_tid_tx(sta, tid);
+	/* tid_tx is now invalid since ieee80211_remove_tid_tx() frees it */
 	start_txq = true;
 
  unlock_sta:
@@ -939,7 +943,9 @@ void ieee80211_stop_tx_ba_cb(struct sta_info *sta, int tid,
 
 	if (send_delba)
 		ieee80211_send_delba(sdata, sta->sta.addr, tid,
-			WLAN_BACK_INITIATOR, WLAN_REASON_QSTA_NOT_USE);
+				     WLAN_BACK_INITIATOR,
+				     WLAN_REASON_QSTA_NOT_USE,
+				     ndp);
 }
 
 void ieee80211_stop_tx_ba_cb_irqsafe(struct ieee80211_vif *vif,
@@ -977,10 +983,17 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 
 	lockdep_assert_wiphy(sta->local->hw.wiphy);
 
-	capab = le16_to_cpu(mgmt->u.action.u.addba_resp.capab);
+	capab = le16_to_cpu(mgmt->u.action.addba_resp.capab);
 	amsdu = capab & IEEE80211_ADDBA_PARAM_AMSDU_MASK;
 	tid = u16_get_bits(capab, IEEE80211_ADDBA_PARAM_TID_MASK);
 	buf_size = u16_get_bits(capab, IEEE80211_ADDBA_PARAM_BUF_SIZE_MASK);
+
+	ieee80211_retrieve_addba_ext_data(sta,
+					  mgmt->u.action.addba_resp.variable,
+					  len - offsetof(typeof(*mgmt),
+							 u.action.addba_resp.variable),
+					  &buf_size);
+
 	buf_size = min(buf_size, local->hw.max_tx_aggregation_subframes);
 
 	txq = sta->sta.txq[tid];
@@ -991,13 +1004,13 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 	if (!tid_tx)
 		return;
 
-	if (mgmt->u.action.u.addba_resp.dialog_token != tid_tx->dialog_token) {
+	if (mgmt->u.action.addba_resp.dialog_token != tid_tx->dialog_token) {
 		ht_dbg(sta->sdata, "wrong addBA response token, %pM tid %d\n",
 		       sta->sta.addr, tid);
 		return;
 	}
 
-	del_timer_sync(&tid_tx->addba_resp_timer);
+	timer_delete_sync(&tid_tx->addba_resp_timer);
 
 	ht_dbg(sta->sdata, "switched off addBA timer for %pM tid %d\n",
 	       sta->sta.addr, tid);
@@ -1021,7 +1034,7 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 	 * is set to 0, the Buffer Size subfield is set to a value
 	 * of at least 1.
 	 */
-	if (le16_to_cpu(mgmt->u.action.u.addba_resp.status)
+	if (le16_to_cpu(mgmt->u.action.addba_resp.status)
 			== WLAN_STATUS_SUCCESS && buf_size) {
 		if (test_and_set_bit(HT_AGG_STATE_RESPONSE_RECEIVED,
 				     &tid_tx->state)) {
@@ -1038,7 +1051,7 @@ void ieee80211_process_addba_resp(struct ieee80211_local *local,
 		sta->ampdu_mlme.addba_req_num[tid] = 0;
 
 		tid_tx->timeout =
-			le16_to_cpu(mgmt->u.action.u.addba_resp.timeout);
+			le16_to_cpu(mgmt->u.action.addba_resp.timeout);
 
 		if (tid_tx->timeout) {
 			mod_timer(&tid_tx->session_timer,

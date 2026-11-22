@@ -89,9 +89,9 @@
 
 #if !defined(CONFIG_SMP) && !defined(CONFIG_ARM_LPAE)
 /*
- * Allow 16MB-aligned ioremap pages
+ * Allow 2MB-aligned ioremap pages
  */
-#define IOREMAP_MAX_ORDER	24
+#define IOREMAP_MAX_ORDER	21
 #endif
 
 #define VECTORS_BASE		UL(0xffff0000)
@@ -146,12 +146,6 @@ extern unsigned long vectors_base;
 #define ITCM_OFFSET	UL(0xfffe0000)
 #define DTCM_OFFSET	UL(0xfffe8000)
 #endif
-
-/*
- * Convert a page to/from a physical address
- */
-#define page_to_phys(page)	(__pfn_to_phys(page_to_pfn(page)))
-#define phys_to_page(phys)	(pfn_to_page(__phys_to_pfn(phys)))
 
 /*
  * PLAT_PHYS_OFFSET is the offset (from zero) of the start of physical

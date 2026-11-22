@@ -75,17 +75,6 @@ static inline int jh7110_isp_top_rst_init(struct jh71x0_clk_priv *priv)
 	return reset_control_deassert(top_rsts);
 }
 
-static struct clk_hw *jh7110_ispclk_get(struct of_phandle_args *clkspec, void *data)
-{
-	struct jh71x0_clk_priv *priv = data;
-	unsigned int idx = clkspec->args[0];
-
-	if (idx < JH7110_ISPCLK_END)
-		return &priv->reg[idx].hw;
-
-	return ERR_PTR(-EINVAL);
-}
-
 #ifdef CONFIG_PM
 static int jh7110_ispcrg_suspend(struct device *dev)
 {
@@ -115,17 +104,16 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 	unsigned int idx;
 	int ret;
 
-	priv = devm_kzalloc(&pdev->dev,
-			    struct_size(priv, reg, JH7110_ISPCLK_END),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_flex(&pdev->dev, *priv, reg, JH7110_ISPCLK_END);
 	if (!priv)
 		return -ENOMEM;
 
-	top = devm_kzalloc(&pdev->dev, sizeof(*top), GFP_KERNEL);
+	top = devm_kzalloc_obj(&pdev->dev, *top);
 	if (!top)
 		return -ENOMEM;
 
 	spin_lock_init(&priv->rmw_lock);
+	priv->num_reg = JH7110_ISPCLK_END;
 	priv->dev = &pdev->dev;
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
@@ -140,7 +128,7 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 
 	/* enable power domain and clocks */
 	pm_runtime_enable(priv->dev);
-	ret = pm_runtime_get_sync(priv->dev);
+	ret = pm_runtime_resume_and_get(priv->dev);
 	if (ret < 0)
 		return dev_err_probe(priv->dev, ret, "failed to turn on power\n");
 
@@ -186,7 +174,7 @@ static int jh7110_ispcrg_probe(struct platform_device *pdev)
 			goto err_exit;
 	}
 
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh7110_ispclk_get, priv);
+	ret = devm_of_clk_add_hw_provider(&pdev->dev, jh71x0_clk_get, priv);
 	if (ret)
 		goto err_exit;
 
@@ -216,7 +204,7 @@ MODULE_DEVICE_TABLE(of, jh7110_ispcrg_match);
 
 static struct platform_driver jh7110_ispcrg_driver = {
 	.probe = jh7110_ispcrg_probe,
-	.remove_new = jh7110_ispcrg_remove,
+	.remove = jh7110_ispcrg_remove,
 	.driver = {
 		.name = "clk-starfive-jh7110-isp",
 		.of_match_table = jh7110_ispcrg_match,

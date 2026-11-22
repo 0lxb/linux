@@ -92,7 +92,7 @@ static int w1_f0d_readblock(struct w1_slave *sl, int off, int count, char *buf)
 }
 
 static ssize_t w1_f0d_read_bin(struct file *filp, struct kobject *kobj,
-			       struct bin_attribute *bin_attr,
+			       const struct bin_attribute *bin_attr,
 			       char *buf, loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
@@ -102,7 +102,7 @@ static ssize_t w1_f0d_read_bin(struct file *filp, struct kobject *kobj,
 	if (count == 0)
 		return 0;
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 
 	/* read directly from the EEPROM in chunks of W1_F0D_READ_MAXLEN */
 	while (todo > 0) {
@@ -123,7 +123,7 @@ static ssize_t w1_f0d_read_bin(struct file *filp, struct kobject *kobj,
 		off += W1_F0D_READ_MAXLEN;
 	}
 
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	return count;
 }
@@ -200,7 +200,7 @@ retry:
 }
 
 static ssize_t w1_f0d_write_bin(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct w1_slave *sl = kobj_to_w1_slave(kobj);
@@ -211,7 +211,7 @@ static ssize_t w1_f0d_write_bin(struct file *filp, struct kobject *kobj,
 	if (count == 0)
 		return 0;
 
-	mutex_lock(&sl->master->mutex);
+	mutex_lock(&sl->master->bus_mutex);
 
 	/* Can only write data in blocks of the size of the scratchpad */
 	addr = off;
@@ -256,12 +256,12 @@ static ssize_t w1_f0d_write_bin(struct file *filp, struct kobject *kobj,
 	}
 
 out_up:
-	mutex_unlock(&sl->master->mutex);
+	mutex_unlock(&sl->master->bus_mutex);
 
 	return count;
 }
 
-static struct bin_attribute w1_f0d_bin_attr = {
+static const struct bin_attribute w1_f0d_bin_attr = {
 	.attr = {
 		.name = "eeprom",
 		.mode = 0644,

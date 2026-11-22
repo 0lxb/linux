@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation. All rights reserved.
+// Copyright(c) 2018 Intel Corporation
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -15,24 +15,24 @@
 
 static struct snd_soc_card sof_nocodec_card = {
 	.name = "nocodec", /* the sof- prefix is added by the core */
-	.topology_shortname = "sof-nocodec",
 	.owner = THIS_MODULE
 };
 
 static int sof_nocodec_bes_setup(struct device *dev,
 				 struct snd_soc_dai_driver *drv,
 				 struct snd_soc_dai_link *links,
-				 int link_num, struct snd_soc_card *card)
+				 int link_num)
 {
+	struct snd_soc_card *card = &sof_nocodec_card;
 	struct snd_soc_dai_link_component *dlc;
 	int i;
 
-	if (!drv || !links || !card)
+	if (!drv || !links)
 		return -EINVAL;
 
 	/* set up BE dai_links */
 	for (i = 0; i < link_num; i++) {
-		dlc = devm_kcalloc(dev, 2, sizeof(*dlc), GFP_KERNEL);
+		dlc = devm_kzalloc_objs(dev, *dlc, 2);
 		if (!dlc)
 			return -ENOMEM;
 
@@ -55,10 +55,9 @@ static int sof_nocodec_bes_setup(struct device *dev,
 		links[i].no_pcm = 1;
 		links[i].cpus->dai_name = drv[i].name;
 		links[i].platforms->name = dev_name(dev->parent);
-		if (drv[i].playback.channels_min)
-			links[i].dpcm_playback = 1;
-		if (drv[i].capture.channels_min)
-			links[i].dpcm_capture = 1;
+
+		links[i].playback_only =  drv[i].playback.channels_min && !drv[i].capture.channels_min;
+		links[i].capture_only  = !drv[i].playback.channels_min &&  drv[i].capture.channels_min;
 
 		links[i].be_hw_params_fixup = sof_pcm_dai_link_fixup;
 	}
@@ -69,18 +68,18 @@ static int sof_nocodec_bes_setup(struct device *dev,
 	return 0;
 }
 
-static int sof_nocodec_setup(struct device *dev,
-			     u32 num_dai_drivers,
-			     struct snd_soc_dai_driver *dai_drivers)
+static int sof_nocodec_setup(struct device *dev, struct snd_soc_acpi_mach *mach)
 {
+	u32 num_dai_drivers = mach->mach_params.num_dai_drivers;
+	struct snd_soc_dai_driver *dai_drivers = mach->mach_params.dai_drivers;
 	struct snd_soc_dai_link *links;
 
 	/* create dummy BE dai_links */
-	links = devm_kcalloc(dev, num_dai_drivers, sizeof(struct snd_soc_dai_link), GFP_KERNEL);
+	links = devm_kzalloc_objs(dev, struct snd_soc_dai_link, num_dai_drivers);
 	if (!links)
 		return -ENOMEM;
 
-	return sof_nocodec_bes_setup(dev, dai_drivers, links, num_dai_drivers, &sof_nocodec_card);
+	return sof_nocodec_bes_setup(dev, dai_drivers, links, num_dai_drivers);
 }
 
 static int sof_nocodec_probe(struct platform_device *pdev)
@@ -90,11 +89,11 @@ static int sof_nocodec_probe(struct platform_device *pdev)
 	int ret;
 
 	card->dev = &pdev->dev;
-	card->topology_shortname_created = true;
 	mach = pdev->dev.platform_data;
 
-	ret = sof_nocodec_setup(card->dev, mach->mach_params.num_dai_drivers,
-				mach->mach_params.dai_drivers);
+	snd_soc_card_set_topology_name(card, "sof");
+
+	ret = sof_nocodec_setup(card->dev, mach);
 	if (ret < 0)
 		return ret;
 
@@ -110,7 +109,7 @@ static struct platform_driver sof_nocodec_audio = {
 };
 module_platform_driver(sof_nocodec_audio)
 
+MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("ASoC sof nocodec");
 MODULE_AUTHOR("Liam Girdwood");
-MODULE_LICENSE("Dual BSD/GPL");
 MODULE_ALIAS("platform:sof-nocodec");

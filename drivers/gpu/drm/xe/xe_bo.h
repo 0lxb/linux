@@ -6,55 +6,68 @@
 #ifndef _XE_BO_H_
 #define _XE_BO_H_
 
+#include <drm/drm_prime.h>
 #include <drm/ttm/ttm_tt.h>
 
+#include <xen/xen.h>
+
 #include "xe_bo_types.h"
+#include "xe_ggtt.h"
 #include "xe_macros.h"
+#include "xe_validation.h"
 #include "xe_vm_types.h"
 #include "xe_vm.h"
-
-/**
- * xe_vm_assert_held(vm) - Assert that the vm's reservation object is held.
- * @vm: The vm
- */
-#define xe_vm_assert_held(vm) dma_resv_assert_held(xe_vm_resv(vm))
-
-
+#include "xe_vram_types.h"
 
 #define XE_DEFAULT_GTT_SIZE_MB          3072ULL /* 3GB by default */
 
-#define XE_BO_CREATE_USER_BIT		BIT(0)
+#define XE_BO_FLAG_USER		BIT(0)
 /* The bits below need to be contiguous, or things break */
-#define XE_BO_CREATE_SYSTEM_BIT		BIT(1)
-#define XE_BO_CREATE_VRAM0_BIT		BIT(2)
-#define XE_BO_CREATE_VRAM1_BIT		BIT(3)
-#define XE_BO_CREATE_VRAM_MASK		(XE_BO_CREATE_VRAM0_BIT | \
-					 XE_BO_CREATE_VRAM1_BIT)
+#define XE_BO_FLAG_SYSTEM		BIT(1)
+#define XE_BO_FLAG_VRAM0		BIT(2)
+#define XE_BO_FLAG_VRAM1		BIT(3)
+#define XE_BO_FLAG_VRAM_MASK		(XE_BO_FLAG_VRAM0 | XE_BO_FLAG_VRAM1)
 /* -- */
-#define XE_BO_CREATE_STOLEN_BIT		BIT(4)
-#define XE_BO_CREATE_VRAM_IF_DGFX(tile) \
-	(IS_DGFX(tile_to_xe(tile)) ? XE_BO_CREATE_VRAM0_BIT << (tile)->id : \
-	 XE_BO_CREATE_SYSTEM_BIT)
-#define XE_BO_CREATE_GGTT_BIT		BIT(5)
-#define XE_BO_CREATE_IGNORE_MIN_PAGE_SIZE_BIT BIT(6)
-#define XE_BO_CREATE_PINNED_BIT		BIT(7)
-#define XE_BO_CREATE_NO_RESV_EVICT	BIT(8)
-#define XE_BO_DEFER_BACKING		BIT(9)
-#define XE_BO_SCANOUT_BIT		BIT(10)
-#define XE_BO_FIXED_PLACEMENT_BIT	BIT(11)
-#define XE_BO_PAGETABLE			BIT(12)
-#define XE_BO_NEEDS_CPU_ACCESS		BIT(13)
-#define XE_BO_NEEDS_UC			BIT(14)
-/* this one is trigger internally only */
-#define XE_BO_INTERNAL_TEST		BIT(30)
-#define XE_BO_INTERNAL_64K		BIT(31)
+#define XE_BO_FLAG_STOLEN		BIT(4)
+#define XE_BO_FLAG_VRAM(vram)		(XE_BO_FLAG_VRAM0 << ((vram)->id))
+#define XE_BO_FLAG_VRAM_IF_DGFX(tile)	(IS_DGFX(tile_to_xe(tile)) ? \
+					 XE_BO_FLAG_VRAM((tile)->mem.vram) : \
+					 XE_BO_FLAG_SYSTEM)
+#define XE_BO_FLAG_GGTT			BIT(5)
+#define XE_BO_FLAG_IGNORE_MIN_PAGE_SIZE BIT(6)
+#define XE_BO_FLAG_PINNED		BIT(7)
+#define XE_BO_FLAG_NO_RESV_EVICT	BIT(8)
+#define XE_BO_FLAG_DEFER_BACKING	BIT(9)
+#define XE_BO_FLAG_FORCE_WC		BIT(10)
+#define XE_BO_FLAG_FIXED_PLACEMENT	BIT(11)
+#define XE_BO_FLAG_PAGETABLE		BIT(12)
+#define XE_BO_FLAG_NEEDS_CPU_ACCESS	BIT(13)
+#define XE_BO_FLAG_NEEDS_UC		BIT(14)
+#define XE_BO_FLAG_NEEDS_64K		BIT(15)
+#define XE_BO_FLAG_NEEDS_2M		BIT(16)
+#define XE_BO_FLAG_GGTT_INVALIDATE	BIT(17)
+#define XE_BO_FLAG_PINNED_NORESTORE	BIT(18)
+#define XE_BO_FLAG_PINNED_LATE_RESTORE	BIT(19)
+#define XE_BO_FLAG_GGTT0		BIT(20)
+#define XE_BO_FLAG_GGTT1		BIT(21)
+#define XE_BO_FLAG_GGTT2		BIT(22)
+#define XE_BO_FLAG_GGTT3		BIT(23)
+#define XE_BO_FLAG_CPU_ADDR_MIRROR	BIT(24)
+#define XE_BO_FLAG_FORCE_USER_VRAM	BIT(25)
+#define XE_BO_FLAG_NO_COMPRESSION	BIT(26)
+#define XE_BO_FLAG_NEEDS_1G		BIT(27)
 
-#define XELPG_PPGTT_PTE_PAT3		BIT_ULL(62)
-#define XE2_PPGTT_PTE_PAT4		BIT_ULL(61)
-#define XE_PPGTT_PDE_PDPE_PAT2		BIT_ULL(12)
-#define XE_PPGTT_PTE_PAT2		BIT_ULL(7)
-#define XE_PPGTT_PTE_PAT1		BIT_ULL(4)
-#define XE_PPGTT_PTE_PAT0		BIT_ULL(3)
+/* this one is trigger internally only */
+#define XE_BO_FLAG_INTERNAL_TEST	BIT(30)
+#define XE_BO_FLAG_INTERNAL_64K		BIT(31)
+
+#define XE_BO_FLAG_GGTT_ALL		(XE_BO_FLAG_GGTT0 | \
+					 XE_BO_FLAG_GGTT1 | \
+					 XE_BO_FLAG_GGTT2 | \
+					 XE_BO_FLAG_GGTT3)
+
+#define XE_BO_FLAG_GGTTx(tile) \
+	(XE_BO_FLAG_GGTT0 << (tile)->id)
 
 #define XE_PTE_SHIFT			12
 #define XE_PAGE_SIZE			(1 << XE_PTE_SHIFT)
@@ -68,20 +81,6 @@
 #define XE_64K_PTE_MASK			(XE_64K_PAGE_SIZE - 1)
 #define XE_64K_PDE_MASK			(XE_PDE_MASK >> 4)
 
-#define XE_PDE_PS_2M			BIT_ULL(7)
-#define XE_PDPE_PS_1G			BIT_ULL(7)
-#define XE_PDE_IPS_64K			BIT_ULL(11)
-
-#define XE_GGTT_PTE_DM			BIT_ULL(1)
-#define XE_USM_PPGTT_PTE_AE		BIT_ULL(10)
-#define XE_PPGTT_PTE_DM			BIT_ULL(11)
-#define XE_PDE_64K			BIT_ULL(6)
-#define XE_PTE_PS64			BIT_ULL(8)
-#define XE_PTE_NULL			BIT_ULL(9)
-
-#define XE_PAGE_PRESENT			BIT_ULL(0)
-#define XE_PAGE_RW			BIT_ULL(1)
-
 #define XE_PL_SYSTEM		TTM_PL_SYSTEM
 #define XE_PL_TT		TTM_PL_TT
 #define XE_PL_VRAM0		TTM_PL_VRAM
@@ -90,49 +89,69 @@
 
 #define XE_BO_PROPS_INVALID	(-1)
 
+
+/**
+ * enum xe_madv_purgeable_state - Buffer object purgeable state enumeration
+ *
+ * This enum defines the possible purgeable states for a buffer object,
+ * allowing userspace to provide memory usage hints to the kernel for
+ * better memory management under pressure.
+ *
+ * @XE_MADV_PURGEABLE_WILLNEED: The buffer object is needed and should not be purged.
+ * This is the default state.
+ * @XE_MADV_PURGEABLE_DONTNEED: The buffer object is not currently needed and can be
+ * purged by the kernel under memory pressure.
+ * @XE_MADV_PURGEABLE_PURGED: The buffer object has been purged by the kernel.
+ *
+ * Accessing a purged buffer will result in an error. Per i915 semantics,
+ * once purged, a BO remains permanently invalid and must be destroyed and recreated.
+ */
+enum xe_madv_purgeable_state {
+	XE_MADV_PURGEABLE_WILLNEED,
+	XE_MADV_PURGEABLE_DONTNEED,
+	XE_MADV_PURGEABLE_PURGED,
+};
+
 struct sg_table;
 
 struct xe_bo *xe_bo_alloc(void);
 void xe_bo_free(struct xe_bo *bo);
 
-struct xe_bo *___xe_bo_create_locked(struct xe_device *xe, struct xe_bo *bo,
-				     struct xe_tile *tile, struct dma_resv *resv,
-				     struct ttm_lru_bulk_move *bulk, size_t size,
-				     u16 cpu_caching, enum ttm_bo_type type,
-				     u32 flags);
-struct xe_bo *
-xe_bo_create_locked_range(struct xe_device *xe,
-			  struct xe_tile *tile, struct xe_vm *vm,
-			  size_t size, u64 start, u64 end,
-			  enum ttm_bo_type type, u32 flags);
+struct xe_bo *xe_bo_init_locked(struct xe_device *xe, struct xe_bo *bo,
+				struct xe_tile *tile, struct dma_resv *resv,
+				struct ttm_lru_bulk_move *bulk, size_t size,
+				u16 cpu_caching, enum ttm_bo_type type,
+				u32 flags, struct dma_buf *dma_buf,
+				struct drm_exec *exec);
 struct xe_bo *xe_bo_create_locked(struct xe_device *xe, struct xe_tile *tile,
 				  struct xe_vm *vm, size_t size,
-				  enum ttm_bo_type type, u32 flags);
-struct xe_bo *xe_bo_create(struct xe_device *xe, struct xe_tile *tile,
-			   struct xe_vm *vm, size_t size,
-			   enum ttm_bo_type type, u32 flags);
-struct xe_bo *xe_bo_create_user(struct xe_device *xe, struct xe_tile *tile,
-				struct xe_vm *vm, size_t size,
-				u16 cpu_caching,
-				enum ttm_bo_type type,
-				u32 flags);
+				  enum ttm_bo_type type, u32 flags,
+				  struct drm_exec *exec);
+struct xe_bo *xe_bo_create_user(struct xe_device *xe, struct xe_vm *vm, size_t size,
+				u16 cpu_caching, u32 flags, struct drm_exec *exec);
 struct xe_bo *xe_bo_create_pin_map(struct xe_device *xe, struct xe_tile *tile,
 				   struct xe_vm *vm, size_t size,
-				   enum ttm_bo_type type, u32 flags);
-struct xe_bo *xe_bo_create_pin_map_at(struct xe_device *xe, struct xe_tile *tile,
-				      struct xe_vm *vm, size_t size, u64 offset,
-				      enum ttm_bo_type type, u32 flags);
-struct xe_bo *xe_bo_create_from_data(struct xe_device *xe, struct xe_tile *tile,
-				     const void *data, size_t size,
-				     enum ttm_bo_type type, u32 flags);
+				   enum ttm_bo_type type, u32 flags,
+				   struct drm_exec *exec);
+struct xe_bo *xe_bo_create_pin_map_novm(struct xe_device *xe, struct xe_tile *tile,
+					size_t size, enum ttm_bo_type type, u32 flags,
+					bool intr);
+struct xe_bo *xe_bo_create_pin_range_novm(struct xe_device *xe, struct xe_tile *tile,
+					  size_t size, u64 start, u64 end,
+					  enum ttm_bo_type type, u32 flags);
+struct xe_bo *
+xe_bo_create_pin_map_at_novm(struct xe_device *xe, struct xe_tile *tile,
+			     size_t size, u64 offset, enum ttm_bo_type type,
+			     u32 flags, u64 alignment, bool intr);
 struct xe_bo *xe_managed_bo_create_pin_map(struct xe_device *xe, struct xe_tile *tile,
 					   size_t size, u32 flags);
+void xe_managed_bo_unpin_map_no_vm(struct xe_bo *bo);
 struct xe_bo *xe_managed_bo_create_from_data(struct xe_device *xe, struct xe_tile *tile,
 					     const void *data, size_t size, u32 flags);
 int xe_managed_bo_reinit_in_vram(struct xe_device *xe, struct xe_tile *tile, struct xe_bo **src);
 
 int xe_bo_placement_for_flags(struct xe_device *xe, struct xe_bo *bo,
-			      u32 bo_flags);
+			      u32 bo_flags, enum ttm_bo_type type);
 
 static inline struct xe_bo *ttm_to_xe_bo(const struct ttm_buffer_object *bo)
 {
@@ -154,10 +173,28 @@ static inline struct xe_bo *xe_bo_get(struct xe_bo *bo)
 	return bo;
 }
 
-static inline void xe_bo_put(struct xe_bo *bo)
+void xe_bo_put(struct xe_bo *bo);
+
+/*
+ * xe_bo_get_unless_zero() - Conditionally obtain a GEM object refcount on an
+ * xe bo
+ * @bo: The bo for which we want to obtain a refcount.
+ *
+ * There is a short window between where the bo's GEM object refcount reaches
+ * zero and where we put the final ttm_bo reference. Code in the eviction- and
+ * shrinking path should therefore attempt to grab a gem object reference before
+ * trying to use members outside of the base class ttm object. This function is
+ * intended for that purpose. On successful return, this function must be paired
+ * with an xe_bo_put().
+ *
+ * Return: @bo on success, NULL on failure.
+ */
+static inline __must_check struct xe_bo *xe_bo_get_unless_zero(struct xe_bo *bo)
 {
-	if (bo)
-		drm_gem_object_put(&bo->ttm.base);
+	if (!bo || !kref_get_unless_zero(&bo->ttm.base.refcount))
+		return NULL;
+
+	return bo;
 }
 
 static inline void __xe_bo_unset_bulk_move(struct xe_bo *bo)
@@ -187,15 +224,143 @@ static inline void xe_bo_unlock_vm_held(struct xe_bo *bo)
 	}
 }
 
-int xe_bo_pin_external(struct xe_bo *bo);
-int xe_bo_pin(struct xe_bo *bo);
+int xe_bo_pin_external(struct xe_bo *bo, bool in_place, struct drm_exec *exec);
+int xe_bo_pin(struct xe_bo *bo, struct drm_exec *exec);
 void xe_bo_unpin_external(struct xe_bo *bo);
 void xe_bo_unpin(struct xe_bo *bo);
-int xe_bo_validate(struct xe_bo *bo, struct xe_vm *vm, bool allow_res_evict);
+void xe_bo_pin_account(struct xe_bo *bo);
+void xe_bo_unpin_account(struct xe_bo *bo);
+int xe_bo_validate(struct xe_bo *bo, struct xe_vm *vm, bool allow_res_evict,
+		   struct drm_exec *exec);
 
 static inline bool xe_bo_is_pinned(struct xe_bo *bo)
 {
 	return bo->ttm.pin_count;
+}
+
+static inline bool xe_bo_is_protected(const struct xe_bo *bo)
+{
+	return bo->pxp_key_instance;
+}
+
+/**
+ * xe_bo_is_purged() - Check if buffer object has been purged
+ * @bo: The buffer object to check
+ *
+ * Checks if the buffer object's backing store has been discarded by the
+ * kernel due to memory pressure after being marked as purgeable (DONTNEED).
+ * Once purged, the BO cannot be restored and any attempt to use it will fail.
+ *
+ * Context: Caller must hold the BO's dma-resv lock
+ * Return: true if the BO has been purged, false otherwise
+ */
+static inline bool xe_bo_is_purged(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+	return bo->purgeable.state == XE_MADV_PURGEABLE_PURGED;
+}
+
+/**
+ * xe_bo_madv_is_dontneed() - Check if BO is marked as DONTNEED
+ * @bo: The buffer object to check
+ *
+ * Checks if userspace has marked this BO as DONTNEED (i.e., its contents
+ * are not currently needed and can be discarded under memory pressure).
+ * This is used internally to decide whether a BO is eligible for purging.
+ *
+ * Context: Caller must hold the BO's dma-resv lock
+ * Return: true if the BO is marked DONTNEED, false otherwise
+ */
+static inline bool xe_bo_madv_is_dontneed(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+	return bo->purgeable.state == XE_MADV_PURGEABLE_DONTNEED;
+}
+
+void xe_bo_set_purgeable_state(struct xe_bo *bo, enum xe_madv_purgeable_state new_state);
+
+/**
+ * xe_bo_willneed_get_locked() - Acquire a WILLNEED holder on a BO
+ * @bo: Buffer object
+ *
+ * Increments willneed_count and, on a 0->1 transition, promotes the BO
+ * from DONTNEED to WILLNEED. PURGED is terminal and is never modified.
+ *
+ * Caller must hold the BO's dma-resv lock.
+ */
+static inline void xe_bo_willneed_get_locked(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+
+	/* Imported BOs are owned externally; do not track purgeability. */
+	if (drm_gem_is_imported(&bo->ttm.base))
+		return;
+
+	if (bo->purgeable.willneed_count++ == 0 && xe_bo_madv_is_dontneed(bo))
+		xe_bo_set_purgeable_state(bo, XE_MADV_PURGEABLE_WILLNEED);
+}
+
+/**
+ * xe_bo_willneed_put_locked() - Release a WILLNEED holder on a BO
+ * @bo: Buffer object
+ *
+ * Decrements willneed_count and, on a 1->0 transition, marks the BO
+ * DONTNEED only if it still has VMAs (implying all active VMAs are
+ * DONTNEED). If the last VMA is being removed, preserve the current BO
+ * state to match the previous VMA-walk semantics.
+ *
+ * PURGED is terminal and the BO state is never modified.
+ *
+ * Caller must hold the BO's dma-resv lock.
+ */
+static inline void xe_bo_willneed_put_locked(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+
+	if (drm_gem_is_imported(&bo->ttm.base))
+		return;
+
+	xe_assert(xe_bo_device(bo), bo->purgeable.willneed_count > 0);
+	if (--bo->purgeable.willneed_count == 0 && bo->purgeable.vma_count > 0 &&
+	    !xe_bo_is_purged(bo))
+		xe_bo_set_purgeable_state(bo, XE_MADV_PURGEABLE_DONTNEED);
+}
+
+/**
+ * xe_bo_vma_count_inc_locked() - Account a new VMA on a BO
+ * @bo: Buffer object
+ *
+ * Increments vma_count.
+ *
+ * Caller must hold the BO's dma-resv lock.
+ */
+static inline void xe_bo_vma_count_inc_locked(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+
+	if (drm_gem_is_imported(&bo->ttm.base))
+		return;
+
+	bo->purgeable.vma_count++;
+}
+
+/**
+ * xe_bo_vma_count_dec_locked() - Account a VMA removal on a BO
+ * @bo: Buffer object
+ *
+ * Decrements vma_count.
+ *
+ * Caller must hold the BO's dma-resv lock.
+ */
+static inline void xe_bo_vma_count_dec_locked(struct xe_bo *bo)
+{
+	xe_bo_assert_held(bo);
+
+	if (drm_gem_is_imported(&bo->ttm.base))
+		return;
+
+	xe_assert(xe_bo_device(bo), bo->purgeable.vma_count > 0);
+	bo->purgeable.vma_count--;
 }
 
 static inline void xe_bo_unpin_map_no_vm(struct xe_bo *bo)
@@ -219,30 +384,66 @@ xe_bo_main_addr(struct xe_bo *bo, size_t page_size)
 	return xe_bo_addr(bo, 0, page_size);
 }
 
+/**
+ * xe_bo_size() - Xe BO size
+ * @bo: The bo object.
+ *
+ * Simple helper to return Xe BO's size.
+ *
+ * Return: Xe BO's size
+ */
+static inline size_t xe_bo_size(struct xe_bo *bo)
+{
+	return bo->ttm.base.size;
+}
+
+static inline u32
+__xe_bo_ggtt_addr(struct xe_bo *bo, u8 tile_id)
+{
+	struct xe_ggtt_node *ggtt_node = bo->ggtt_node[tile_id];
+	u64 offset;
+
+	if (XE_WARN_ON(!ggtt_node))
+		return 0;
+
+	offset = xe_ggtt_node_addr(ggtt_node);
+	XE_WARN_ON(offset + xe_bo_size(bo) > (1ull << 32));
+	return offset;
+}
+
 static inline u32
 xe_bo_ggtt_addr(struct xe_bo *bo)
 {
-	XE_WARN_ON(bo->ggtt_node.size > bo->size);
-	XE_WARN_ON(bo->ggtt_node.start + bo->ggtt_node.size > (1ull << 32));
-	return bo->ggtt_node.start;
+	xe_assert(xe_bo_device(bo), bo->tile);
+
+	return __xe_bo_ggtt_addr(bo, bo->tile->id);
 }
 
 int xe_bo_vmap(struct xe_bo *bo);
 void xe_bo_vunmap(struct xe_bo *bo);
+int xe_bo_read(struct xe_bo *bo, u64 offset, void *dst, int size);
 
 bool mem_type_is_vram(u32 mem_type);
 bool xe_bo_is_vram(struct xe_bo *bo);
+bool xe_bo_is_visible_vram(struct xe_bo *bo);
 bool xe_bo_is_stolen(struct xe_bo *bo);
 bool xe_bo_is_stolen_devmem(struct xe_bo *bo);
+bool xe_bo_is_vm_bound(struct xe_bo *bo);
+bool xe_bo_has_single_placement(struct xe_bo *bo);
 uint64_t vram_region_gpu_offset(struct ttm_resource *res);
 
 bool xe_bo_can_migrate(struct xe_bo *bo, u32 mem_type);
 
-int xe_bo_migrate(struct xe_bo *bo, u32 mem_type);
-int xe_bo_evict(struct xe_bo *bo, bool force_alloc);
+int xe_bo_migrate(struct xe_bo *bo, u32 mem_type, struct ttm_operation_ctx *ctc,
+		  struct drm_exec *exec);
+int xe_bo_evict(struct xe_bo *bo, struct drm_exec *exec);
 
 int xe_bo_evict_pinned(struct xe_bo *bo);
+int xe_bo_notifier_prepare_pinned(struct xe_bo *bo);
+int xe_bo_notifier_unprepare_pinned(struct xe_bo *bo);
 int xe_bo_restore_pinned(struct xe_bo *bo);
+
+int xe_bo_dma_unmap_pinned(struct xe_bo *bo);
 
 extern const struct ttm_device_funcs xe_ttm_funcs;
 extern const char *const xe_mem_type_to_name[];
@@ -259,9 +460,26 @@ int xe_bo_dumb_create(struct drm_file *file_priv,
 
 bool xe_bo_needs_ccs_pages(struct xe_bo *bo);
 
+int xe_bo_decompress(struct xe_bo *bo);
+
 static inline size_t xe_bo_ccs_pages_start(struct xe_bo *bo)
 {
-	return PAGE_ALIGN(bo->ttm.base.size);
+	return PAGE_ALIGN(xe_bo_size(bo));
+}
+
+/**
+ * xe_bo_has_valid_ccs_bb - Check if CCS's BBs were setup for the BO.
+ * @bo: the &xe_bo to check
+ *
+ * The CCS's BBs should only be setup by the driver VF, but it is safe
+ * to call this function also by non-VF driver.
+ *
+ * Return: true iff the CCS's BBs are setup, false otherwise.
+ */
+static inline bool xe_bo_has_valid_ccs_bb(struct xe_bo *bo)
+{
+	return bo->bb_ccs[XE_SRIOV_VF_CCS_READ_CTX] &&
+	       bo->bb_ccs[XE_SRIOV_VF_CCS_WRITE_CTX];
 }
 
 static inline bool xe_bo_has_pages(struct xe_bo *bo)
@@ -280,6 +498,8 @@ void __xe_bo_release_dummy(struct kref *kref);
  * @bo: The bo to put.
  * @deferred: List to which to add the buffer object if we cannot put, or
  * NULL if the function is to put unconditionally.
+ * @added: BO was added to deferred list, written back to caller, can be NULL if
+ * writeback is not needed. Only set to true when added, never set to false.
  *
  * Since the final freeing of an object includes both sleeping and (!)
  * memory allocation in the dma_resv individualization, it's not ok
@@ -299,7 +519,8 @@ void __xe_bo_release_dummy(struct kref *kref);
  * false otherwise.
  */
 static inline bool
-xe_bo_put_deferred(struct xe_bo *bo, struct llist_head *deferred)
+xe_bo_put_deferred(struct xe_bo *bo, struct llist_head *deferred,
+		   bool *added)
 {
 	if (!deferred) {
 		xe_bo_put(bo);
@@ -309,12 +530,47 @@ xe_bo_put_deferred(struct xe_bo *bo, struct llist_head *deferred)
 	if (!kref_put(&bo->ttm.base.refcount, __xe_bo_release_dummy))
 		return false;
 
+	if (added)
+		*added = true;
+
 	return llist_add(&bo->freed, deferred);
 }
 
 void xe_bo_put_commit(struct llist_head *deferred);
 
+/**
+ * xe_bo_put_async() - Put BO async
+ * @bo: The bo to put.
+ *
+ * Put BO async, the final put is deferred to a worker to exit an IRQ context.
+ */
+static inline void
+xe_bo_put_async(struct xe_bo *bo)
+{
+	struct xe_bo_dev *bo_device = &xe_bo_device(bo)->bo_device;
+
+	if (xe_bo_put_deferred(bo, &bo_device->async_list, NULL))
+		schedule_work(&bo_device->async_free);
+}
+
+void xe_bo_dev_init(struct xe_bo_dev *bo_device);
+
+void xe_bo_dev_fini(struct xe_bo_dev *bo_device);
+
 struct sg_table *xe_bo_sg(struct xe_bo *bo);
+
+/**
+ * xe_bo_sg_is_contiguous() - Check if a BO's DMA address space is contiguous.
+ * @bo: the BO to check (must have a valid sg table, i.e. !xe_bo_is_vram())
+ * @len: required contiguous length in bytes
+ *
+ * Returns true if the first @len bytes of the BO are mapped to a contiguous
+ * DMA address range.
+ */
+static inline bool xe_bo_sg_is_contiguous(struct xe_bo *bo, size_t len)
+{
+	return drm_prime_get_contiguous_size(xe_bo_sg(bo)) >= len;
+}
 
 /*
  * xe_sg_segment_size() - Provides upper limit for sg segment size.
@@ -328,6 +584,23 @@ static inline unsigned int xe_sg_segment_size(struct device *dev)
 	struct scatterlist __maybe_unused sg;
 	size_t max = BIT_ULL(sizeof(sg.length) * 8) - 1;
 
+	/*
+	 * For Xen PV guests pages aren't contiguous in DMA (machine) address
+	 * space.  The DMA API takes care of that both in dma_alloc_* (by
+	 * calling into the hypervisor to make the pages contiguous) and in
+	 * dma_map_* (by bounce buffering).  But xe (like i915, see commit
+	 * 78a07fe777c4) ignores the coherency aspects of the DMA API and thus
+	 * can't cope with bounce buffering actually happening, so add a hack
+	 * here to force small allocations and mappings when running in PV
+	 * mode on Xen.
+	 *
+	 * Note this will still break if bounce buffering is required for other
+	 * reasons, like confidential computing hypervisors or PCIe root ports
+	 * with addressing limitations.
+	 */
+	if (xen_pv_domain())
+		return PAGE_SIZE;
+
 	max = min_t(size_t, max, dma_max_mapping_size(dev));
 
 	/*
@@ -340,9 +613,22 @@ static inline unsigned int xe_sg_segment_size(struct device *dev)
 	return round_down(max / 2, PAGE_SIZE);
 }
 
-#define i915_gem_object_flush_if_display(obj)		((void)(obj))
+/**
+ * struct xe_bo_shrink_flags - flags governing the shrink behaviour.
+ * @purge: Only purging allowed. Don't shrink if bo not purgeable.
+ * @writeback: Attempt to immediately move content to swap.
+ */
+struct xe_bo_shrink_flags {
+	u32 purge : 1;
+	u32 writeback : 1;
+};
 
-#if IS_ENABLED(CONFIG_DRM_XE_KUNIT_TEST)
+long xe_bo_shrink(struct ttm_operation_ctx *ctx, struct ttm_buffer_object *bo,
+		  const struct xe_bo_shrink_flags flags,
+		  unsigned long *scanned);
+int xe_ttm_bo_purge(struct ttm_buffer_object *ttm_bo, struct ttm_operation_ctx *ctx);
+bool xe_bo_is_user(struct xe_bo *bo);
+
 /**
  * xe_bo_is_mem_type - Whether the bo currently resides in the given
  * TTM memory type
@@ -356,5 +642,4 @@ static inline bool xe_bo_is_mem_type(struct xe_bo *bo, u32 mem_type)
 	xe_bo_assert_held(bo);
 	return bo->ttm.resource->mem_type == mem_type;
 }
-#endif
 #endif

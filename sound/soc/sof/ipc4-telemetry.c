@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018-2023 Intel Corporation. All rights reserved.
+// Copyright(c) 2018-2023 Intel Corporation
 //
 
 #include <linux/debugfs.h>
@@ -80,7 +80,7 @@ void sof_ipc4_create_exception_debugfs_node(struct snd_sof_dev *sdev)
 {
 	struct snd_sof_dfsentry *dfse;
 
-	dfse = devm_kzalloc(sdev->dev, sizeof(*dfse), GFP_KERNEL);
+	dfse = devm_kzalloc_obj(sdev->dev, *dfse);
 	if (!dfse)
 		return;
 

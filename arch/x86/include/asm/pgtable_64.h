@@ -5,7 +5,7 @@
 #include <linux/const.h>
 #include <asm/pgtable_64_types.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /*
  * This file contains the functions and defines necessary to modify and use
@@ -19,10 +19,8 @@
 extern p4d_t level4_kernel_pgt[512];
 extern p4d_t level4_ident_pgt[512];
 extern pud_t level3_kernel_pgt[512];
-extern pud_t level3_ident_pgt[512];
 extern pmd_t level2_kernel_pgt[512];
 extern pmd_t level2_fixmap_pgt[512];
-extern pmd_t level2_ident_pgt[512];
 extern pte_t level1_fixmap_pgt[512 * FIXMAP_PMD_NUM];
 extern pgd_t init_top_pgt[];
 
@@ -30,26 +28,6 @@ extern pgd_t init_top_pgt[];
 
 extern void paging_init(void);
 static inline void sync_initial_page_table(void) { }
-
-#define pte_ERROR(e)					\
-	pr_err("%s:%d: bad pte %p(%016lx)\n",		\
-	       __FILE__, __LINE__, &(e), pte_val(e))
-#define pmd_ERROR(e)					\
-	pr_err("%s:%d: bad pmd %p(%016lx)\n",		\
-	       __FILE__, __LINE__, &(e), pmd_val(e))
-#define pud_ERROR(e)					\
-	pr_err("%s:%d: bad pud %p(%016lx)\n",		\
-	       __FILE__, __LINE__, &(e), pud_val(e))
-
-#if CONFIG_PGTABLE_LEVELS >= 5
-#define p4d_ERROR(e)					\
-	pr_err("%s:%d: bad p4d %p(%016lx)\n",		\
-	       __FILE__, __LINE__, &(e), p4d_val(e))
-#endif
-
-#define pgd_ERROR(e)					\
-	pr_err("%s:%d: bad pgd %p(%016lx)\n",		\
-	       __FILE__, __LINE__, &(e), pgd_val(e))
 
 struct mm_struct;
 
@@ -270,5 +248,26 @@ static inline bool gup_fast_permitted(unsigned long start, unsigned long end)
 
 #include <asm/pgtable-invert.h>
 
-#endif /* !__ASSEMBLY__ */
+#else /* __ASSEMBLER__ */
+
+#define l4_index(x)	(((x) >> 39) & 511)
+#define pud_index(x)	(((x) >> PUD_SHIFT) & (PTRS_PER_PUD - 1))
+
+L4_PAGE_OFFSET = l4_index(__PAGE_OFFSET_BASE_L4)
+L4_START_KERNEL = l4_index(__START_KERNEL_map)
+
+L3_START_KERNEL = pud_index(__START_KERNEL_map)
+
+#define SYM_DATA_START_PAGE_ALIGNED(name)			\
+	SYM_START(name, SYM_L_GLOBAL, .balign PAGE_SIZE)
+
+/* Automate the creation of 1 to 1 mapping pmd entries */
+#define PMDS(START, PERM, COUNT)			\
+	i = 0 ;						\
+	.rept (COUNT) ;					\
+	.quad	(START) + (i << PMD_SHIFT) + (PERM) ;	\
+	i = i + 1 ;					\
+	.endr
+
+#endif /* __ASSEMBLER__ */
 #endif /* _ASM_X86_PGTABLE_64_H */

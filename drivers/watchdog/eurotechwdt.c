@@ -56,6 +56,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 
 static unsigned long eurwdt_is_open;
@@ -77,7 +78,7 @@ static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /*
  * Some symbolic names
@@ -368,7 +369,6 @@ static int eurwdt_notify_sys(struct notifier_block *this, unsigned long code,
 
 static const struct file_operations eurwdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= eurwdt_write,
 	.unlocked_ioctl	= eurwdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,

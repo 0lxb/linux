@@ -9,6 +9,7 @@
 #include <linux/backlight.h>
 #include <linux/leds.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 struct led_bl_data {
@@ -89,8 +90,7 @@ static int led_bl_get_leds(struct device *dev,
 		return -EINVAL;
 	}
 
-	leds = devm_kzalloc(dev, sizeof(struct led_classdev *) * nb_leds,
-			    GFP_KERNEL);
+	leds = devm_kzalloc_objs(dev, struct led_classdev *, nb_leds);
 	if (!leds)
 		return -ENOMEM;
 
@@ -137,8 +137,7 @@ static int led_bl_parse_levels(struct device *dev,
 		unsigned int db;
 		u32 *levels = NULL;
 
-		levels = devm_kzalloc(dev, sizeof(u32) * num_levels,
-				      GFP_KERNEL);
+		levels = devm_kzalloc_objs(dev, u32, num_levels);
 		if (!levels)
 			return -ENOMEM;
 
@@ -178,7 +177,7 @@ static int led_bl_probe(struct platform_device *pdev)
 	struct led_bl_data *priv;
 	int ret, i;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -200,13 +199,26 @@ static int led_bl_probe(struct platform_device *pdev)
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = priv->max_brightness;
 	props.brightness = priv->default_brightness;
-	props.power = (priv->default_brightness > 0) ? FB_BLANK_POWERDOWN :
-		      FB_BLANK_UNBLANK;
+	props.power = (priv->default_brightness > 0) ? BACKLIGHT_POWER_OFF :
+		      BACKLIGHT_POWER_ON;
 	priv->bl_dev = backlight_device_register(dev_name(&pdev->dev),
 			&pdev->dev, priv, &led_bl_ops, &props);
 	if (IS_ERR(priv->bl_dev)) {
 		dev_err(&pdev->dev, "Failed to register backlight\n");
 		return PTR_ERR(priv->bl_dev);
+	}
+
+	for (i = 0; i < priv->nb_leds; i++) {
+		struct device_link *link;
+
+		link = device_link_add(&pdev->dev, priv->leds[i]->dev->parent,
+				       DL_FLAG_AUTOREMOVE_CONSUMER);
+		if (!link) {
+			dev_err(&pdev->dev, "Failed to add devlink (consumer %s, supplier %s)\n",
+				dev_name(&pdev->dev), dev_name(priv->leds[i]->dev->parent));
+			backlight_device_unregister(priv->bl_dev);
+			return -EINVAL;
+		}
 	}
 
 	for (i = 0; i < priv->nb_leds; i++) {
@@ -229,8 +241,11 @@ static void led_bl_remove(struct platform_device *pdev)
 	backlight_device_unregister(bl);
 
 	led_bl_power_off(priv);
-	for (i = 0; i < priv->nb_leds; i++)
+	for (i = 0; i < priv->nb_leds; i++) {
+		mutex_lock(&priv->leds[i]->led_access);
 		led_sysfs_enable(priv->leds[i]);
+		mutex_unlock(&priv->leds[i]->led_access);
+	}
 }
 
 static const struct of_device_id led_bl_of_match[] = {
@@ -246,7 +261,7 @@ static struct platform_driver led_bl_driver = {
 		.of_match_table	= led_bl_of_match,
 	},
 	.probe		= led_bl_probe,
-	.remove_new	= led_bl_remove,
+	.remove		= led_bl_remove,
 };
 
 module_platform_driver(led_bl_driver);

@@ -7,7 +7,6 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/fb.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -54,7 +53,7 @@ static int ktd253_backlight_stepdown(struct ktd253_backlight *ktd253)
 	 *
 	 * Architectures do not always support ndelay() and we will get a few us
 	 * instead. If we get to a critical time limit an interrupt has likely
-	 * occured in the low part of the loop and we need to restart from the
+	 * occurred in the low part of the loop and we need to restart from the
 	 * top so we have the backlight in a known state.
 	 */
 	u64 ns;
@@ -149,7 +148,7 @@ static int ktd253_backlight_probe(struct platform_device *pdev)
 	u32 brightness;
 	int ret;
 
-	ktd253 = devm_kzalloc(dev, sizeof(*ktd253), GFP_KERNEL);
+	ktd253 = devm_kzalloc_obj(dev, *ktd253);
 	if (!ktd253)
 		return -ENOMEM;
 	ktd253->dev = dev;
@@ -190,10 +189,10 @@ static int ktd253_backlight_probe(struct platform_device *pdev)
 	/* When we just enable the GPIO line we set max brightness */
 	if (brightness) {
 		bl->props.brightness = brightness;
-		bl->props.power = FB_BLANK_UNBLANK;
+		bl->props.power = BACKLIGHT_POWER_ON;
 	} else {
 		bl->props.brightness = 0;
-		bl->props.power = FB_BLANK_POWERDOWN;
+		bl->props.power = BACKLIGHT_POWER_OFF;
 	}
 
 	ktd253->bl = bl;

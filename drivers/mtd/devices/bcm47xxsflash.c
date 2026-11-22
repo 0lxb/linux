@@ -290,7 +290,7 @@ static int bcm47xxsflash_bcma_probe(struct platform_device *pdev)
 	struct resource *res;
 	int err;
 
-	b47s = devm_kzalloc(dev, sizeof(*b47s), GFP_KERNEL);
+	b47s = devm_kzalloc_obj(dev, *b47s);
 	if (!b47s)
 		return -ENOMEM;
 
@@ -367,7 +367,7 @@ static void bcm47xxsflash_bcma_remove(struct platform_device *pdev)
 
 static struct platform_driver bcma_sflash_driver = {
 	.probe	= bcm47xxsflash_bcma_probe,
-	.remove_new = bcm47xxsflash_bcma_remove,
+	.remove = bcm47xxsflash_bcma_remove,
 	.driver = {
 		.name = "bcma_sflash",
 	},

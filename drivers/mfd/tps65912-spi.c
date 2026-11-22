@@ -25,7 +25,7 @@ static int tps65912_spi_probe(struct spi_device *spi)
 {
 	struct tps65912 *tps;
 
-	tps = devm_kzalloc(&spi->dev, sizeof(*tps), GFP_KERNEL);
+	tps = devm_kzalloc_obj(&spi->dev, *tps);
 	if (!tps)
 		return -ENOMEM;
 
@@ -42,15 +42,8 @@ static int tps65912_spi_probe(struct spi_device *spi)
 	return tps65912_device_init(tps);
 }
 
-static void tps65912_spi_remove(struct spi_device *spi)
-{
-	struct tps65912 *tps = spi_get_drvdata(spi);
-
-	tps65912_device_exit(tps);
-}
-
 static const struct spi_device_id tps65912_spi_id_table[] = {
-	{ "tps65912", 0 },
+	{ .name = "tps65912" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(spi, tps65912_spi_id_table);
@@ -61,7 +54,6 @@ static struct spi_driver tps65912_spi_driver = {
 		.of_match_table = tps65912_spi_of_match_table,
 	},
 	.probe		= tps65912_spi_probe,
-	.remove		= tps65912_spi_remove,
 	.id_table       = tps65912_spi_id_table,
 };
 module_spi_driver(tps65912_spi_driver);

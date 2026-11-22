@@ -45,6 +45,7 @@ struct amdgpu_atpx {
 static struct amdgpu_atpx_priv {
 	bool atpx_detected;
 	bool bridge_pm_usable;
+	bool handler_registered;
 	unsigned int quirks;
 	/* handle for device - and atpx */
 	acpi_handle dhandle;
@@ -89,17 +90,14 @@ bool amdgpu_is_atpx_hybrid(void)
 	return amdgpu_atpx_priv.atpx.is_hybrid;
 }
 
-bool amdgpu_atpx_dgpu_req_power_for_displays(void)
+static bool amdgpu_atpx_buffer_validate(const union acpi_object *obj,
+					size_t min_size)
 {
-	return amdgpu_atpx_priv.atpx.dgpu_req_power_for_displays;
+	return obj && obj->type == ACPI_TYPE_BUFFER &&
+	       obj->buffer.length >= sizeof(u16) &&
+	       obj->buffer.length >= *(u16 *)obj->buffer.pointer &&
+	       *(u16 *)obj->buffer.pointer >= min_size;
 }
-
-#if defined(CONFIG_ACPI)
-void *amdgpu_atpx_get_dhandle(void)
-{
-	return amdgpu_atpx_priv.dhandle;
-}
-#endif
 
 /**
  * amdgpu_atpx_call - call an ATPX method
@@ -191,15 +189,15 @@ static int amdgpu_atpx_validate(struct amdgpu_atpx *atpx)
 		if (!info)
 			return -EIO;
 
-		memset(&output, 0, sizeof(output));
-
-		size = *(u16 *) info->buffer.pointer;
-		if (size < 10) {
-			pr_err("ATPX buffer is too small: %zu\n", size);
+		if (!amdgpu_atpx_buffer_validate(info, sizeof(output))) {
+			pr_err("Invalid ATPX GET_PX_PARAMETERS response\n");
 			kfree(info);
 			return -EINVAL;
 		}
-		size = min(sizeof(output), size);
+
+		memset(&output, 0, sizeof(output));
+
+		size = min(sizeof(output), (size_t)*(u16 *)info->buffer.pointer);
 
 		memcpy(&output, info->buffer.pointer, size);
 
@@ -270,15 +268,15 @@ static int amdgpu_atpx_verify_interface(struct amdgpu_atpx *atpx)
 	if (!info)
 		return -EIO;
 
-	memset(&output, 0, sizeof(output));
-
-	size = *(u16 *) info->buffer.pointer;
-	if (size < 8) {
-		pr_err("ATPX buffer is too small: %zu\n", size);
+	if (!amdgpu_atpx_buffer_validate(info, sizeof(output))) {
+		pr_err("Invalid ATPX VERIFY_INTERFACE response\n");
 		err = -EINVAL;
 		goto out;
 	}
-	size = min(sizeof(output), size);
+
+	memset(&output, 0, sizeof(output));
+
+	size = min(sizeof(output), (size_t)*(u16 *)info->buffer.pointer);
 
 	memcpy(&output, info->buffer.pointer, size);
 
@@ -666,7 +664,8 @@ void amdgpu_register_atpx_handler(void)
 	if (!r)
 		return;
 
-	vga_switcheroo_register_handler(&amdgpu_atpx_handler, handler_flags);
+	if (!vga_switcheroo_register_handler(&amdgpu_atpx_handler, handler_flags))
+		amdgpu_atpx_priv.handler_registered = true;
 }
 
 /**
@@ -676,5 +675,14 @@ void amdgpu_register_atpx_handler(void)
  */
 void amdgpu_unregister_atpx_handler(void)
 {
+	/*
+	 * vga_switcheroo has a single handler slot and unregistering clears it
+	 * no matter who set it, so leave a handler registered by another
+	 * driver, such as apple-gmux, in place.
+	 */
+	if (!amdgpu_atpx_priv.handler_registered)
+		return;
+
 	vga_switcheroo_unregister_handler();
+	amdgpu_atpx_priv.handler_registered = false;
 }

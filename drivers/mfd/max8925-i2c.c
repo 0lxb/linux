@@ -127,8 +127,8 @@ EXPORT_SYMBOL(max8925_set_bits);
 
 
 static const struct i2c_device_id max8925_id_table[] = {
-	{ "max8925", 0 },
-	{ },
+	{ "max8925" },
+	{ }
 };
 
 static int max8925_dt_init(struct device_node *np, struct device *dev,
@@ -152,9 +152,8 @@ static int max8925_probe(struct i2c_client *client)
 
 	if (node && !pdata) {
 		/* parse DT to get platform data */
-		pdata = devm_kzalloc(&client->dev,
-				     sizeof(struct max8925_platform_data),
-				     GFP_KERNEL);
+		pdata = devm_kzalloc_obj(&client->dev,
+					 struct max8925_platform_data);
 		if (!pdata)
 			return -ENOMEM;
 
@@ -165,8 +164,7 @@ static int max8925_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	chip = devm_kzalloc(&client->dev,
-			    sizeof(struct max8925_chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(&client->dev, struct max8925_chip);
 	if (chip == NULL)
 		return -ENOMEM;
 	chip->i2c = client;
@@ -201,6 +199,7 @@ static void max8925_remove(struct i2c_client *client)
 	struct max8925_chip *chip = i2c_get_clientdata(client);
 
 	max8925_device_exit(chip);
+	device_init_wakeup(&client->dev, false);
 	i2c_unregister_device(chip->adc);
 	i2c_unregister_device(chip->rtc);
 }

@@ -309,7 +309,7 @@ static void iproc_gpio_irq_print_chip(struct irq_data *d, struct seq_file *p)
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct iproc_gpio *chip = gpiochip_get_data(gc);
 
-	seq_printf(p, dev_name(chip->dev));
+	seq_puts(p, dev_name(chip->dev));
 }
 
 static const struct irq_chip iproc_gpio_irq_chip = {
@@ -390,7 +390,7 @@ static int iproc_gpio_get_direction(struct gpio_chip *gc, unsigned int gpio)
 	return GPIO_LINE_DIRECTION_IN;
 }
 
-static void iproc_gpio_set(struct gpio_chip *gc, unsigned gpio, int val)
+static int iproc_gpio_set(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
@@ -400,6 +400,8 @@ static void iproc_gpio_set(struct gpio_chip *gc, unsigned gpio, int val)
 	raw_spin_unlock_irqrestore(&chip->lock, flags);
 
 	dev_dbg(chip->dev, "gpio:%u set, value:%d\n", gpio, val);
+
+	return 0;
 }
 
 static int iproc_gpio_get(struct gpio_chip *gc, unsigned gpio)
@@ -455,9 +457,8 @@ static int iproc_pinconf_disable_map_create(struct iproc_gpio *chip,
 	 * Allocate an array to store PINCONF parameters that need to be
 	 * disabled
 	 */
-	chip->pinconf_disable = devm_kcalloc(chip->dev, nbits,
-					     sizeof(*chip->pinconf_disable),
-					     GFP_KERNEL);
+	chip->pinconf_disable = devm_kzalloc_objs(chip->dev,
+						  *chip->pinconf_disable, nbits);
 	if (!chip->pinconf_disable)
 		return -ENOMEM;
 
@@ -762,7 +763,7 @@ static int iproc_gpio_register_pinconf(struct iproc_gpio *chip)
 	struct gpio_chip *gc = &chip->gc;
 	int i;
 
-	pins = devm_kcalloc(chip->dev, gc->ngpio, sizeof(*pins), GFP_KERNEL);
+	pins = devm_kzalloc_objs(chip->dev, *pins, gc->ngpio);
 	if (!pins)
 		return -ENOMEM;
 
@@ -818,7 +819,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 					 "brcm,iproc-stingray-gpio"))
 		no_pinconf = true;
 
-	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -866,7 +867,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	gc->set = iproc_gpio_set;
 	gc->get = iproc_gpio_get;
 
-	chip->pinmux_is_supported = of_property_read_bool(dev->of_node,
+	chip->pinmux_is_supported = of_property_present(dev->of_node,
 							"gpio-ranges");
 
 	/* optional GPIO interrupt support */
@@ -878,9 +879,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 		gpio_irq_chip_set_chip(girq, &iproc_gpio_irq_chip);
 		girq->parent_handler = iproc_gpio_irq_handler;
 		girq->num_parents = 1;
-		girq->parents = devm_kcalloc(dev, 1,
-					     sizeof(*girq->parents),
-					     GFP_KERNEL);
+		girq->parents = devm_kzalloc_objs(dev, *girq->parents, 1);
 		if (!girq->parents)
 			return -ENOMEM;
 		girq->parents[0] = irq;

@@ -517,7 +517,7 @@ static int of_get_devfreq_events(struct device_node *np,
 	}
 
 	count = of_get_child_count(events_np);
-	desc = devm_kcalloc(dev, count, sizeof(*desc), GFP_KERNEL);
+	desc = devm_kzalloc_objs(dev, *desc, count);
 	if (!desc) {
 		of_node_put(events_np);
 		return -ENOMEM;
@@ -648,7 +648,7 @@ static int exynos_ppmu_probe(struct platform_device *pdev)
 	struct devfreq_event_desc *desc;
 	int i, ret = 0, size;
 
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(&pdev->dev, *info);
 	if (!info)
 		return -ENOMEM;
 
@@ -692,18 +692,16 @@ static int exynos_ppmu_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int exynos_ppmu_remove(struct platform_device *pdev)
+static void exynos_ppmu_remove(struct platform_device *pdev)
 {
 	struct exynos_ppmu *info = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(info->ppmu.clk);
-
-	return 0;
 }
 
 static struct platform_driver exynos_ppmu_driver = {
 	.probe	= exynos_ppmu_probe,
-	.remove	= exynos_ppmu_remove,
+	.remove = exynos_ppmu_remove,
 	.driver = {
 		.name	= "exynos-ppmu",
 		.of_match_table = exynos_ppmu_id_match,

@@ -137,7 +137,7 @@ static void mixer_dbg_crb(struct seq_file *s, int val)
 	}
 }
 
-static void mixer_dbg_mxn(struct seq_file *s, void *addr)
+static void mixer_dbg_mxn(struct seq_file *s, void __iomem *addr)
 {
 	int i;
 
@@ -360,7 +360,7 @@ struct sti_mixer *sti_mixer_create(struct device *dev,
 				   int id,
 				   void __iomem *baseaddr)
 {
-	struct sti_mixer *mixer = devm_kzalloc(dev, sizeof(*mixer), GFP_KERNEL);
+	struct sti_mixer *mixer = devm_kzalloc_obj(dev, *mixer);
 
 	dev_dbg(dev, "%s\n", __func__);
 	if (!mixer) {

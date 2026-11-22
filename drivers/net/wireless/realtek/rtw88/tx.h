@@ -7,7 +7,11 @@
 
 #define RTK_TX_MAX_AGG_NUM_MASK		0x1f
 
-#define RTW_TX_PROBE_TIMEOUT		msecs_to_jiffies(500)
+#define RTW_TX_PROBE_TIMEOUT_SHORT	msecs_to_jiffies(500)
+#define RTW_TX_PROBE_TIMEOUT_LONG	msecs_to_jiffies(2500)
+
+#define RTW_TX_HIQ_REFILL_INTERVAL	(HZ / 10)
+#define RTW_TX_HIQ_BUDGET_MAX		16
 
 struct rtw_tx_desc {
 	__le32 w0;
@@ -27,6 +31,7 @@ struct rtw_tx_desc {
 #define RTW_TX_DESC_W0_BMC BIT(24)
 #define RTW_TX_DESC_W0_LS BIT(26)
 #define RTW_TX_DESC_W0_DISQSELSEQ BIT(31)
+#define RTW_TX_DESC_W1_MACID GENMASK(7, 0)
 #define RTW_TX_DESC_W1_QSEL GENMASK(12, 8)
 #define RTW_TX_DESC_W1_RATE_ID GENMASK(20, 16)
 #define RTW_TX_DESC_W1_SEC_TYPE GENMASK(23, 22)
@@ -43,6 +48,7 @@ struct rtw_tx_desc {
 #define RTW_TX_DESC_W3_NAVUSEHDR BIT(15)
 #define RTW_TX_DESC_W3_MAX_AGG_NUM GENMASK(21, 17)
 #define RTW_TX_DESC_W4_DATARATE GENMASK(6, 0)
+#define RTW_TX_DESC_W4_DATARATE_FB_LIMIT GENMASK(12, 8)
 #define RTW_TX_DESC_W4_RTSRATE GENMASK(28, 24)
 #define RTW_TX_DESC_W5_DATA_SHORT BIT(4)
 #define RTW_TX_DESC_W5_DATA_BW GENMASK(6, 5)
@@ -93,7 +99,8 @@ void rtw_tx_pkt_info_update(struct rtw_dev *rtwdev,
 			    struct rtw_tx_pkt_info *pkt_info,
 			    struct ieee80211_sta *sta,
 			    struct sk_buff *skb);
-void rtw_tx_fill_tx_desc(struct rtw_tx_pkt_info *pkt_info, struct sk_buff *skb);
+void rtw_tx_fill_tx_desc(struct rtw_dev *rtwdev,
+			 struct rtw_tx_pkt_info *pkt_info, struct sk_buff *skb);
 void rtw_tx_report_enqueue(struct rtw_dev *rtwdev, struct sk_buff *skb, u8 sn);
 void rtw_tx_report_handle(struct rtw_dev *rtwdev, struct sk_buff *skb, int src);
 void rtw_tx_rsvd_page_pkt_info_update(struct rtw_dev *rtwdev,
@@ -111,6 +118,7 @@ rtw_tx_write_data_h2c_get(struct rtw_dev *rtwdev,
 
 enum rtw_tx_queue_type rtw_tx_ac_to_hwq(enum ieee80211_ac_numbers ac);
 enum rtw_tx_queue_type rtw_tx_queue_mapping(struct sk_buff *skb);
+bool rtw_tx_bmc_use_hiq(struct rtw_dev *rtwdev, struct sk_buff *skb);
 
 static inline
 void fill_txdesc_checksum_common(u8 *txdesc, size_t words)

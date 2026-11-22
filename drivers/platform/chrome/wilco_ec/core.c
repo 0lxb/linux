@@ -40,7 +40,7 @@ static int wilco_ec_probe(struct platform_device *pdev)
 	struct wilco_ec_device *ec;
 	int ret;
 
-	ec = devm_kzalloc(dev, sizeof(*ec), GFP_KERNEL);
+	ec = devm_kzalloc_obj(dev, *ec);
 	if (!ec)
 		return -ENOMEM;
 
@@ -150,13 +150,20 @@ static const struct acpi_device_id wilco_ec_acpi_device_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, wilco_ec_acpi_device_ids);
 
+static const struct platform_device_id wilco_ec_id[] = {
+	{ .name = DRV_NAME },
+	{ }
+};
+MODULE_DEVICE_TABLE(platform, wilco_ec_id);
+
 static struct platform_driver wilco_ec_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.acpi_match_table = wilco_ec_acpi_device_ids,
 	},
 	.probe = wilco_ec_probe,
-	.remove_new = wilco_ec_remove,
+	.remove = wilco_ec_remove,
+	.id_table = wilco_ec_id,
 };
 
 module_platform_driver(wilco_ec_driver);
@@ -165,4 +172,3 @@ MODULE_AUTHOR("Nick Crews <ncrews@chromium.org>");
 MODULE_AUTHOR("Duncan Laurie <dlaurie@chromium.org>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("ChromeOS Wilco Embedded Controller driver");
-MODULE_ALIAS("platform:" DRV_NAME);

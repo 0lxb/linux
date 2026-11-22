@@ -52,6 +52,7 @@ static int ktd2801_update_status(struct backlight_device *bd)
 }
 
 static const struct backlight_ops ktd2801_backlight_ops = {
+	.options = BL_CORE_SUSPENDRESUME,
 	.update_status = ktd2801_update_status,
 };
 
@@ -63,7 +64,7 @@ static int ktd2801_backlight_probe(struct platform_device *pdev)
 	u32 brightness, max_brightness;
 	int ret;
 
-	ktd2801 = devm_kzalloc(dev, sizeof(*ktd2801), GFP_KERNEL);
+	ktd2801 = devm_kzalloc_obj(dev, *ktd2801);
 	if (!ktd2801)
 		return -ENOMEM;
 	ktd2801->was_on = true;
@@ -122,7 +123,7 @@ static struct platform_driver ktd2801_backlight_driver = {
 };
 module_platform_driver(ktd2801_backlight_driver);
 
-MODULE_IMPORT_NS(EXPRESSWIRE);
+MODULE_IMPORT_NS("EXPRESSWIRE");
 MODULE_AUTHOR("Duje Mihanović <duje.mihanovic@skole.hr>");
 MODULE_DESCRIPTION("Kinetic KTD2801 Backlight Driver");
 MODULE_LICENSE("GPL");

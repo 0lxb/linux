@@ -117,9 +117,8 @@ static int apu_led_config(struct device *dev, struct apu_led_pdata *apuld)
 	int i;
 	int err;
 
-	apu_led->pled = devm_kcalloc(dev,
-		ARRAY_SIZE(apu1_led_profile), sizeof(struct apu_led_priv),
-		GFP_KERNEL);
+	apu_led->pled = devm_kzalloc_objs(dev, struct apu_led_priv,
+					  ARRAY_SIZE(apu1_led_profile));
 
 	if (!apu_led->pled)
 		return -ENOMEM;
@@ -159,7 +158,7 @@ error:
 
 static int __init apu_led_probe(struct platform_device *pdev)
 {
-	apu_led = devm_kzalloc(&pdev->dev, sizeof(*apu_led), GFP_KERNEL);
+	apu_led = devm_kzalloc_obj(&pdev->dev, *apu_led);
 
 	if (!apu_led)
 		return -ENOMEM;
@@ -181,8 +180,7 @@ static int __init apu_led_init(void)
 	struct platform_device *pdev;
 	int err;
 
-	if (!(dmi_match(DMI_SYS_VENDOR, "PC Engines") &&
-	      (dmi_match(DMI_PRODUCT_NAME, "APU") || dmi_match(DMI_PRODUCT_NAME, "apu1")))) {
+	if (!dmi_check_system(apu_led_dmi_table)) {
 		pr_err("No PC Engines APUv1 board detected. For APUv2,3 support, enable CONFIG_PCENGINES_APU2\n");
 		return -ENODEV;
 	}

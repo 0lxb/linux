@@ -59,9 +59,9 @@ static irqreturn_t sgiwd93_intr(int irq, void *dev_id)
 	struct Scsi_Host * host = dev_id;
 	unsigned long flags;
 
-	spin_lock_irqsave(host->host_lock, flags);
+	spin_lock_irqsave(&host->host_lock, flags);
 	wd33c93_intr(host);
-	spin_unlock_irqrestore(host->host_lock, flags);
+	spin_unlock_irqrestore(&host->host_lock, flags);
 
 	return IRQ_HANDLED;
 }
@@ -306,7 +306,7 @@ static void sgiwd93_remove(struct platform_device *pdev)
 
 static struct platform_driver sgiwd93_driver = {
 	.probe  = sgiwd93_probe,
-	.remove_new = sgiwd93_remove,
+	.remove = sgiwd93_remove,
 	.driver = {
 		.name   = "sgiwd93",
 	}

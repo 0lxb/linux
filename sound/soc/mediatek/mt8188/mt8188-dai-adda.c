@@ -14,6 +14,7 @@
 #include "mt8188-afe-clk.h"
 #include "mt8188-afe-common.h"
 #include "mt8188-reg.h"
+#include "../common/mtk-dai-adda-common.h"
 
 #define ADDA_HIRES_THRES 48000
 
@@ -24,93 +25,9 @@ enum {
 	SUPPLY_SEQ_ADDA_AFE_ON,
 };
 
-enum {
-	MTK_AFE_ADDA_DL_RATE_8K = 0,
-	MTK_AFE_ADDA_DL_RATE_11K = 1,
-	MTK_AFE_ADDA_DL_RATE_12K = 2,
-	MTK_AFE_ADDA_DL_RATE_16K = 3,
-	MTK_AFE_ADDA_DL_RATE_22K = 4,
-	MTK_AFE_ADDA_DL_RATE_24K = 5,
-	MTK_AFE_ADDA_DL_RATE_32K = 6,
-	MTK_AFE_ADDA_DL_RATE_44K = 7,
-	MTK_AFE_ADDA_DL_RATE_48K = 8,
-	MTK_AFE_ADDA_DL_RATE_96K = 9,
-	MTK_AFE_ADDA_DL_RATE_192K = 10,
-};
-
-enum {
-	MTK_AFE_ADDA_UL_RATE_8K = 0,
-	MTK_AFE_ADDA_UL_RATE_16K = 1,
-	MTK_AFE_ADDA_UL_RATE_32K = 2,
-	MTK_AFE_ADDA_UL_RATE_48K = 3,
-	MTK_AFE_ADDA_UL_RATE_96K = 4,
-	MTK_AFE_ADDA_UL_RATE_192K = 5,
-};
-
-enum {
-	DELAY_DATA_MISO1 = 0,
-	DELAY_DATA_MISO0 = 1,
-};
-
 struct mtk_dai_adda_priv {
 	bool hires_required;
 };
-
-static unsigned int afe_adda_dl_rate_transform(struct mtk_base_afe *afe,
-					       unsigned int rate)
-{
-	switch (rate) {
-	case 8000:
-		return MTK_AFE_ADDA_DL_RATE_8K;
-	case 11025:
-		return MTK_AFE_ADDA_DL_RATE_11K;
-	case 12000:
-		return MTK_AFE_ADDA_DL_RATE_12K;
-	case 16000:
-		return MTK_AFE_ADDA_DL_RATE_16K;
-	case 22050:
-		return MTK_AFE_ADDA_DL_RATE_22K;
-	case 24000:
-		return MTK_AFE_ADDA_DL_RATE_24K;
-	case 32000:
-		return MTK_AFE_ADDA_DL_RATE_32K;
-	case 44100:
-		return MTK_AFE_ADDA_DL_RATE_44K;
-	case 48000:
-		return MTK_AFE_ADDA_DL_RATE_48K;
-	case 96000:
-		return MTK_AFE_ADDA_DL_RATE_96K;
-	case 192000:
-		return MTK_AFE_ADDA_DL_RATE_192K;
-	default:
-		dev_info(afe->dev, "%s(), rate %u invalid, use 48kHz!!!\n",
-			 __func__, rate);
-		return MTK_AFE_ADDA_DL_RATE_48K;
-	}
-}
-
-static unsigned int afe_adda_ul_rate_transform(struct mtk_base_afe *afe,
-					       unsigned int rate)
-{
-	switch (rate) {
-	case 8000:
-		return MTK_AFE_ADDA_UL_RATE_8K;
-	case 16000:
-		return MTK_AFE_ADDA_UL_RATE_16K;
-	case 32000:
-		return MTK_AFE_ADDA_UL_RATE_32K;
-	case 48000:
-		return MTK_AFE_ADDA_UL_RATE_48K;
-	case 96000:
-		return MTK_AFE_ADDA_UL_RATE_96K;
-	case 192000:
-		return MTK_AFE_ADDA_UL_RATE_192K;
-	default:
-		dev_info(afe->dev, "%s(), rate %u invalid, use 48kHz!!!\n",
-			 __func__, rate);
-		return MTK_AFE_ADDA_UL_RATE_48K;
-	}
-}
 
 static int mt8188_adda_mtkaif_init(struct mtk_base_afe *afe)
 {
@@ -146,7 +63,6 @@ static int mt8188_adda_mtkaif_init(struct mtk_base_afe *afe)
 			param->mtkaif_phase_cycle[MT8188_MTKAIF_MISO_0];
 	}
 
-	val = 0;
 	mask = (MTKAIF_RXIF_DELAY_DATA | MTKAIF_RXIF_DELAY_CYCLE_MASK);
 	val |= FIELD_PREP(MTKAIF_RXIF_DELAY_CYCLE_MASK, delay_cycle);
 	val |= FIELD_PREP(MTKAIF_RXIF_DELAY_DATA, delay_data);
@@ -207,10 +123,7 @@ static void mtk_adda_ul_mictype(struct mtk_base_afe *afe, bool dmic)
 	       UL_MODE_3P25M_CH2_CTL);
 
 	/* turn on dmic, ch1, ch2 */
-	if (dmic)
-		regmap_set_bits(afe->regmap, reg, val);
-	else
-		regmap_clear_bits(afe->regmap, reg, val);
+	regmap_assign_bits(afe->regmap, reg, val, dmic);
 }
 
 static int mtk_adda_ul_event(struct snd_soc_dapm_widget *w,
@@ -394,7 +307,7 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 static int mt8188_adda_dmic_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtkaif_param *param = &afe_priv->mtkaif_params;
@@ -406,7 +319,7 @@ static int mt8188_adda_dmic_get(struct snd_kcontrol *kcontrol,
 static int mt8188_adda_dmic_set(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtkaif_param *param = &afe_priv->mtkaif_params;
@@ -440,7 +353,7 @@ static int mtk_dai_da_configure(struct mtk_base_afe *afe,
 	/* set sampling rate */
 	mask |= DL_2_INPUT_MODE_CTL_MASK;
 	val |= FIELD_PREP(DL_2_INPUT_MODE_CTL_MASK,
-			  afe_adda_dl_rate_transform(afe, rate));
+			  mtk_adda_dl_rate_transform(afe, rate));
 
 	/* turn off saturation */
 	mask |= DL_2_CH1_SATURATION_EN_CTL;
@@ -474,7 +387,7 @@ static int mtk_dai_ad_configure(struct mtk_base_afe *afe,
 
 	mask = UL_VOICE_MODE_CTL_MASK;
 	val = FIELD_PREP(UL_VOICE_MODE_CTL_MASK,
-			 afe_adda_ul_rate_transform(afe, rate));
+			 mtk_adda_ul_rate_transform(afe, rate));
 
 	regmap_update_bits(afe->regmap, AFE_ADDA_UL_SRC_CON0,
 			   mask, val);
@@ -560,9 +473,7 @@ static int init_adda_priv_data(struct mtk_base_afe *afe)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(adda_dai_list); i++) {
-		adda_priv = devm_kzalloc(afe->dev,
-					 sizeof(struct mtk_dai_adda_priv),
-					 GFP_KERNEL);
+		adda_priv = devm_kzalloc_obj(afe->dev, struct mtk_dai_adda_priv);
 		if (!adda_priv)
 			return -ENOMEM;
 
@@ -576,7 +487,7 @@ int mt8188_dai_adda_register(struct mtk_base_afe *afe)
 {
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
+	dai = devm_kzalloc_obj(afe->dev, *dai);
 	if (!dai)
 		return -ENOMEM;
 

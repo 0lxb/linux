@@ -53,7 +53,7 @@ static int netx_pci_probe(struct pci_dev *dev,
 	struct uio_info *info;
 	int bar;
 
-	info = devm_kzalloc(&dev->dev, sizeof(struct uio_info), GFP_KERNEL);
+	info = devm_kzalloc_obj(&dev->dev, struct uio_info);
 	if (!info)
 		return -ENOMEM;
 
@@ -127,7 +127,7 @@ static void netx_pci_remove(struct pci_dev *dev)
 	iounmap(info->mem[0].internal_addr);
 }
 
-static struct pci_device_id netx_pci_ids[] = {
+static const struct pci_device_id netx_pci_ids[] = {
 	{
 		.vendor =	PCI_VENDOR_ID_HILSCHER,
 		.device =	PCI_DEVICE_ID_HILSCHER_NETX,
@@ -170,5 +170,6 @@ static struct pci_driver netx_pci_driver = {
 
 module_pci_driver(netx_pci_driver);
 MODULE_DEVICE_TABLE(pci, netx_pci_ids);
+MODULE_DESCRIPTION("UIO driver for Hilscher NetX based fieldbus cards");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Hans J. Koch, Manuel Traut");

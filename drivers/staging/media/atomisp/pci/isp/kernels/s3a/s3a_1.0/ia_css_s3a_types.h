@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef __IA_CSS_S3A_TYPES_H
@@ -111,8 +102,8 @@ struct ia_css_3a_grid_info {
  *  awb_lg_*: Thresholds to check the saturated bayer pixels for AWB.
  *    Condition of effective pixel for AWB level gate check:
  *      bayer(sensor) <= awb_lg_high_raw &&
- *      bayer(when AWB statisitcs is calculated) >= awb_lg_low &&
- *      bayer(when AWB statisitcs is calculated) <= awb_lg_high
+ *      bayer(when AWB statistics is calculated) >= awb_lg_low &&
+ *      bayer(when AWB statistics is calculated) <= awb_lg_high
  *  af_fir*: Coefficients of high pass filter to calculate AF statistics.
  *
  *  ISP block: S3A1(ae_y_* for AE/AF, awb_lg_* for AWB)

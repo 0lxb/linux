@@ -9,13 +9,17 @@
 #include "xe_assert.h"
 #include "xe_gt.h"
 #include "xe_gt_ccs_mode.h"
+#include "xe_gt_printk.h"
 #include "xe_gt_sysfs.h"
 #include "xe_mmio.h"
+#include "xe_pm.h"
+#include "xe_sriov.h"
+#include "xe_sriov_pf.h"
 
 static void __xe_gt_apply_ccs_mode(struct xe_gt *gt, u32 num_engines)
 {
 	u32 mode = CCS_MODE_CSLICE_0_3_MASK; /* disable all by default */
-	int num_slices = hweight32(CCS_MASK(gt));
+	int num_slices = hweight32(CCS_INSTANCES(gt));
 	struct xe_device *xe = gt_to_xe(gt);
 	int width, cslice = 0;
 	u32 config = 0;
@@ -57,7 +61,7 @@ static void __xe_gt_apply_ccs_mode(struct xe_gt *gt, u32 num_engines)
 			config |= BIT(hwe->instance) << XE_HW_ENGINE_CCS0;
 
 			/* If a slice is fused off, leave disabled */
-			while ((CCS_MASK(gt) & BIT(cslice)) == 0)
+			while ((CCS_INSTANCES(gt) & BIT(cslice)) == 0)
 				cslice++;
 
 			mode &= ~CCS_MODE_CSLICE(cslice, CCS_MODE_CSLICE_MASK);
@@ -66,18 +70,23 @@ static void __xe_gt_apply_ccs_mode(struct xe_gt *gt, u32 num_engines)
 		}
 	}
 
-	xe_mmio_write32(gt, CCS_MODE, mode);
+	xe_mmio_write32(&gt->mmio, CCS_MODE, mode);
 
-	xe_gt_info(gt, "CCS_MODE=%x config:%08x, num_engines:%d, num_slices:%d\n",
-		   mode, config, num_engines, num_slices);
+	xe_gt_dbg(gt, "CCS_MODE=%x config:%08x, num_engines:%d, num_slices:%d\n",
+		  mode, config, num_engines, num_slices);
 }
 
 void xe_gt_apply_ccs_mode(struct xe_gt *gt)
 {
-	if (!gt->ccs_mode)
+	if (!gt->ccs_mode || IS_SRIOV_VF(gt_to_xe(gt)))
 		return;
 
 	__xe_gt_apply_ccs_mode(gt, gt->ccs_mode);
+}
+
+static bool gt_ccs_mode_default(struct xe_gt *gt)
+{
+	return gt->ccs_mode == 1;
 }
 
 static ssize_t
@@ -86,7 +95,7 @@ num_cslices_show(struct device *kdev,
 {
 	struct xe_gt *gt = kobj_to_gt(&kdev->kobj);
 
-	return sysfs_emit(buf, "%u\n", hweight32(CCS_MASK(gt)));
+	return sysfs_emit(buf, "%u\n", hweight32(CCS_INSTANCES(gt)));
 }
 
 static DEVICE_ATTR_RO(num_cslices);
@@ -117,7 +126,7 @@ ccs_mode_store(struct device *kdev, struct device_attribute *attr,
 	 * Ensure number of engines specified is valid and there is an
 	 * exact multiple of engines for slices.
 	 */
-	num_slices = hweight32(CCS_MASK(gt));
+	num_slices = hweight32(CCS_INSTANCES(gt));
 	if (!num_engines || num_engines > num_slices || num_slices % num_engines) {
 		xe_gt_dbg(gt, "Invalid compute config, %d engines %d slices\n",
 			  num_engines, num_slices);
@@ -125,19 +134,36 @@ ccs_mode_store(struct device *kdev, struct device_attribute *attr,
 	}
 
 	/* CCS mode can only be updated when there are no drm clients */
-	spin_lock(&xe->clients.lock);
-	if (xe->clients.count) {
-		spin_unlock(&xe->clients.lock);
+	guard(mutex)(&xe->drm.filelist_mutex);
+	if (!list_empty(&xe->drm.filelist)) {
+		xe_gt_dbg(gt, "Rejecting compute mode change as there are active drm clients\n");
 		return -EBUSY;
 	}
 
-	if (gt->ccs_mode != num_engines) {
-		xe_gt_info(gt, "Setting compute mode to %d\n", num_engines);
-		gt->ccs_mode = num_engines;
-		xe_gt_reset_async(gt);
+	if (gt->ccs_mode == num_engines)
+		return count;
+
+	/*
+	 * Changing default CCS mode is only allowed when there
+	 * are no VFs. Try to lockdown PF to find out.
+	 */
+	if (gt_ccs_mode_default(gt) && IS_SRIOV_PF(xe)) {
+		ret = xe_sriov_pf_lockdown(xe);
+		if (ret) {
+			xe_gt_dbg(gt, "Can't change CCS Mode: VFs are enabled\n");
+			return ret;
+		}
 	}
 
-	spin_unlock(&xe->clients.lock);
+	xe_gt_info(gt, "Setting compute mode to %d\n", num_engines);
+	gt->ccs_mode = num_engines;
+	xe_gt_record_user_engines(gt);
+	guard(xe_pm_runtime)(xe);
+	xe_gt_reset(gt);
+
+	/* We may end PF lockdown once CCS mode is default again */
+	if (gt_ccs_mode_default(gt) && IS_SRIOV_PF(xe))
+		xe_sriov_pf_end_lockdown(xe);
 
 	return count;
 }
@@ -150,7 +176,7 @@ static const struct attribute *gt_ccs_mode_attrs[] = {
 	NULL,
 };
 
-static void xe_gt_ccs_mode_sysfs_fini(struct drm_device *drm, void *arg)
+static void xe_gt_ccs_mode_sysfs_fini(void *arg)
 {
 	struct xe_gt *gt = arg;
 
@@ -167,25 +193,20 @@ static void xe_gt_ccs_mode_sysfs_fini(struct drm_device *drm, void *arg)
  * and it is expected that there are no open drm clients while doing so.
  * The number of available compute slices is exposed to user through a per-gt
  * 'num_cslices' sysfs interface.
+ *
+ * Returns: Returns error value for failure and 0 for success.
  */
-void xe_gt_ccs_mode_sysfs_init(struct xe_gt *gt)
+int xe_gt_ccs_mode_sysfs_init(struct xe_gt *gt)
 {
 	struct xe_device *xe = gt_to_xe(gt);
 	int err;
 
-	if (!xe_gt_ccs_mode_enabled(gt))
-		return;
+	if (!xe_gt_ccs_mode_enabled(gt) || IS_SRIOV_VF(xe))
+		return 0;
 
 	err = sysfs_create_files(gt->sysfs, gt_ccs_mode_attrs);
-	if (err) {
-		drm_warn(&xe->drm, "Sysfs creation for ccs_mode failed err: %d\n", err);
-		return;
-	}
+	if (err)
+		return err;
 
-	err = drmm_add_action_or_reset(&xe->drm, xe_gt_ccs_mode_sysfs_fini, gt);
-	if (err) {
-		sysfs_remove_files(gt->sysfs, gt_ccs_mode_attrs);
-		drm_warn(&xe->drm, "%s: drmm_add_action_or_reset failed, err: %d\n",
-			 __func__, err);
-	}
+	return devm_add_action_or_reset(xe->drm.dev, xe_gt_ccs_mode_sysfs_fini, gt);
 }

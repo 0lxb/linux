@@ -110,6 +110,8 @@ struct nwl_dsi {
 	int error;
 
 	struct nwl_dsi_transfer *xfer;
+
+	unsigned int endpoint;
 };
 
 static const struct regmap_config nwl_dsi_regmap_config = {
@@ -289,13 +291,13 @@ static int nwl_dsi_config_dpi(struct nwl_dsi *dsi)
 
 	nwl_dsi_write(dsi, NWL_DSI_INTERFACE_COLOR_CODING, NWL_DSI_DPI_24_BIT);
 	nwl_dsi_write(dsi, NWL_DSI_PIXEL_FORMAT, color_format);
-	/*
-	 * Adjusting input polarity based on the video mode results in
-	 * a black screen so always pick active low:
-	 */
 	nwl_dsi_write(dsi, NWL_DSI_VSYNC_POLARITY,
+		      dsi->mode.flags & DRM_MODE_FLAG_PVSYNC ?
+		      NWL_DSI_VSYNC_POLARITY_ACTIVE_HIGH :
 		      NWL_DSI_VSYNC_POLARITY_ACTIVE_LOW);
 	nwl_dsi_write(dsi, NWL_DSI_HSYNC_POLARITY,
+		      dsi->mode.flags & DRM_MODE_FLAG_PHSYNC ?
+		      NWL_DSI_HSYNC_POLARITY_ACTIVE_HIGH :
 		      NWL_DSI_HSYNC_POLARITY_ACTIVE_LOW);
 
 	burst_mode = (dsi->dsi_mode_flags & MIPI_DSI_MODE_VIDEO_BURST) &&
@@ -736,9 +738,8 @@ static int nwl_dsi_disable(struct nwl_dsi *dsi)
 	return 0;
 }
 
-static void
-nwl_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
-			      struct drm_bridge_state *old_bridge_state)
+static void nwl_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
+					  struct drm_atomic_commit *state)
 {
 	struct nwl_dsi *dsi = bridge_to_dsi(bridge);
 	int ret;
@@ -822,10 +823,13 @@ static int nwl_dsi_bridge_atomic_check(struct drm_bridge *bridge,
 				       struct drm_connector_state *conn_state)
 {
 	struct drm_display_mode *adjusted_mode = &crtc_state->adjusted_mode;
+	struct nwl_dsi *dsi = bridge_to_dsi(bridge);
 
 	/* At least LCDIF + NWL needs active high sync */
-	adjusted_mode->flags |= (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
-	adjusted_mode->flags &= ~(DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC);
+	if (dsi->endpoint == NWL_DSI_ENDPOINT_LCDIF) {
+		adjusted_mode->flags |= (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
+		adjusted_mode->flags &= ~(DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC);
+	}
 
 	/*
 	 * Do a full modeset if crtc_state->active is changed to be true.
@@ -898,9 +902,8 @@ runtime_put:
 	pm_runtime_put_sync(dev);
 }
 
-static void
-nwl_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
-			     struct drm_bridge_state *old_bridge_state)
+static void nwl_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
+					 struct drm_atomic_commit *state)
 {
 	struct nwl_dsi *dsi = bridge_to_dsi(bridge);
 	int ret;
@@ -912,6 +915,7 @@ nwl_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
 }
 
 static int nwl_dsi_bridge_attach(struct drm_bridge *bridge,
+				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct nwl_dsi *dsi = bridge_to_dsi(bridge);
@@ -921,7 +925,7 @@ static int nwl_dsi_bridge_attach(struct drm_bridge *bridge,
 	if (IS_ERR(panel_bridge))
 		return PTR_ERR(panel_bridge);
 
-	return drm_bridge_attach(bridge->encoder, panel_bridge, bridge, flags);
+	return drm_bridge_attach(encoder, panel_bridge, bridge, flags);
 }
 
 static u32 *nwl_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
@@ -949,7 +953,7 @@ static u32 *nwl_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 		return NULL;
 	}
 
-	input_fmts = kcalloc(1, sizeof(*input_fmts), GFP_KERNEL);
+	input_fmts = kzalloc_objs(*input_fmts, 1);
 	if (!input_fmts)
 		return NULL;
 	input_fmts[0] = input_fmt;
@@ -961,7 +965,7 @@ static u32 *nwl_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 static const struct drm_bridge_funcs nwl_dsi_bridge_funcs = {
 	.atomic_duplicate_state	= drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state	= drm_atomic_helper_bridge_destroy_state,
-	.atomic_reset		= drm_atomic_helper_bridge_reset,
+	.atomic_create_state		= drm_atomic_helper_bridge_create_state,
 	.atomic_check		= nwl_dsi_bridge_atomic_check,
 	.atomic_enable		= nwl_dsi_bridge_atomic_enable,
 	.atomic_disable		= nwl_dsi_bridge_atomic_disable,
@@ -1089,13 +1093,12 @@ static int nwl_dsi_parse_dt(struct nwl_dsi *dsi)
 static int nwl_dsi_select_input(struct nwl_dsi *dsi)
 {
 	struct device_node *remote;
-	u32 use_dcss = 1;
 	int ret;
 
 	remote = of_graph_get_remote_node(dsi->dev->of_node, 0,
 					  NWL_DSI_ENDPOINT_LCDIF);
 	if (remote) {
-		use_dcss = 0;
+		dsi->endpoint = NWL_DSI_ENDPOINT_LCDIF;
 	} else {
 		remote = of_graph_get_remote_node(dsi->dev->of_node, 0,
 						  NWL_DSI_ENDPOINT_DCSS);
@@ -1104,11 +1107,12 @@ static int nwl_dsi_select_input(struct nwl_dsi *dsi)
 				      "No valid input endpoint found\n");
 			return -EINVAL;
 		}
+		dsi->endpoint = NWL_DSI_ENDPOINT_DCSS;
 	}
 
 	DRM_DEV_INFO(dsi->dev, "Using %s as input source\n",
-		     (use_dcss) ? "DCSS" : "LCDIF");
-	ret = mux_control_try_select(dsi->mux, use_dcss);
+		     (dsi->endpoint == NWL_DSI_ENDPOINT_DCSS) ? "DCSS" : "LCDIF");
+	ret = mux_control_try_select(dsi->mux, dsi->endpoint);
 	if (ret < 0)
 		DRM_DEV_ERROR(dsi->dev, "Failed to select input: %d\n", ret);
 
@@ -1150,9 +1154,10 @@ static int nwl_dsi_probe(struct platform_device *pdev)
 	struct nwl_dsi *dsi;
 	int ret;
 
-	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
-	if (!dsi)
-		return -ENOMEM;
+	dsi = devm_drm_bridge_alloc(dev, struct nwl_dsi, bridge,
+				    &nwl_dsi_bridge_funcs);
+	if (IS_ERR(dsi))
+		return PTR_ERR(dsi);
 
 	dsi->dev = dev;
 
@@ -1181,9 +1186,9 @@ static int nwl_dsi_probe(struct platform_device *pdev)
 		dsi->quirks = (uintptr_t)attr->data;
 
 	dsi->bridge.driver_private = dsi;
-	dsi->bridge.funcs = &nwl_dsi_bridge_funcs;
 	dsi->bridge.of_node = dev->of_node;
 	dsi->bridge.timings = &nwl_dsi_timings;
+	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
 
 	dev_set_drvdata(dev, dsi);
 	pm_runtime_enable(dev);
@@ -1211,7 +1216,7 @@ static void nwl_dsi_remove(struct platform_device *pdev)
 
 static struct platform_driver nwl_dsi_driver = {
 	.probe		= nwl_dsi_probe,
-	.remove_new	= nwl_dsi_remove,
+	.remove		= nwl_dsi_remove,
 	.driver		= {
 		.of_match_table = nwl_dsi_dt_ids,
 		.name	= DRV_NAME,

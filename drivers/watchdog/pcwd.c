@@ -72,6 +72,7 @@
 #include <linux/spinlock.h>	/* For spin_lock/spin_unlock/... */
 #include <linux/uaccess.h>	/* For copy_to_user/put_user/... */
 #include <linux/io.h>		/* For inb/outb/... */
+#include <linux/stringify.h>	/* For __stringify */
 
 /* Module and version information */
 #define WATCHDOG_VERSION "1.20"
@@ -203,13 +204,13 @@ static int heartbeat = WATCHDOG_HEARTBEAT;
 module_param(heartbeat, int, 0);
 MODULE_PARM_DESC(heartbeat, "Watchdog heartbeat in seconds. "
 	"(2 <= heartbeat <= 7200 or 0=delay-time from dip-switches, default="
-				__MODULE_STRING(WATCHDOG_HEARTBEAT) ")");
+				__stringify(WATCHDOG_HEARTBEAT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /*
  *	Internal functions
@@ -432,7 +433,7 @@ static int pcwd_stop(void)
 	int stat_reg;
 
 	/* Stop the timer */
-	del_timer(&pcwd_private.timer);
+	timer_delete(&pcwd_private.timer);
 
 	/*  Disable the board  */
 	if (pcwd_private.revision == PCWD_REVISION_C) {
@@ -749,7 +750,6 @@ static int pcwd_temp_close(struct inode *inode, struct file *file)
 
 static const struct file_operations pcwd_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= pcwd_write,
 	.unlocked_ioctl	= pcwd_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -765,7 +765,6 @@ static struct miscdevice pcwd_miscdev = {
 
 static const struct file_operations pcwd_temp_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.read		= pcwd_temp_read,
 	.open		= pcwd_temp_open,
 	.release	= pcwd_temp_close,
@@ -835,7 +834,7 @@ static int pcwd_isa_match(struct device *dev, unsigned int id)
 			port0 = inb_p(base_addr);
 			port1 = inb_p(base_addr + 1);
 
-			/* Has either hearbeat bit changed?  */
+			/* Has either heartbeat bit changed?  */
 			if ((port0 ^ last_port0) & WD_HRTBT ||
 			    (port1 ^ last_port1) & WD_REVC_HRBT) {
 				retval = 1;

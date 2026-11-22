@@ -123,7 +123,7 @@ static int apss_ipq6018_probe(struct platform_device *pdev)
 	if (!regmap)
 		return -ENODEV;
 
-	ret = qcom_cc_really_probe(pdev, &apss_ipq6018_desc, regmap);
+	ret = qcom_cc_really_probe(&pdev->dev, &apss_ipq6018_desc, regmap);
 	if (ret)
 		return ret;
 
@@ -132,9 +132,8 @@ static int apss_ipq6018_probe(struct platform_device *pdev)
 	case QCOM_ID_IPQ5332:
 	case QCOM_ID_IPQ5322:
 	case QCOM_ID_IPQ5300:
-		cpu_clk_notifier = devm_kzalloc(&pdev->dev,
-						sizeof(*cpu_clk_notifier),
-						GFP_KERNEL);
+		cpu_clk_notifier = devm_kzalloc_obj(&pdev->dev,
+						    *cpu_clk_notifier);
 		if (!cpu_clk_notifier)
 			return -ENOMEM;
 

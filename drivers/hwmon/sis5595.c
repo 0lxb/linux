@@ -643,8 +643,7 @@ static int sis5595_probe(struct platform_device *pdev)
 				 DRIVER_NAME))
 		return -EBUSY;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(struct sis5595_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, struct sis5595_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -784,7 +783,7 @@ static struct platform_driver sis5595_driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe		= sis5595_probe,
-	.remove_new	= sis5595_remove,
+	.remove		= sis5595_remove,
 };
 
 static int sis5595_pci_probe(struct pci_dev *dev,

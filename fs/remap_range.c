@@ -99,8 +99,7 @@ static int generic_remap_checks(struct file *file_in, loff_t pos_in,
 	return 0;
 }
 
-static int remap_verify_area(struct file *file, loff_t pos, loff_t len,
-			     bool write)
+int remap_verify_area(struct file *file, loff_t pos, loff_t len, bool write)
 {
 	int mask = write ? MAY_WRITE : MAY_READ;
 	loff_t tmp;
@@ -118,6 +117,7 @@ static int remap_verify_area(struct file *file, loff_t pos, loff_t len,
 
 	return fsnotify_file_area_perm(file, mask, &pos, len);
 }
+EXPORT_SYMBOL_GPL(remap_verify_area);
 
 /*
  * Ensure that we don't remap a partial EOF block in the middle of something
@@ -277,7 +277,7 @@ int
 __generic_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 				struct file *file_out, loff_t pos_out,
 				loff_t *len, unsigned int remap_flags,
-				const struct iomap_ops *dax_read_ops)
+				iomap_iter_next_fn dax_read_next)
 {
 	struct inode *inode_in = file_inode(file_in);
 	struct inode *inode_out = file_inode(file_out);
@@ -340,10 +340,10 @@ __generic_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 		if (!IS_DAX(inode_in))
 			ret = vfs_dedupe_file_range_compare(file_in, pos_in,
 					file_out, pos_out, *len, &is_same);
-		else if (dax_read_ops)
+		else if (dax_read_next)
 			ret = dax_dedupe_file_range_compare(inode_in, pos_in,
 					inode_out, pos_out, *len, &is_same,
-					dax_read_ops);
+					dax_read_next);
 		else
 			return -EINVAL;
 		if (ret)
@@ -415,7 +415,7 @@ EXPORT_SYMBOL(vfs_clone_file_range);
 /* Check whether we are allowed to dedupe the destination file */
 static bool may_dedupe_file(struct file *file)
 {
-	struct mnt_idmap *idmap = file_mnt_idmap(file);
+	const struct mnt_idmap *idmap = file_mnt_idmap(file);
 	struct inode *inode = file_inode(file);
 
 	if (capable(CAP_SYS_ADMIN))
@@ -536,20 +536,19 @@ int vfs_dedupe_file_range(struct file *file, struct file_dedupe_range *same)
 	}
 
 	for (i = 0, info = same->info; i < count; i++, info++) {
-		struct fd dst_fd = fdget(info->dest_fd);
-		struct file *dst_file = dst_fd.file;
+		CLASS(fd, dst_fd)(info->dest_fd);
 
-		if (!dst_file) {
+		if (fd_empty(dst_fd)) {
 			info->status = -EBADF;
 			goto next_loop;
 		}
 
 		if (info->reserved) {
 			info->status = -EINVAL;
-			goto next_fdput;
+			goto next_loop;
 		}
 
-		deduped = vfs_dedupe_file_range_one(file, off, dst_file,
+		deduped = vfs_dedupe_file_range_one(file, off, fd_file(dst_fd),
 						    info->dest_offset, len,
 						    REMAP_FILE_CAN_SHORTEN);
 		if (deduped == -EBADE)
@@ -559,8 +558,6 @@ int vfs_dedupe_file_range(struct file *file, struct file_dedupe_range *same)
 		else
 			info->bytes_deduped = len;
 
-next_fdput:
-		fdput(dst_fd);
 next_loop:
 		if (fatal_signal_pending(current))
 			break;

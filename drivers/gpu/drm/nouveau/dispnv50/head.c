@@ -43,6 +43,9 @@ nv50_head_flush_clr(struct nv50_head *head,
 	union nv50_head_atom_mask clr = {
 		.mask = asyh->clr.mask & ~(flush ? 0 : asyh->set.mask),
 	};
+
+	lockdep_assert_held(&head->disp->mutex);
+
 	if (clr.crc)  nv50_crc_atomic_clr(head);
 	if (clr.olut) head->func->olut_clr(head);
 	if (clr.core) head->func->core_clr(head);
@@ -65,6 +68,8 @@ nv50_head_flush_set_wndw(struct nv50_head *head, struct nv50_head_atom *asyh)
 void
 nv50_head_flush_set(struct nv50_head *head, struct nv50_head_atom *asyh)
 {
+	lockdep_assert_held(&head->disp->mutex);
+
 	if (asyh->set.view   ) head->func->view    (head, asyh);
 	if (asyh->set.mode   ) head->func->mode    (head, asyh);
 	if (asyh->set.core   ) head->func->core_set(head, asyh);
@@ -127,13 +132,7 @@ nv50_head_atomic_check_view(struct nv50_head_atom *armh,
 	struct drm_display_mode *omode = &asyh->state.adjusted_mode;
 	struct drm_display_mode *umode = &asyh->state.mode;
 	int mode = asyc->scaler.mode;
-	struct edid *edid;
 	int umode_vdisplay, omode_hdisplay, omode_vdisplay;
-
-	if (connector->edid_blob_ptr)
-		edid = (struct edid *)connector->edid_blob_ptr->data;
-	else
-		edid = NULL;
 
 	if (!asyc->scaler.full) {
 		if (mode == DRM_MODE_SCALE_NONE)
@@ -162,7 +161,7 @@ nv50_head_atomic_check_view(struct nv50_head_atom *armh,
 	 */
 	if ((asyc->scaler.underscan.mode == UNDERSCAN_ON ||
 	    (asyc->scaler.underscan.mode == UNDERSCAN_AUTO &&
-	     drm_detect_hdmi_monitor(edid)))) {
+	     connector->display_info.is_hdmi))) {
 		u32 bX = asyc->scaler.underscan.hborder;
 		u32 bY = asyc->scaler.underscan.vborder;
 		u32 r = (asyh->view.oH << 19) / asyh->view.oW;
@@ -331,7 +330,7 @@ nv50_head_atomic_check_mode(struct nv50_head *head, struct nv50_head_atom *asyh)
 }
 
 static int
-nv50_head_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+nv50_head_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
 									      crtc);
@@ -471,7 +470,7 @@ nv50_head_atomic_duplicate_state(struct drm_crtc *crtc)
 {
 	struct nv50_head_atom *armh = nv50_head_atom(crtc->state);
 	struct nv50_head_atom *asyh;
-	if (!(asyh = kmalloc(sizeof(*asyh), GFP_KERNEL)))
+	if (!(asyh = kmalloc_obj(*asyh)))
 		return NULL;
 	__drm_atomic_helper_crtc_duplicate_state(crtc, &asyh->state);
 	asyh->wndw = armh->wndw;
@@ -492,18 +491,16 @@ nv50_head_atomic_duplicate_state(struct drm_crtc *crtc)
 	return &asyh->state;
 }
 
-static void
-nv50_head_reset(struct drm_crtc *crtc)
+static struct drm_crtc_state *nv50_head_create_state(struct drm_crtc *crtc)
 {
 	struct nv50_head_atom *asyh;
 
-	if (WARN_ON(!(asyh = kzalloc(sizeof(*asyh), GFP_KERNEL))))
-		return;
+	if (WARN_ON(!(asyh = kzalloc_obj(*asyh))))
+		return ERR_PTR(-ENOMEM);
 
-	if (crtc->state)
-		nv50_head_atomic_destroy_state(crtc, crtc->state);
+	__drm_atomic_helper_crtc_state_init(&asyh->state, crtc);
 
-	__drm_atomic_helper_crtc_reset(crtc, &asyh->state);
+	return &asyh->state;
 }
 
 static int
@@ -526,7 +523,7 @@ nv50_head_destroy(struct drm_crtc *crtc)
 
 static const struct drm_crtc_funcs
 nv50_head_func = {
-	.reset = nv50_head_reset,
+	.atomic_create_state = nv50_head_create_state,
 	.destroy = nv50_head_destroy,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
@@ -540,7 +537,7 @@ nv50_head_func = {
 
 static const struct drm_crtc_funcs
 nvd9_head_func = {
-	.reset = nv50_head_reset,
+	.atomic_create_state = nv50_head_create_state,
 	.destroy = nv50_head_destroy,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
@@ -578,11 +575,12 @@ nv50_head_create(struct drm_device *dev, int index)
 	const struct drm_crtc_funcs *funcs;
 	int ret;
 
-	head = kzalloc(sizeof(*head), GFP_KERNEL);
+	head = kzalloc_obj(*head);
 	if (!head)
 		return ERR_PTR(-ENOMEM);
 
 	head->func = disp->core->func->head;
+	head->disp = disp;
 	head->base.index = index;
 
 	if (disp->disp->object.oclass < GF110_DISP)

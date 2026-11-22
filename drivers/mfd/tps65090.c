@@ -120,7 +120,7 @@ static const struct regmap_irq tps65090_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip tps65090_irq_chip = {
+static const struct regmap_irq_chip tps65090_irq_chip = {
 	.name = "tps65090",
 	.irqs = tps65090_irqs,
 	.num_irqs = ARRAY_SIZE(tps65090_irqs),
@@ -178,7 +178,7 @@ static int tps65090_i2c_probe(struct i2c_client *client)
 	if (pdata)
 		irq_base = pdata->irq_base;
 
-	tps65090 = devm_kzalloc(&client->dev, sizeof(*tps65090), GFP_KERNEL);
+	tps65090 = devm_kzalloc_obj(&client->dev, *tps65090);
 	if (!tps65090)
 		return -ENOMEM;
 
@@ -225,8 +225,8 @@ err_irq_exit:
 
 
 static const struct i2c_device_id tps65090_id_table[] = {
-	{ "tps65090", 0 },
-	{ },
+	{ "tps65090" },
+	{ }
 };
 
 static struct i2c_driver tps65090_driver = {

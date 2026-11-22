@@ -11,7 +11,6 @@
 	thermal-zones {
 		pmi632-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <0>;
 
 			thermal-sensors = <&pmi632_temp>;
 
@@ -70,7 +69,6 @@
 					  "attach-detach",
 					  "legacy-cable-detect",
 					  "try-snk-src-detect";
-			vdd-vbus-supply = <&pmi632_vbus>;
 
 			status = "disabled";
 		};
@@ -198,6 +196,12 @@
 			#size-cells = <0>;
 			#pwm-cells = <2>;
 
+			status = "disabled";
+		};
+
+		pmi632_vib: vibrator@5700 {
+			compatible = "qcom,pmi632-vib";
+			reg = <0x5700>;
 			status = "disabled";
 		};
 	};

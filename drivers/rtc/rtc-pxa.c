@@ -306,7 +306,7 @@ static int __init pxa_rtc_probe(struct platform_device *pdev)
 	struct sa1100_rtc *sa1100_rtc;
 	int ret;
 
-	pxa_rtc = devm_kzalloc(dev, sizeof(*pxa_rtc), GFP_KERNEL);
+	pxa_rtc = devm_kzalloc_obj(dev, *pxa_rtc);
 	if (!pxa_rtc)
 		return -ENOMEM;
 	sa1100_rtc = &pxa_rtc->sa1100_rtc;
@@ -360,7 +360,7 @@ static int __init pxa_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	device_init_wakeup(dev, 1);
+	device_init_wakeup(dev, true);
 
 	return 0;
 }
@@ -409,7 +409,7 @@ static SIMPLE_DEV_PM_OPS(pxa_rtc_pm_ops, pxa_rtc_suspend, pxa_rtc_resume);
  * triggering a section mismatch warning.
  */
 static struct platform_driver pxa_rtc_driver __refdata = {
-	.remove_new	= __exit_p(pxa_rtc_remove),
+	.remove		= __exit_p(pxa_rtc_remove),
 	.driver		= {
 		.name	= "pxa-rtc",
 		.of_match_table = of_match_ptr(pxa_rtc_dt_ids),

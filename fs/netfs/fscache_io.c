@@ -9,7 +9,6 @@
 #include <linux/uio.h>
 #include <linux/bvec.h>
 #include <linux/slab.h>
-#include <linux/uio.h>
 #include "internal.h"
 
 /**
@@ -80,11 +79,13 @@ static int fscache_begin_operation(struct netfs_cache_resources *cres,
 	cres->ops		= NULL;
 	cres->cache_priv	= cookie;
 	cres->cache_priv2	= NULL;
-	cres->debug_id		= cookie->debug_id;
+	cres->cookie_id		= cookie->debug_id;
 	cres->inval_counter	= cookie->inval_counter;
 
-	if (!fscache_begin_cookie_access(cookie, why))
+	if (!fscache_begin_cookie_access(cookie, why)) {
+		cres->cache_priv = NULL;
 		return -ENOBUFS;
+	}
 
 again:
 	spin_lock(&cookie->lock);
@@ -161,15 +162,16 @@ EXPORT_SYMBOL(__fscache_begin_write_operation);
 struct fscache_write_request {
 	struct netfs_cache_resources cache_resources;
 	struct address_space	*mapping;
-	loff_t			start;
+	uoff_t			start;
 	size_t			len;
 	bool			set_bits;
+	bool			using_pgpriv2;
 	netfs_io_terminated_t	term_func;
 	void			*term_func_priv;
 };
 
 void __fscache_clear_page_bits(struct address_space *mapping,
-			       loff_t start, size_t len)
+			       uoff_t start, size_t len)
 {
 	pgoff_t first = start / PAGE_SIZE;
 	pgoff_t last = (start + len - 1) / PAGE_SIZE;
@@ -180,7 +182,7 @@ void __fscache_clear_page_bits(struct address_space *mapping,
 
 		rcu_read_lock();
 		xas_for_each(&xas, page, last) {
-			end_page_fscache(page);
+			folio_end_private_2(page_folio(page));
 		}
 		rcu_read_unlock();
 	}
@@ -190,27 +192,26 @@ EXPORT_SYMBOL(__fscache_clear_page_bits);
 /*
  * Deal with the completion of writing the data to the cache.
  */
-static void fscache_wreq_done(void *priv, ssize_t transferred_or_error,
-			      bool was_async)
+static void fscache_wreq_done(void *priv, ssize_t transferred_or_error)
 {
 	struct fscache_write_request *wreq = priv;
 
-	fscache_clear_page_bits(wreq->mapping, wreq->start, wreq->len,
-				wreq->set_bits);
+	if (wreq->using_pgpriv2)
+		fscache_clear_page_bits(wreq->mapping, wreq->start, wreq->len,
+					wreq->set_bits);
 
 	if (wreq->term_func)
-		wreq->term_func(wreq->term_func_priv, transferred_or_error,
-				was_async);
+		wreq->term_func(wreq->term_func_priv, transferred_or_error);
 	fscache_end_operation(&wreq->cache_resources);
 	kfree(wreq);
 }
 
 void __fscache_write_to_cache(struct fscache_cookie *cookie,
 			      struct address_space *mapping,
-			      loff_t start, size_t len, loff_t i_size,
+			      uoff_t start, size_t len, uoff_t i_size,
 			      netfs_io_terminated_t term_func,
 			      void *term_func_priv,
-			      bool cond)
+			      bool using_pgpriv2, bool cond)
 {
 	struct fscache_write_request *wreq;
 	struct netfs_cache_resources *cres;
@@ -222,12 +223,13 @@ void __fscache_write_to_cache(struct fscache_cookie *cookie,
 
 	_enter("%llx,%zx", start, len);
 
-	wreq = kzalloc(sizeof(struct fscache_write_request), GFP_NOFS);
+	wreq = kzalloc_obj(struct fscache_write_request, GFP_NOFS);
 	if (!wreq)
 		goto abandon;
 	wreq->mapping		= mapping;
 	wreq->start		= start;
 	wreq->len		= len;
+	wreq->using_pgpriv2	= using_pgpriv2;
 	wreq->set_bits		= cond;
 	wreq->term_func		= term_func;
 	wreq->term_func_priv	= term_func_priv;
@@ -251,20 +253,21 @@ void __fscache_write_to_cache(struct fscache_cookie *cookie,
 	return;
 
 abandon_end:
-	return fscache_wreq_done(wreq, ret, false);
+	return fscache_wreq_done(wreq, ret);
 abandon_free:
 	kfree(wreq);
 abandon:
-	fscache_clear_page_bits(mapping, start, len, cond);
+	if (using_pgpriv2)
+		fscache_clear_page_bits(mapping, start, len, cond);
 	if (term_func)
-		term_func(term_func_priv, ret, false);
+		term_func(term_func_priv, ret);
 }
 EXPORT_SYMBOL(__fscache_write_to_cache);
 
 /*
  * Change the size of a backing object.
  */
-void __fscache_resize_cookie(struct fscache_cookie *cookie, loff_t new_size)
+void __fscache_resize_cookie(struct fscache_cookie *cookie, uoff_t new_size, bool shrank)
 {
 	struct netfs_cache_resources cres;
 
@@ -278,7 +281,7 @@ void __fscache_resize_cookie(struct fscache_cookie *cookie, loff_t new_size)
 		 * netfs's inode lock so that we're serialised with respect to
 		 * writes.
 		 */
-		cookie->volume->cache->ops->resize_cookie(&cres, new_size);
+		cookie->volume->cache->ops->resize_cookie(&cres, new_size, shrank);
 		fscache_end_operation(&cres);
 	} else {
 		fscache_stat(&fscache_n_resizes_null);

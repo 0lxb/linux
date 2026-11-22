@@ -9,114 +9,10 @@
 #include <linux/task_io_accounting_ops.h>
 #include "internal.h"
 
-/*
- * Unlock the folios in a read operation.  We need to set PG_fscache on any
- * folios we're going to write back before we unlock them.
- */
-void netfs_rreq_unlock_folios(struct netfs_io_request *rreq)
-{
-	struct netfs_io_subrequest *subreq;
-	struct netfs_folio *finfo;
-	struct folio *folio;
-	pgoff_t start_page = rreq->start / PAGE_SIZE;
-	pgoff_t last_page = ((rreq->start + rreq->len) / PAGE_SIZE) - 1;
-	size_t account = 0;
-	bool subreq_failed = false;
-
-	XA_STATE(xas, &rreq->mapping->i_pages, start_page);
-
-	if (test_bit(NETFS_RREQ_FAILED, &rreq->flags)) {
-		__clear_bit(NETFS_RREQ_COPY_TO_CACHE, &rreq->flags);
-		list_for_each_entry(subreq, &rreq->subrequests, rreq_link) {
-			__clear_bit(NETFS_SREQ_COPY_TO_CACHE, &subreq->flags);
-		}
-	}
-
-	/* Walk through the pagecache and the I/O request lists simultaneously.
-	 * We may have a mixture of cached and uncached sections and we only
-	 * really want to write out the uncached sections.  This is slightly
-	 * complicated by the possibility that we might have huge pages with a
-	 * mixture inside.
-	 */
-	subreq = list_first_entry(&rreq->subrequests,
-				  struct netfs_io_subrequest, rreq_link);
-	subreq_failed = (subreq->error < 0);
-
-	trace_netfs_rreq(rreq, netfs_rreq_trace_unlock);
-
-	rcu_read_lock();
-	xas_for_each(&xas, folio, last_page) {
-		loff_t pg_end;
-		bool pg_failed = false;
-		bool folio_started;
-
-		if (xas_retry(&xas, folio))
-			continue;
-
-		pg_end = folio_pos(folio) + folio_size(folio) - 1;
-
-		folio_started = false;
-		for (;;) {
-			loff_t sreq_end;
-
-			if (!subreq) {
-				pg_failed = true;
-				break;
-			}
-			if (!folio_started && test_bit(NETFS_SREQ_COPY_TO_CACHE, &subreq->flags)) {
-				trace_netfs_folio(folio, netfs_folio_trace_copy_to_cache);
-				folio_start_fscache(folio);
-				folio_started = true;
-			}
-			pg_failed |= subreq_failed;
-			sreq_end = subreq->start + subreq->len - 1;
-			if (pg_end < sreq_end)
-				break;
-
-			account += subreq->transferred;
-			if (!list_is_last(&subreq->rreq_link, &rreq->subrequests)) {
-				subreq = list_next_entry(subreq, rreq_link);
-				subreq_failed = (subreq->error < 0);
-			} else {
-				subreq = NULL;
-				subreq_failed = false;
-			}
-
-			if (pg_end == sreq_end)
-				break;
-		}
-
-		if (!pg_failed) {
-			flush_dcache_folio(folio);
-			finfo = netfs_folio_info(folio);
-			if (finfo) {
-				trace_netfs_folio(folio, netfs_folio_trace_filled_gaps);
-				if (finfo->netfs_group)
-					folio_change_private(folio, finfo->netfs_group);
-				else
-					folio_detach_private(folio);
-				kfree(finfo);
-			}
-			folio_mark_uptodate(folio);
-		}
-
-		if (!test_bit(NETFS_RREQ_DONT_UNLOCK_FOLIOS, &rreq->flags)) {
-			if (folio->index == rreq->no_unlock_folio &&
-			    test_bit(NETFS_RREQ_NO_UNLOCK_FOLIO, &rreq->flags))
-				_debug("no unlock");
-			else
-				folio_unlock(folio);
-		}
-	}
-	rcu_read_unlock();
-
-	task_io_account_read(account);
-	if (rreq->netfs_ops->done)
-		rreq->netfs_ops->done(rreq);
-}
-
 static void netfs_cache_expand_readahead(struct netfs_io_request *rreq,
-					 loff_t *_start, size_t *_len, loff_t i_size)
+					 uoff_t *_start,
+					 uoff_t *_len,
+					 uoff_t i_size)
 {
 	struct netfs_cache_resources *cres = &rreq->cache_resources;
 
@@ -159,12 +55,383 @@ static void netfs_rreq_expand(struct netfs_io_request *rreq,
 }
 
 /*
+ * Drop the folio refs acquired from the readahead API.
+ */
+static void netfs_bulk_drop_ra_refs(struct netfs_io_request *rreq)
+{
+	struct folio_batch fbatch;
+	struct folio *folio;
+	pgoff_t nr_pages = DIV_ROUND_UP(rreq->len, PAGE_SIZE);
+	pgoff_t first = rreq->start / PAGE_SIZE;
+	XA_STATE(xas, &rreq->mapping->i_pages, first);
+
+	folio_batch_init(&fbatch);
+
+	rcu_read_lock();
+
+	xas_for_each(&xas, folio,  first + nr_pages - 1) {
+		if (xas_retry(&xas, folio))
+			continue;
+
+		if (!folio_batch_add(&fbatch, folio))
+			folio_batch_release(&fbatch);
+	}
+
+	rcu_read_unlock();
+	folio_batch_release(&fbatch);
+	trace_netfs_rreq(rreq, netfs_rreq_trace_ra_put_ref);
+	clear_bit_unlock(NETFS_RREQ_NEED_PUT_RA_REFS, &rreq->flags);
+	wake_up(&rreq->waitq);
+}
+
+static void netfs_maybe_bulk_drop_ra_refs(struct netfs_io_request *rreq)
+{
+	if (test_bit(NETFS_RREQ_NEED_PUT_RA_REFS, &rreq->flags))
+		netfs_bulk_drop_ra_refs(rreq);
+}
+
+/*
  * Begin an operation, and fetch the stored zero point value from the cookie if
  * available.
  */
 static int netfs_begin_cache_read(struct netfs_io_request *rreq, struct netfs_inode *ctx)
 {
 	return fscache_begin_read_operation(&rreq->cache_resources, netfs_i_cookie(ctx));
+}
+
+/*
+ * netfs_prepare_read_iterator - Prepare the subreq iterator for I/O
+ * @subreq: The subrequest to be set up
+ *
+ * Prepare the I/O iterator representing the read buffer on a subrequest for
+ * the filesystem to use for I/O (it can be passed directly to a socket).  This
+ * is intended to be called from the ->issue_read() method once the filesystem
+ * has trimmed the request to the size it wants.
+ *
+ * Returns the limited size if successful and -ENOMEM if insufficient memory
+ * available.
+ */
+static ssize_t netfs_prepare_read_iterator(struct netfs_io_subrequest *subreq)
+{
+	struct netfs_io_request *rreq = subreq->rreq;
+	size_t rsize = subreq->len;
+
+	if (subreq->source == NETFS_DOWNLOAD_FROM_SERVER)
+		rsize = umin(rsize, rreq->io_streams[0].sreq_max_len);
+
+	subreq->len = rsize;
+	if (unlikely(rreq->io_streams[0].sreq_max_segs)) {
+		size_t limit = netfs_limit_iter(&rreq->buffer.iter, 0, rsize,
+						rreq->io_streams[0].sreq_max_segs);
+
+		if (limit < rsize) {
+			subreq->len = limit;
+			trace_netfs_sreq(subreq, netfs_sreq_trace_limited);
+		}
+	}
+
+	subreq->io_iter	= rreq->buffer.iter;
+
+	iov_iter_truncate(&subreq->io_iter, subreq->len);
+	rolling_buffer_advance(&rreq->buffer, subreq->len);
+	return subreq->len;
+}
+
+/*
+ * Issue a read against the cache.
+ * - Eats the caller's ref on subreq.
+ */
+static void netfs_read_cache_to_pagecache(struct netfs_io_request *rreq,
+					  struct netfs_io_subrequest *subreq)
+{
+	struct netfs_cache_resources *cres = &rreq->cache_resources;
+
+	netfs_stat(&netfs_n_rh_read);
+	cres->ops->read(cres, subreq->start, &subreq->io_iter, NETFS_READ_HOLE_IGNORE,
+			netfs_cache_read_terminated, subreq);
+}
+
+int netfs_read_query_cache(struct netfs_io_request *rreq, struct fscache_occupancy *occ)
+{
+	struct netfs_cache_resources *cres = &rreq->cache_resources;
+
+	occ->granularity = PAGE_SIZE;
+	if (occ->query_from >= occ->query_to)
+		return 0;
+	if (!cres->ops)
+		return 0;
+	occ->query_from = round_up(occ->query_from, occ->granularity);
+	return cres->ops->query_occupancy(cres, occ);
+}
+
+void netfs_queue_read(struct netfs_io_request *rreq,
+		      struct netfs_io_subrequest *subreq)
+{
+	struct netfs_io_stream *stream = &rreq->io_streams[0];
+
+	__set_bit(NETFS_SREQ_IN_PROGRESS, &subreq->flags);
+
+	/* We add to the end of the list whilst the collector may be walking
+	 * the list.  The collector only goes nextwards and uses the lock to
+	 * remove entries off of the front.
+	 */
+	spin_lock(&rreq->lock);
+	/* Write IN_PROGRESS before pointer to new subreq */
+	list_add_tail_release(&subreq->rreq_link, &stream->subrequests);
+	if (list_is_first(&subreq->rreq_link, &stream->subrequests)) {
+		if (!stream->active) {
+			stream->collected_to = subreq->start;
+			/* Store list pointers before active flag */
+			smp_store_release(&stream->active, true);
+		}
+	}
+
+	spin_unlock(&rreq->lock);
+}
+
+static void netfs_issue_read(struct netfs_io_request *rreq,
+			     struct netfs_io_subrequest *subreq)
+{
+	switch (subreq->source) {
+	case NETFS_DOWNLOAD_FROM_SERVER:
+		rreq->netfs_ops->issue_read(subreq);
+		break;
+	case NETFS_READ_FROM_CACHE:
+		netfs_read_cache_to_pagecache(rreq, subreq);
+		break;
+	default:
+		__set_bit(NETFS_SREQ_CLEAR_TAIL, &subreq->flags);
+		subreq->error = 0;
+		iov_iter_zero(subreq->len, &subreq->io_iter);
+		subreq->transferred = subreq->len;
+		netfs_read_subreq_terminated(subreq);
+		break;
+	}
+}
+
+/*
+ * Mark folios that we want to copy to the cache.  For filesystems that use
+ * netfslib fully, we set folio->private to NETFS_FOLIO_COPY_TO_CACHE;
+ * otherwise we set the deprecated PG_private_2.
+ */
+static void netfs_mark_copy_to_cache(struct netfs_io_request *rreq,
+				     struct folio_queue **fq,
+				     unsigned int *offset,
+				     int *slot,
+				     size_t len,
+				     bool copy)
+{
+	while (len > 0) {
+		struct folio *folio;
+		size_t fsize, overlap;
+
+		if (!*fq)
+			break;
+		if (*slot >= folioq_count(*fq)) {
+			*fq = (*fq)->next;
+			*slot = 0;
+			*offset = 0;
+			continue;
+		}
+
+		/* Determine how much the subreq overlaps the folio, if at all. */
+		fsize = folioq_folio_size(*fq, *slot);
+		overlap = min(len, fsize - *offset);
+
+		if (overlap > 0 && copy) {
+			folio = folioq_folio(*fq, *slot);
+			if (netfs_using_pgpriv2(rreq)) {
+				if (!folio_test_private_2(folio))
+					folio_start_private_2(folio);
+			} else {
+				if (!folio_get_private(folio))
+					folio_attach_private(folio, NETFS_FOLIO_COPY_TO_CACHE);
+			}
+			trace_netfs_folio(folio, netfs_folio_trace_mark_copy);
+		}
+
+		len -= overlap;
+		*offset += overlap;
+		if (*offset >= fsize) {
+			*slot += 1;
+			*offset = 0;
+		}
+	}
+}
+
+/*
+ * Perform a read to the pagecache from a series of sources of different types,
+ * slicing up the region to be read according to available cache blocks and
+ * network rsize.
+ */
+static void netfs_read_to_pagecache(struct netfs_io_request *rreq)
+{
+	struct fscache_occupancy _occ = {
+		.query_from	= rreq->start,
+		.query_to	= rreq->start + rreq->len,
+		.cached_from[0]	= 0,
+		.cached_to[0]	= 0,
+		.cached_from[1]	= ULLONG_MAX,
+		.cached_to[1]	= ULLONG_MAX,
+	};
+	struct fscache_occupancy *occ = &_occ;
+	struct folio_queue *fq = rreq->buffer.tail;
+	unsigned int offset = 0;
+	ssize_t size = rreq->len;
+	uoff_t start = rreq->start;
+	int ret = 0, slot = 0;
+
+	do {
+		int (*prepare_read)(struct netfs_io_subrequest *subreq) = NULL;
+		struct netfs_io_subrequest *subreq;
+		enum netfs_io_source source;
+		ssize_t slice;
+		uoff_t hole_to, cache_to;
+		size_t len = size;
+		bool copy = false;
+
+		/* If we don't have any, find out the next couple of data
+		 * extents from the cache, containing of following the
+		 * specified start offset.  Holes have to be fetched from the
+		 * server; data regions from the cache.
+		 */
+		hole_to = occ->cached_from[0];
+		cache_to = occ->cached_to[0];
+		if (start >= cache_to) {
+			/* Extent exhausted; shuffle down. */
+			int i;
+
+			for (i = 0; i < ARRAY_SIZE(occ->cached_from) - 1; i++) {
+				occ->cached_from[i] = occ->cached_from[i + 1];
+				occ->cached_to[i]   = occ->cached_to[i + 1];
+				occ->cached_type[i] = occ->cached_type[i + 1];
+			}
+			occ->cached_from[i] = ULLONG_MAX;
+			occ->cached_to[i]   = ULLONG_MAX;
+
+			if (occ->cached_from[0] != ULLONG_MAX)
+				continue;
+
+			/* Get new extents */
+			ret = netfs_read_query_cache(rreq, occ);
+			if (ret < 0)
+				break;
+			continue;
+		}
+
+		uoff_t zero_point = netfs_read_zero_point(rreq->inode);
+		uoff_t zlimit = umin(zero_point, rreq->i_size);
+
+		_debug("rsub %llx %llx-%llx", start, hole_to, cache_to);
+
+		if (start >= hole_to && start < cache_to) {
+			/* Overlap with a cached region, where the cache may
+			 * record a block of zeroes.
+			 */
+			_debug("cached s=%llx c=%llx l=%zx", start, cache_to, size);
+			len = umin(cache_to - start, size);
+			len = round_up(len, occ->granularity);
+			if (occ->cached_type[0] == FSCACHE_EXTENT_ZERO) {
+				source = NETFS_FILL_WITH_ZEROES;
+				netfs_stat(&netfs_n_rh_zero);
+			} else {
+				source = NETFS_READ_FROM_CACHE;
+				prepare_read = rreq->cache_resources.ops->prepare_read;
+			}
+		} else if (start >= zlimit && size > 0) {
+			/* If this range lies beyond the zero-point, that part
+			 * can just be cleared locally.
+			 */
+			_debug("zero %llx-%llx", start, start + size);
+			len = size;
+			source = NETFS_FILL_WITH_ZEROES;
+			if (rreq->cache_resources.ops)
+				copy = true;
+			netfs_stat(&netfs_n_rh_zero);
+		} else {
+			/* Read a cache hole from the server.  If any part of
+			 * this range lies beyond the zero-point or the EOF,
+			 * that part can just be cleared locally.
+			 */
+			uoff_t limit = min3(zlimit, start + size, hole_to);
+
+			_debug("limit %llx %llx", rreq->i_size, zero_point);
+			_debug("download %llx-%llx", start, start + size);
+			len = umin(limit - start, ULONG_MAX);
+			source = NETFS_DOWNLOAD_FROM_SERVER;
+			prepare_read = rreq->netfs_ops->prepare_read;
+			if (rreq->cache_resources.ops)
+				copy = true;
+			netfs_stat(&netfs_n_rh_download);
+		}
+
+		if (len == 0) {
+			pr_err("ZERO-LEN READ: R=%08x l=%zx/%zx s=%llx z=%llx i=%llx",
+			       rreq->debug_id, len, size,
+			       start, zero_point, rreq->i_size);
+			break;
+		}
+
+		subreq = netfs_alloc_subrequest(rreq, source);
+		if (!subreq) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		subreq->start	= start;
+		subreq->len	= len;
+		if (copy)
+			__set_bit(NETFS_SREQ_COPY_TO_CACHE, &subreq->flags);
+
+		netfs_queue_read(rreq, subreq);
+
+		rreq->io_streams[0].sreq_max_len = MAX_RW_COUNT;
+		rreq->io_streams[0].sreq_max_segs = INT_MAX;
+
+		if (prepare_read) {
+			ret = prepare_read(subreq);
+			if (ret < 0) {
+				netfs_cancel_read(subreq, ret);
+				break;
+			}
+			trace_netfs_sreq(subreq, netfs_sreq_trace_prepare);
+		}
+
+		slice = netfs_prepare_read_iterator(subreq);
+		if (slice < 0) {
+			ret = slice;
+			netfs_cancel_read(subreq, ret);
+			break;
+		}
+		start += slice;
+		size -= slice;
+		if (size <= 0)
+			netfs_all_subreqs_queued(rreq);
+
+		if (fq) {
+			/* See if the cache indicated this should be cached. */
+			copy = test_bit(NETFS_SREQ_COPY_TO_CACHE, &subreq->flags);
+			netfs_mark_copy_to_cache(rreq, &fq, &slot, &offset, slice, copy);
+		}
+
+		trace_netfs_sreq(subreq, netfs_sreq_trace_submit);
+		netfs_issue_read(rreq, subreq);
+		netfs_maybe_bulk_drop_ra_refs(rreq);
+
+		if (test_bit(NETFS_RREQ_PAUSE, &rreq->flags))
+			netfs_wait_for_paused_read(rreq);
+		if (test_bit(NETFS_RREQ_FAILED, &rreq->flags))
+			break;
+		cond_resched();
+	} while (size > 0);
+
+	if (unlikely(size > 0)) {
+		netfs_all_subreqs_queued(rreq);
+		netfs_wake_collector(rreq);
+	}
+
+	/* Defer error return as we may need to wait for outstanding I/O. */
+	cmpxchg(&rreq->error, 0, ret);
 }
 
 /**
@@ -185,22 +452,20 @@ static int netfs_begin_cache_read(struct netfs_io_request *rreq, struct netfs_in
 void netfs_readahead(struct readahead_control *ractl)
 {
 	struct netfs_io_request *rreq;
-	struct netfs_inode *ctx = netfs_inode(ractl->mapping->host);
+	struct netfs_inode *ictx = netfs_inode(ractl->mapping->host);
+	ssize_t added;
+	uoff_t start = readahead_pos(ractl);
+	size_t size = readahead_length(ractl);
 	int ret;
 
-	_enter("%lx,%x", readahead_index(ractl), readahead_count(ractl));
-
-	if (readahead_count(ractl) == 0)
-		return;
-
-	rreq = netfs_alloc_request(ractl->mapping, ractl->file,
-				   readahead_pos(ractl),
-				   readahead_length(ractl),
+	rreq = netfs_alloc_request(ractl->mapping, ractl->file, start, size,
 				   NETFS_READAHEAD);
 	if (IS_ERR(rreq))
 		return;
 
-	ret = netfs_begin_cache_read(rreq, ctx);
+	__set_bit(NETFS_RREQ_OFFLOAD_COLLECTION, &rreq->flags);
+
+	ret = netfs_begin_cache_read(rreq, ictx);
 	if (ret == -ENOMEM || ret == -EINTR || ret == -ERESTARTSYS)
 		goto cleanup_free;
 
@@ -210,25 +475,154 @@ void netfs_readahead(struct readahead_control *ractl)
 
 	netfs_rreq_expand(rreq, ractl);
 
-	/* Set up the output buffer */
-	iov_iter_xarray(&rreq->iter, ITER_DEST, &ractl->mapping->i_pages,
-			rreq->start, rreq->len);
-
-	/* Drop the refs on the folios here rather than in the cache or
-	 * filesystem.  The locks will be dropped in netfs_rreq_unlock().
+	/* Load the folios to be read into a bvecq chain.  Note that this
+	 * acquires a ref on each folio that we will need to release later -
+	 * but we don't want to do that until after we've started the I/O.
 	 */
-	while (readahead_folio(ractl))
-		;
+	added = rolling_buffer_bulk_load_from_ra(&rreq->buffer, ractl,
+						 rreq->debug_id, rreq->gfp);
+	if (added < 0) {
+		ret = added;
+		goto cleanup_free;
+	}
+	__set_bit(NETFS_RREQ_NEED_PUT_RA_REFS, &rreq->flags);
 
-	netfs_begin_read(rreq, false);
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_return);
-	return;
+	rreq->submitted = rreq->start + added;
+	rreq->cleaned_to = rreq->start;
+	netfs_read_set_unlock_at(rreq);
+
+	netfs_read_to_pagecache(rreq);
+	netfs_maybe_bulk_drop_ra_refs(rreq);
+	return netfs_put_request(rreq, netfs_rreq_trace_put_return);
 
 cleanup_free:
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_failed);
-	return;
+	return netfs_put_failed_request(rreq);
 }
 EXPORT_SYMBOL(netfs_readahead);
+
+/*
+ * Create a rolling buffer with a single occupying folio.
+ */
+static int netfs_create_singular_buffer(struct netfs_io_request *rreq, struct folio *folio,
+					unsigned int rollbuf_flags)
+{
+	ssize_t added;
+
+	if (rolling_buffer_init(&rreq->buffer, rreq->debug_id, ITER_DEST, rreq->gfp) < 0)
+		return -ENOMEM;
+
+	added = rolling_buffer_append(&rreq->buffer, folio, rollbuf_flags, rreq->gfp);
+	if (added < 0)
+		return added;
+	rreq->submitted = rreq->start + added;
+	rreq->progress_at = added;
+	return 0;
+}
+
+/*
+ * Read into gaps in a folio partially filled by a streaming write.
+ */
+static int netfs_read_gaps(struct file *file, struct folio *folio)
+{
+	struct netfs_io_request *rreq;
+	struct address_space *mapping = folio->mapping;
+	struct netfs_group *group = netfs_folio_group(folio);
+	struct netfs_folio *finfo = netfs_folio_info(folio);
+	struct netfs_inode *ctx = netfs_inode(mapping->host);
+	struct bio_vec *bvec = NULL;
+	unsigned int from = finfo->dirty_offset;
+	unsigned int to = from + finfo->dirty_len;
+	unsigned int off = 0;
+	size_t flen = folio_size(folio);
+	size_t nr_bvec = flen / PAGE_SIZE + 2;
+	size_t part;
+	int ret, i = 0, sink_from = -1, sink_to = -1;
+
+	_enter("%lx", folio->index);
+
+	rreq = netfs_alloc_request(mapping, file, folio_pos(folio), flen, NETFS_READ_GAPS);
+	if (IS_ERR(rreq)) {
+		ret = PTR_ERR(rreq);
+		goto alloc_error;
+	}
+
+	ret = netfs_begin_cache_read(rreq, ctx);
+	if (ret == -ENOMEM || ret == -EINTR || ret == -ERESTARTSYS)
+		goto discard;
+
+	netfs_stat(&netfs_n_rh_read_folio);
+	trace_netfs_read(rreq, rreq->start, rreq->len, netfs_read_trace_read_gaps);
+
+	/* Fiddle the buffer so that a gap at the beginning and/or a gap at the
+	 * end get copied to, but the middle is discarded.
+	 */
+	ret = -ENOMEM;
+	bvec = kmalloc_objs(*bvec, nr_bvec);
+	if (!bvec)
+		goto discard;
+
+	trace_netfs_folio(folio, netfs_folio_trace_read_gaps);
+
+	if (from > 0) {
+		bvec_set_folio(&bvec[i++], folio, from, 0);
+		off = from;
+	}
+	sink_from = i;
+	while (off < to) {
+		struct folio *sink = folio_alloc(GFP_KERNEL, 0);
+
+		if (!sink)
+			goto discard;
+		part = min_t(size_t, to - off, PAGE_SIZE);
+		bvec_set_folio(&bvec[i], sink, part, 0);
+		off += part;
+		sink_to = i;
+		i++;
+	}
+	if (to < flen)
+		bvec_set_folio(&bvec[i++], folio, flen - to, to);
+	iov_iter_bvec(&rreq->buffer.iter, ITER_DEST, bvec, i, rreq->len);
+	rreq->submitted = rreq->start + flen;
+
+	netfs_read_to_pagecache(rreq);
+
+	ret = netfs_wait_for_read(rreq);
+	if (ret >= 0) {
+		if (ret < flen) {
+			struct iov_iter iter;
+
+			iov_iter_bvec(&iter, ITER_DEST, bvec, i, flen);
+			iov_iter_advance(&iter, ret);
+			iov_iter_zero(flen - ret, &iter);
+		}
+		if (group)
+			folio_change_private(folio, group);
+		else
+			folio_detach_private(folio);
+		kfree(finfo);
+		trace_netfs_folio(folio, netfs_folio_trace_filled_gaps);
+		flush_dcache_folio(folio);
+		folio_mark_uptodate(folio);
+	}
+
+	if (sink_to >= 0)
+		for (; sink_from <= sink_to; sink_from++)
+			folio_put(bvec_folio(&bvec[sink_from]));
+	kfree(bvec);
+	folio_unlock(folio);
+	netfs_put_request(rreq, netfs_rreq_trace_put_return);
+	return ret < 0 ? ret : 0;
+
+discard:
+	netfs_put_failed_request(rreq);
+alloc_error:
+	folio_unlock(folio);
+	if (sink_to >= 0)
+		for (; sink_from <= sink_to; sink_from++)
+			folio_put(bvec_folio(&bvec[sink_from]));
+	kfree(bvec);
+	return ret;
+}
 
 /**
  * netfs_read_folio - Helper to manage a read_folio request
@@ -249,13 +643,17 @@ int netfs_read_folio(struct file *file, struct folio *folio)
 	struct address_space *mapping = folio->mapping;
 	struct netfs_io_request *rreq;
 	struct netfs_inode *ctx = netfs_inode(mapping->host);
-	struct folio *sink = NULL;
 	int ret;
+
+	folio_wait_writeback(folio);
+
+	if (folio_test_dirty(folio))
+		return netfs_read_gaps(file, folio);
 
 	_enter("%lx", folio->index);
 
 	rreq = netfs_alloc_request(mapping, file,
-				   folio_file_pos(folio), folio_size(folio),
+				   folio_pos(folio), folio_size(folio),
 				   NETFS_READPAGE);
 	if (IS_ERR(rreq)) {
 		ret = PTR_ERR(rreq);
@@ -266,63 +664,21 @@ int netfs_read_folio(struct file *file, struct folio *folio)
 	if (ret == -ENOMEM || ret == -EINTR || ret == -ERESTARTSYS)
 		goto discard;
 
-	netfs_stat(&netfs_n_rh_readpage);
+	netfs_stat(&netfs_n_rh_read_folio);
 	trace_netfs_read(rreq, rreq->start, rreq->len, netfs_read_trace_readpage);
 
 	/* Set up the output buffer */
-	if (folio_test_dirty(folio)) {
-		/* Handle someone trying to read from an unflushed streaming
-		 * write.  We fiddle the buffer so that a gap at the beginning
-		 * and/or a gap at the end get copied to, but the middle is
-		 * discarded.
-		 */
-		struct netfs_folio *finfo = netfs_folio_info(folio);
-		struct bio_vec *bvec;
-		unsigned int from = finfo->dirty_offset;
-		unsigned int to = from + finfo->dirty_len;
-		unsigned int off = 0, i = 0;
-		size_t flen = folio_size(folio);
-		size_t nr_bvec = flen / PAGE_SIZE + 2;
-		size_t part;
+	ret = netfs_create_singular_buffer(rreq, folio, 0);
+	if (ret < 0)
+		goto discard;
 
-		ret = -ENOMEM;
-		bvec = kmalloc_array(nr_bvec, sizeof(*bvec), GFP_KERNEL);
-		if (!bvec)
-			goto discard;
-
-		sink = folio_alloc(GFP_KERNEL, 0);
-		if (!sink)
-			goto discard;
-
-		trace_netfs_folio(folio, netfs_folio_trace_read_gaps);
-
-		rreq->direct_bv = bvec;
-		rreq->direct_bv_count = nr_bvec;
-		if (from > 0) {
-			bvec_set_folio(&bvec[i++], folio, from, 0);
-			off = from;
-		}
-		while (off < to) {
-			part = min_t(size_t, to - off, PAGE_SIZE);
-			bvec_set_folio(&bvec[i++], sink, part, 0);
-			off += part;
-		}
-		if (to < flen)
-			bvec_set_folio(&bvec[i++], folio, flen - to, to);
-		iov_iter_bvec(&rreq->iter, ITER_DEST, bvec, i, rreq->len);
-	} else {
-		iov_iter_xarray(&rreq->iter, ITER_DEST, &mapping->i_pages,
-				rreq->start, rreq->len);
-	}
-
-	ret = netfs_begin_read(rreq, true);
-	if (sink)
-		folio_put(sink);
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_return);
+	netfs_read_to_pagecache(rreq);
+	ret = netfs_wait_for_read(rreq);
+	netfs_put_request(rreq, netfs_rreq_trace_put_return);
 	return ret < 0 ? ret : 0;
 
 discard:
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_discard);
+	netfs_put_failed_request(rreq);
 alloc_error:
 	folio_unlock(folio);
 	return ret;
@@ -344,18 +700,18 @@ EXPORT_SYMBOL(netfs_read_folio);
  * If any of these criteria are met, then zero out the unwritten parts
  * of the folio and return true. Otherwise, return false.
  */
-static bool netfs_skip_folio_read(struct folio *folio, loff_t pos, size_t len,
+static bool netfs_skip_folio_read(struct folio *folio, uoff_t pos, size_t len,
 				 bool always_fill)
 {
 	struct inode *inode = folio_inode(folio);
-	loff_t i_size = i_size_read(inode);
+	uoff_t i_size = i_size_read(inode);
 	size_t offset = offset_in_folio(folio, pos);
 	size_t plen = folio_size(folio);
 
 	if (unlikely(always_fill)) {
 		if (pos - offset + len <= i_size)
 			return false; /* Page entirely before EOF */
-		zero_user_segment(&folio->page, 0, plen);
+		folio_zero_segment(folio, 0, plen);
 		folio_mark_uptodate(folio);
 		return true;
 	}
@@ -374,12 +730,12 @@ static bool netfs_skip_folio_read(struct folio *folio, loff_t pos, size_t len,
 
 	return false;
 zero_out:
-	zero_user_segments(&folio->page, 0, offset, offset + len, plen);
+	folio_zero_segments(folio, 0, offset, offset + len, plen);
 	return true;
 }
 
 /**
- * netfs_write_begin - Helper to prepare for writing
+ * netfs_write_begin - Helper to prepare for writing [DEPRECATED]
  * @ctx: The netfs context
  * @file: The file to read from
  * @mapping: The mapping to read from
@@ -390,13 +746,10 @@ zero_out:
  *
  * Pre-read data for a write-begin request by drawing data from the cache if
  * possible, or the netfs if not.  Space beyond the EOF is zero-filled.
- * Multiple I/O requests from different sources will get munged together.  If
- * necessary, the readahead window can be expanded in either direction to a
- * more convenient alighment for RPC efficiency or to make storage in the cache
- * feasible.
+ * Multiple I/O requests from different sources will get munged together.
  *
  * The calling netfs must provide a table of operations, only one of which,
- * issue_op, is mandatory.
+ * issue_read, is mandatory.
  *
  * The check_write_begin() operation can be provided to check for and flush
  * conflicting writes once the folio is grabbed and locked.  It is passed a
@@ -410,18 +763,19 @@ zero_out:
  * inode before calling this.
  *
  * This is usable whether or not caching is enabled.
+ *
+ * Note that this should be considered deprecated and netfs_perform_write()
+ * used instead.
  */
 int netfs_write_begin(struct netfs_inode *ctx,
 		      struct file *file, struct address_space *mapping,
-		      loff_t pos, unsigned int len, struct folio **_folio,
+		      uoff_t pos, unsigned int len, struct folio **_folio,
 		      void **_fsdata)
 {
 	struct netfs_io_request *rreq;
 	struct folio *folio;
 	pgoff_t index = pos >> PAGE_SHIFT;
 	int ret;
-
-	DEFINE_READAHEAD(ractl, file, NULL, mapping, index);
 
 retry:
 	folio = __filemap_get_folio(mapping, index, FGP_WRITEBEGIN,
@@ -443,24 +797,24 @@ retry:
 	if (folio_test_uptodate(folio))
 		goto have_folio;
 
-	/* If the page is beyond the EOF, we want to clear it - unless it's
+	/* If the folio is beyond the EOF, we want to clear it - unless it's
 	 * within the cache granule containing the EOF, in which case we need
 	 * to preload the granule.
 	 */
-	if (!netfs_is_cache_enabled(ctx) &&
+	if (!netfs_is_cache_maybe_enabled(ctx) &&
 	    netfs_skip_folio_read(folio, pos, len, false)) {
 		netfs_stat(&netfs_n_rh_write_zskip);
 		goto have_folio_no_wait;
 	}
 
 	rreq = netfs_alloc_request(mapping, file,
-				   folio_file_pos(folio), folio_size(folio),
+				   folio_pos(folio), folio_size(folio),
 				   NETFS_READ_FOR_WRITE);
 	if (IS_ERR(rreq)) {
 		ret = PTR_ERR(rreq);
 		goto error;
 	}
-	rreq->no_unlock_folio	= folio->index;
+	rreq->no_unlock_folio	= folio;
 	__set_bit(NETFS_RREQ_NO_UNLOCK_FOLIO, &rreq->flags);
 
 	ret = netfs_begin_cache_read(rreq, ctx);
@@ -470,28 +824,19 @@ retry:
 	netfs_stat(&netfs_n_rh_write_begin);
 	trace_netfs_read(rreq, pos, len, netfs_read_trace_write_begin);
 
-	/* Expand the request to meet caching requirements and download
-	 * preferences.
-	 */
-	ractl._nr_pages = folio_nr_pages(folio);
-	netfs_rreq_expand(rreq, &ractl);
-
 	/* Set up the output buffer */
-	iov_iter_xarray(&rreq->iter, ITER_DEST, &mapping->i_pages,
-			rreq->start, rreq->len);
+	ret = netfs_create_singular_buffer(rreq, folio, 0);
+	if (ret < 0)
+		goto error_put;
 
-	/* We hold the folio locks, so we can drop the references */
-	folio_get(folio);
-	while (readahead_folio(&ractl))
-		;
-
-	ret = netfs_begin_read(rreq, true);
+	netfs_read_to_pagecache(rreq);
+	ret = netfs_wait_for_read(rreq);
+	netfs_put_request(rreq, netfs_rreq_trace_put_return);
 	if (ret < 0)
 		goto error;
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_return);
 
 have_folio:
-	ret = folio_wait_fscache_killable(folio);
+	ret = folio_wait_private_2_killable(folio);
 	if (ret < 0)
 		goto error;
 have_folio_no_wait:
@@ -500,7 +845,7 @@ have_folio_no_wait:
 	return 0;
 
 error_put:
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_failed);
+	netfs_put_failed_request(rreq);
 error:
 	if (folio) {
 		folio_unlock(folio);
@@ -512,7 +857,7 @@ error:
 EXPORT_SYMBOL(netfs_write_begin);
 
 /*
- * Preload the data into a page we're proposing to write into.
+ * Preload the data into a folio we're proposing to write into.
  */
 int netfs_prefetch_for_write(struct file *file, struct folio *folio,
 			     size_t offset, size_t len)
@@ -520,7 +865,7 @@ int netfs_prefetch_for_write(struct file *file, struct folio *folio,
 	struct netfs_io_request *rreq;
 	struct address_space *mapping = folio->mapping;
 	struct netfs_inode *ctx = netfs_inode(mapping->host);
-	unsigned long long start = folio_pos(folio);
+	uoff_t start = folio_pos(folio);
 	size_t flen = folio_size(folio);
 	int ret;
 
@@ -535,7 +880,7 @@ int netfs_prefetch_for_write(struct file *file, struct folio *folio,
 		goto error;
 	}
 
-	rreq->no_unlock_folio = folio->index;
+	rreq->no_unlock_folio = folio;
 	__set_bit(NETFS_RREQ_NO_UNLOCK_FOLIO, &rreq->flags);
 	ret = netfs_begin_cache_read(rreq, ctx);
 	if (ret == -ENOMEM || ret == -EINTR || ret == -ERESTARTSYS)
@@ -545,15 +890,17 @@ int netfs_prefetch_for_write(struct file *file, struct folio *folio,
 	trace_netfs_read(rreq, start, flen, netfs_read_trace_prefetch_for_write);
 
 	/* Set up the output buffer */
-	iov_iter_xarray(&rreq->iter, ITER_DEST, &mapping->i_pages,
-			rreq->start, rreq->len);
+	ret = netfs_create_singular_buffer(rreq, folio, NETFS_ROLLBUF_PAGECACHE_MARK);
+	if (ret < 0)
+		goto error_put;
 
-	ret = netfs_begin_read(rreq, true);
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_return);
-	return ret;
+	netfs_read_to_pagecache(rreq);
+	ret = netfs_wait_for_read(rreq);
+	netfs_put_request(rreq, netfs_rreq_trace_put_return);
+	return ret < 0 ? ret : 0;
 
 error_put:
-	netfs_put_request(rreq, false, netfs_rreq_trace_put_discard);
+	netfs_put_failed_request(rreq);
 error:
 	_leave(" = %d", ret);
 	return ret;

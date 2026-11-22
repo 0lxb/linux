@@ -51,6 +51,7 @@
 	{ RING_ESR(0),              0,      0, "ESR" }, \
 	{ RING_DMA_FADD(0),         0,      0, "RING_DMA_FADD_LDW" }, \
 	{ RING_DMA_FADD_UDW(0),     0,      0, "RING_DMA_FADD_UDW" }, \
+	{ RING_EIR(0),              0,      0, "EIR" }, \
 	{ RING_IPEIR(0),            0,      0, "IPEIR" }, \
 	{ RING_IPEHR(0),            0,      0, "IPEHR" }, \
 	{ RING_INSTPS(0),           0,      0, "INSTPS" }, \
@@ -80,9 +81,6 @@
 	{ GEN8_RING_PDP_LDW(0, 3),  0,      0, "PDP3_LDW" }, \
 	{ GEN8_RING_PDP_UDW(0, 3),  0,      0, "PDP3_UDW" }
 
-#define COMMON_BASE_HAS_EU \
-	{ EIR,                      0,      0, "EIR" }
-
 #define COMMON_BASE_RENDER \
 	{ GEN7_SC_INSTDONE,         0,      0, "GEN7_SC_INSTDONE" }
 
@@ -105,7 +103,6 @@ static const struct __guc_mmio_reg_descr xe_lp_global_regs[] = {
 
 /* XE_LP Render / Compute Per-Class */
 static const struct __guc_mmio_reg_descr xe_lp_rc_class_regs[] = {
-	COMMON_BASE_HAS_EU,
 	COMMON_BASE_RENDER,
 	COMMON_GEN12BASE_RENDER,
 };
@@ -148,7 +145,6 @@ static const struct __guc_mmio_reg_descr gen8_global_regs[] = {
 };
 
 static const struct __guc_mmio_reg_descr gen8_rc_class_regs[] = {
-	COMMON_BASE_HAS_EU,
 	COMMON_BASE_RENDER,
 };
 
@@ -279,7 +275,7 @@ __alloc_ext_regs(struct __guc_mmio_reg_descr_group *newlist,
 {
 	struct __guc_mmio_reg_descr *list;
 
-	list = kcalloc(num_regs, sizeof(struct __guc_mmio_reg_descr), GFP_KERNEL);
+	list = kzalloc_objs(struct __guc_mmio_reg_descr, num_regs);
 	if (!list)
 		return -ENOMEM;
 
@@ -324,7 +320,7 @@ guc_capture_alloc_steered_lists(struct intel_guc *guc,
 		return;
 
 	/* allocate an extra for an end marker */
-	extlists = kcalloc(2, sizeof(struct __guc_mmio_reg_descr_group), GFP_KERNEL);
+	extlists = kzalloc_objs(struct __guc_mmio_reg_descr_group, 2);
 	if (!extlists)
 		return;
 
@@ -988,13 +984,13 @@ guc_capture_alloc_one_node(struct intel_guc *guc)
 	struct __guc_capture_parsed_output *new;
 	int i;
 
-	new = kzalloc(sizeof(*new), GFP_KERNEL);
+	new = kzalloc_obj(*new);
 	if (!new)
 		return NULL;
 
 	for (i = 0; i < GUC_CAPTURE_LIST_TYPE_MAX; ++i) {
-		new->reginfo[i].regs = kcalloc(guc->capture->max_mmio_per_node,
-					       sizeof(struct guc_mmio_reg), GFP_KERNEL);
+		new->reginfo[i].regs = kzalloc_objs(struct guc_mmio_reg,
+						    guc->capture->max_mmio_per_node);
 		if (!new->reginfo[i].regs) {
 			while (i)
 				kfree(new->reginfo[--i].regs);
@@ -1441,7 +1437,7 @@ int intel_guc_capture_print_engine_node(struct drm_i915_error_state_buf *ebuf,
 	if (!cap || !ee->engine)
 		return -ENODEV;
 
-	guc = &ee->engine->gt->uc.guc;
+	guc = gt_to_guc(ee->engine->gt);
 
 	i915_error_printf(ebuf, "global --- GuC Error Capture on %s command stream:\n",
 			  ee->engine->name);
@@ -1543,7 +1539,7 @@ bool intel_guc_capture_is_matching_engine(struct intel_gt *gt,
 	if (!gt || !ce || !engine)
 		return false;
 
-	guc = &gt->uc.guc;
+	guc = gt_to_guc(gt);
 	if (!guc->capture)
 		return false;
 
@@ -1573,7 +1569,7 @@ void intel_guc_capture_get_matching_node(struct intel_gt *gt,
 	if (!gt || !ee || !ce)
 		return;
 
-	guc = &gt->uc.guc;
+	guc = gt_to_guc(gt);
 	if (!guc->capture)
 		return;
 
@@ -1643,7 +1639,7 @@ void intel_guc_capture_destroy(struct intel_guc *guc)
 
 int intel_guc_capture_init(struct intel_guc *guc)
 {
-	guc->capture = kzalloc(sizeof(*guc->capture), GFP_KERNEL);
+	guc->capture = kzalloc_obj(*guc->capture);
 	if (!guc->capture)
 		return -ENOMEM;
 

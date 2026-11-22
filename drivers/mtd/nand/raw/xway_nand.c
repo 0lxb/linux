@@ -171,8 +171,7 @@ static int xway_nand_probe(struct platform_device *pdev)
 	u32 cs_flag = 0;
 
 	/* Allocate memory for the device structure (and zero it) */
-	data = devm_kzalloc(&pdev->dev, sizeof(struct xway_nand_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, struct xway_nand_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -256,7 +255,7 @@ static const struct of_device_id xway_nand_match[] = {
 
 static struct platform_driver xway_nand_driver = {
 	.probe	= xway_nand_probe,
-	.remove_new = xway_nand_remove,
+	.remove = xway_nand_remove,
 	.driver	= {
 		.name		= "lantiq,nand-xway",
 		.of_match_table = xway_nand_match,

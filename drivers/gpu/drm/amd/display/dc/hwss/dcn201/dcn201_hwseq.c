@@ -39,6 +39,9 @@
 #include "dccg.h"
 #include "clk_mgr.h"
 #include "reg_helper.h"
+#include "dcn10/dcn10_hubbub.h"
+#include "dio/dcn10/dcn10_dio.h"
+
 
 #define CTX \
 	hws->ctx
@@ -95,8 +98,11 @@ static bool gpu_addr_to_uma(struct dce_hwseq *hwseq,
 	} else if (hwseq->fb_offset.quad_part <= addr->quad_part &&
 			addr->quad_part <= hwseq->uma_top.quad_part) {
 		is_in_uma = true;
+	} else if (addr->quad_part == 0) {
+		is_in_uma = false;
 	} else {
 		is_in_uma = false;
+		BREAK_TO_DEBUGGER();
 	}
 	return is_in_uma;
 }
@@ -127,7 +133,8 @@ static void plane_address_in_gpu_space_to_uma(struct dce_hwseq *hwseq,
 	}
 }
 
-void dcn201_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
+void dcn201_prepare_plane_addr_update(const struct dc *dc, struct pipe_ctx *pipe_ctx,
+		struct dc_plane_address *addr_to_program, bool *flip_immediate)
 {
 	bool addr_patched = false;
 	PHYSICAL_ADDRESS_LOC addr;
@@ -143,10 +150,9 @@ void dcn201_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
 
 	plane_address_in_gpu_space_to_uma(hws, &uma);
 
-	pipe_ctx->plane_res.hubp->funcs->hubp_program_surface_flip_and_addr(
-			pipe_ctx->plane_res.hubp,
-			&uma,
-			plane_state->flip_immediate);
+	/* snapshot the UMA-converted address before the stereo patch is restored */
+	*addr_to_program = uma;
+	*flip_immediate = plane_state->flip_immediate;
 
 	plane_state->status.requested_address = plane_state->address;
 
@@ -155,6 +161,23 @@ void dcn201_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
 
 	if (addr_patched)
 		pipe_ctx->plane_state->address.grph_stereo.left_addr = addr;
+}
+
+void dcn201_update_plane_addr(const struct dc *dc, struct pipe_ctx *pipe_ctx)
+{
+	struct dc_plane_address address;
+	bool flip_immediate;
+
+	if (pipe_ctx->plane_state == NULL)
+		return;
+
+	dcn201_prepare_plane_addr_update(dc, pipe_ctx, &address, &flip_immediate);
+
+	pipe_ctx->plane_res.hubp->funcs->hubp_program_surface_flip_and_addr(
+			pipe_ctx->plane_res.hubp,
+			&address,
+			flip_immediate,
+			pipe_ctx->plane_state->dcc.enable);
 }
 
 /* Blank pixel data during initialization */
@@ -167,7 +190,7 @@ void dcn201_init_blank(
 	struct tg_color black_color = {0};
 	struct output_pixel_processor *opp = NULL;
 	uint32_t num_opps, opp_id_src0, opp_id_src1;
-	uint32_t otg_active_width, otg_active_height;
+	uint32_t otg_active_width = 0, otg_active_height = 0;
 
 	/* program opp dpg blank color */
 	color_space = COLOR_SPACE_SRGB;
@@ -191,7 +214,8 @@ void dcn201_init_blank(
 			&black_color,
 			otg_active_width,
 			otg_active_height,
-			0);
+			0,
+			dc->debug.disable_dynamic_expansion_for_test_pattern);
 
 	hws->funcs.wait_for_blank_complete(opp);
 }
@@ -237,7 +261,7 @@ void dcn201_init_hw(struct dc *dc)
 		res_pool->ref_clocks.xtalin_clock_inKhz =
 			dc->ctx->dc_bios->fw_info.pll_info.crystal_frequency;
 
-		if (res_pool->dccg && res_pool->hubbub) {
+		if (res_pool->hubbub) {
 			(res_pool->dccg->funcs->get_dccg_ref_freq)(res_pool->dccg,
 					dc->ctx->dc_bios->fw_info.pll_info.crystal_frequency,
 					&res_pool->ref_clocks.dccg_ref_clock_inKhz);
@@ -356,13 +380,13 @@ void dcn201_init_hw(struct dc *dc)
 	}
 
 	/* power AFMT HDMI memory TODO: may move to dis/en output save power*/
-	REG_WRITE(DIO_MEM_PWR_CTRL, 0);
+	if (dc->res_pool->dio && dc->res_pool->dio->funcs->mem_pwr_ctrl)
+		dc->res_pool->dio->funcs->mem_pwr_ctrl(dc->res_pool->dio, false);
 
 	if (!dc->debug.disable_clock_gate) {
 		/* enable all DCN clock gating */
-		REG_WRITE(DCCG_GATE_DISABLE_CNTL, 0);
-
-		REG_WRITE(DCCG_GATE_DISABLE_CNTL2, 0);
+		if (dc->res_pool->dccg && dc->res_pool->dccg->funcs && dc->res_pool->dccg->funcs->allow_clock_gating)
+			dc->res_pool->dccg->funcs->allow_clock_gating(dc->res_pool->dccg, true);
 
 		REG_UPDATE(DCFCLK_CNTL, DCFCLK_GATE_DIS, 0);
 	}
@@ -405,8 +429,7 @@ void dcn201_plane_atomic_disconnect(struct dc *dc,
 	if (mpcc_removed == false)
 		return;
 
-	if (opp != NULL)
-		opp->mpcc_disconnect_pending[pipe_ctx->plane_res.mpcc_inst] = true;
+	opp->mpcc_disconnect_pending[pipe_ctx->plane_res.mpcc_inst] = true;
 
 	dc->optimized_required = true;
 
@@ -480,7 +503,7 @@ void dcn201_update_mpcc(struct dc *dc, struct pipe_ctx *pipe_ctx)
 	mpcc_id = dpp_id;
 
 	/* If there is no full update, don't need to touch MPC tree*/
-	if (!pipe_ctx->plane_state->update_flags.bits.full_update) {
+	if (!pipe_ctx->plane_state->update_bits.full_update) {
 		dc->hwss.update_visual_confirm_color(dc, pipe_ctx, mpcc_id);
 		mpc->funcs->update_blending(mpc, &blnd_cfg, mpcc_id);
 		return;
@@ -520,35 +543,27 @@ void dcn201_update_mpcc(struct dc *dc, struct pipe_ctx *pipe_ctx)
 	hubp->mpcc_id = mpcc_id;
 }
 
-void dcn201_pipe_control_lock(
-	struct dc *dc,
-	struct pipe_ctx *pipe,
-	bool lock)
+void dcn201_tg_lock(struct tg_lock_params *params)
 {
-	struct dce_hwseq *hws = dc->hwseq;
-	/* use TG master update lock to lock everything on the TG
-	 * therefore only top pipe need to lock
-	 */
-	if (pipe->top_pipe)
-		return;
+	struct dce_hwseq *hws = params->dc->hwseq;
 
-	if (dc->debug.sanity_checks)
-		hws->funcs.verify_allow_pstate_change_high(dc);
+	if (params->dc->debug.sanity_checks)
+		hws->funcs.verify_allow_pstate_change_high(params->dc);
 
-	if (pipe->plane_state != NULL && pipe->plane_state->triplebuffer_flips) {
-		if (lock)
-			pipe->stream_res.tg->funcs->triplebuffer_lock(pipe->stream_res.tg);
+	if (params->triplebuffer_flips) {
+		if (params->lock)
+			params->tg->funcs->triplebuffer_lock(params->tg);
 		else
-			pipe->stream_res.tg->funcs->triplebuffer_unlock(pipe->stream_res.tg);
+			params->tg->funcs->triplebuffer_unlock(params->tg);
 	} else {
-		if (lock)
-			pipe->stream_res.tg->funcs->lock(pipe->stream_res.tg);
+		if (params->lock)
+			params->tg->funcs->lock(params->tg);
 		else
-			pipe->stream_res.tg->funcs->unlock(pipe->stream_res.tg);
+			params->tg->funcs->unlock(params->tg);
 	}
 
-	if (dc->debug.sanity_checks)
-		hws->funcs.verify_allow_pstate_change_high(dc);
+	if (params->dc->debug.sanity_checks)
+		hws->funcs.verify_allow_pstate_change_high(params->dc);
 }
 
 void dcn201_set_cursor_attribute(struct pipe_ctx *pipe_ctx)
@@ -601,7 +616,7 @@ void dcn201_unblank_stream(struct pipe_ctx *pipe_ctx,
 
 	if (dc_is_dp_signal(pipe_ctx->stream->signal)) {
 		/*check whether it is half the rate*/
-		if (optc201_is_two_pixels_per_containter(&stream->timing))
+		if (pipe_ctx->stream_res.tg->funcs->is_two_pixels_per_container(&stream->timing))
 			params.timing.pix_clk_100hz /= 2;
 
 		pipe_ctx->stream_res.stream_enc->funcs->dp_unblank(link, pipe_ctx->stream_res.stream_enc, &params);

@@ -98,8 +98,7 @@ static int lt3651_charger_probe(struct platform_device *pdev)
 	struct power_supply_desc *charger_desc;
 	int ret;
 
-	lt3651_charger = devm_kzalloc(&pdev->dev, sizeof(*lt3651_charger),
-					GFP_KERNEL);
+	lt3651_charger = devm_kzalloc_obj(&pdev->dev, *lt3651_charger);
 	if (!lt3651_charger)
 		return -ENOMEM;
 
@@ -131,7 +130,7 @@ static int lt3651_charger_probe(struct platform_device *pdev)
 	charger_desc->properties = lt3651_charger_properties;
 	charger_desc->num_properties = ARRAY_SIZE(lt3651_charger_properties);
 	charger_desc->get_property = lt3651_charger_get_property;
-	psy_cfg.of_node = pdev->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
 	psy_cfg.drv_data = lt3651_charger;
 
 	lt3651_charger->charger = devm_power_supply_register(&pdev->dev,

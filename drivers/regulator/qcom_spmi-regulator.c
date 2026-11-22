@@ -12,13 +12,13 @@
 #include <linux/bitops.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/ktime.h>
 #include <linux/regulator/driver.h>
 #include <linux/regmap.h>
 #include <linux/list.h>
-#include <linux/mfd/syscon.h>
 #include <linux/io.h>
 
 /* Pin control enable input pins. */
@@ -245,7 +245,7 @@ enum spmi_saw3_registers {
 	SAW3_VERSION				= 0xFD0,
 };
 
-/* Used for indexing into ctrl_reg.  These are offets from 0x40 */
+/* Used for indexing into ctrl_reg.  These are offsets from 0x40 */
 enum spmi_common_control_register_index {
 	SPMI_COMMON_IDX_VOLTAGE_RANGE		= 0,
 	SPMI_COMMON_IDX_VOLTAGE_SET		= 1,
@@ -400,7 +400,7 @@ struct spmi_voltage_range {
  * so that range[i].set_point_max_uV < range[i+1].set_point_min_uV.
  */
 struct spmi_voltage_set_points {
-	struct spmi_voltage_range		*range;
+	const struct spmi_voltage_range		*range;
 	int					count;
 	unsigned				n_voltages;
 };
@@ -474,6 +474,9 @@ struct spmi_regulator_data {
 		.set_point_max_uV	= _set_point_max_uV, \
 		.step_uV		= _step_uV, \
 		.range_sel		= _range_sel, \
+		.n_voltages		= (_set_point_max_uV != 0) ? \
+						((_set_point_max_uV - _set_point_min_uV) / _step_uV) + 1 : \
+						0, \
 	}
 
 #define DEFINE_SPMI_SET_POINTS(name) \
@@ -489,110 +492,110 @@ struct spmi_voltage_set_points name##_set_points = { \
  * increasing and unique.  The set_voltage callback functions expect these
  * properties to hold.
  */
-static struct spmi_voltage_range pldo_ranges[] = {
+static const struct spmi_voltage_range pldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(2,  750000,  750000, 1537500, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(3, 1500000, 1550000, 3075000, 3075000, 25000),
 	SPMI_VOLTAGE_RANGE(4, 1750000, 3100000, 4900000, 4900000, 50000),
 };
 
-static struct spmi_voltage_range nldo1_ranges[] = {
+static const struct spmi_voltage_range nldo1_ranges[] = {
 	SPMI_VOLTAGE_RANGE(2,  750000,  750000, 1537500, 1537500, 12500),
 };
 
-static struct spmi_voltage_range nldo2_ranges[] = {
+static const struct spmi_voltage_range nldo2_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,       0,       0, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  375000,  375000,  768750,  768750,  6250),
 	SPMI_VOLTAGE_RANGE(2,  750000,  775000, 1537500, 1537500, 12500),
 };
 
-static struct spmi_voltage_range nldo3_ranges[] = {
+static const struct spmi_voltage_range nldo3_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1537500, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  375000,       0,       0, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(2,  750000,       0,       0, 1537500, 12500),
 };
 
-static struct spmi_voltage_range ln_ldo_ranges[] = {
+static const struct spmi_voltage_range ln_ldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(1,  690000,  690000, 1110000, 1110000, 60000),
 	SPMI_VOLTAGE_RANGE(0, 1380000, 1380000, 2220000, 2220000, 120000),
 };
 
-static struct spmi_voltage_range smps_ranges[] = {
+static const struct spmi_voltage_range smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1562500, 1562500, 12500),
 	SPMI_VOLTAGE_RANGE(1, 1550000, 1575000, 3125000, 3125000, 25000),
 };
 
-static struct spmi_voltage_range ftsmps_ranges[] = {
+static const struct spmi_voltage_range ftsmps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,       0,  350000, 1275000, 1275000,  5000),
 	SPMI_VOLTAGE_RANGE(1,       0, 1280000, 2040000, 2040000, 10000),
 };
 
-static struct spmi_voltage_range ftsmps2p5_ranges[] = {
+static const struct spmi_voltage_range ftsmps2p5_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,   80000,  350000, 1355000, 1355000,  5000),
 	SPMI_VOLTAGE_RANGE(1,  160000, 1360000, 2200000, 2200000, 10000),
 };
 
-static struct spmi_voltage_range ftsmps426_ranges[] = {
+static const struct spmi_voltage_range ftsmps426_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,       0,  320000, 1352000, 1352000,  4000),
 };
 
-static struct spmi_voltage_range boost_ranges[] = {
+static const struct spmi_voltage_range boost_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 4000000, 4000000, 5550000, 5550000, 50000),
 };
 
-static struct spmi_voltage_range boost_byp_ranges[] = {
+static const struct spmi_voltage_range boost_byp_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 2500000, 2500000, 5200000, 5650000, 50000),
 };
 
-static struct spmi_voltage_range ult_lo_smps_ranges[] = {
+static const struct spmi_voltage_range ult_lo_smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1562500, 1562500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  750000,       0,       0, 1525000, 25000),
 };
 
-static struct spmi_voltage_range ult_ho_smps_ranges[] = {
+static const struct spmi_voltage_range ult_ho_smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1550000, 1550000, 2325000, 2325000, 25000),
 };
 
-static struct spmi_voltage_range ult_nldo_ranges[] = {
+static const struct spmi_voltage_range ult_nldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1537500, 1537500, 12500),
 };
 
-static struct spmi_voltage_range ult_pldo_ranges[] = {
+static const struct spmi_voltage_range ult_pldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1750000, 1750000, 3337500, 3337500, 12500),
 };
 
-static struct spmi_voltage_range pldo660_ranges[] = {
+static const struct spmi_voltage_range pldo660_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1504000, 1504000, 3544000, 3544000, 8000),
 };
 
-static struct spmi_voltage_range nldo660_ranges[] = {
+static const struct spmi_voltage_range nldo660_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  320000,  320000, 1304000, 1304000, 8000),
 };
 
-static struct spmi_voltage_range ht_lvpldo_ranges[] = {
+static const struct spmi_voltage_range ht_lvpldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1504000, 1504000, 2000000, 2000000, 8000),
 };
 
-static struct spmi_voltage_range ht_nldo_ranges[] = {
+static const struct spmi_voltage_range ht_nldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  312000,  312000, 1304000, 1304000, 8000),
 };
 
-static struct spmi_voltage_range hfs430_ranges[] = {
+static const struct spmi_voltage_range hfs430_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 320000, 320000, 2040000, 2040000, 8000),
 };
 
-static struct spmi_voltage_range ht_p150_ranges[] = {
+static const struct spmi_voltage_range ht_p150_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1616000, 1616000, 3304000, 3304000, 8000),
 };
 
-static struct spmi_voltage_range ht_p600_ranges[] = {
+static const struct spmi_voltage_range ht_p600_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1704000, 1704000, 1896000, 1896000, 8000),
 };
 
-static struct spmi_voltage_range nldo_510_ranges[] = {
+static const struct spmi_voltage_range nldo_510_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 320000, 320000, 1304000, 1304000, 8000),
 };
 
-static struct spmi_voltage_range ftsmps510_ranges[] = {
+static const struct spmi_voltage_range ftsmps510_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 300000, 300000, 1372000, 1372000, 4000),
 };
 
@@ -1332,6 +1335,14 @@ static irqreturn_t spmi_regulator_vs_ocp_isr(int irq, void *data)
 
 static struct regmap *saw_regmap;
 
+static const struct regmap_config saw_regmap_config = {
+	.name = "saw",
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
+	.use_raw_spinlock = true,
+};
+
 static void spmi_saw_set_vdd(void *data)
 {
 	u32 vctl, data3, avs_ctl, pmic_sts;
@@ -1676,18 +1687,10 @@ static const struct spmi_regulator_mapping supported_regulators[] = {
 
 static void spmi_calculate_num_voltages(struct spmi_voltage_set_points *points)
 {
-	unsigned int n;
-	struct spmi_voltage_range *range = points->range;
+	const struct spmi_voltage_range *range = points->range;
 
-	for (; range < points->range + points->count; range++) {
-		n = 0;
-		if (range->set_point_max_uV) {
-			n = range->set_point_max_uV - range->set_point_min_uV;
-			n = (n / range->step_uV) + 1;
-		}
-		range->n_voltages = n;
-		points->n_voltages += n;
-	}
+	for (; range < points->range + points->count; range++)
+		points->n_voltages += range->n_voltages;
 }
 
 static int spmi_regulator_match(struct spmi_regulator *vreg, u16 force_type)
@@ -2509,12 +2512,13 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 	const char *name;
 	struct device *dev = &pdev->dev;
 	struct device_node *node = pdev->dev.of_node;
-	struct device_node *syscon, *reg_node;
+	struct device_node *saw, *reg_node;
+	void __iomem *saw_base;
 	struct property *reg_prop;
 	int ret, lenp;
 	struct list_head *vreg_list;
 
-	vreg_list = devm_kzalloc(dev, sizeof(*vreg_list), GFP_KERNEL);
+	vreg_list = devm_kzalloc_obj(dev, *vreg_list);
 	if (!vreg_list)
 		return -ENOMEM;
 	INIT_LIST_HEAD(vreg_list);
@@ -2528,12 +2532,22 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 	if (!reg)
 		return -ENODEV;
 
-	if (of_find_property(node, "qcom,saw-reg", &lenp)) {
-		syscon = of_parse_phandle(node, "qcom,saw-reg", 0);
-		saw_regmap = syscon_node_to_regmap(syscon);
-		of_node_put(syscon);
-		if (IS_ERR(saw_regmap))
-			dev_err(dev, "ERROR reading SAW regmap\n");
+	saw = of_parse_phandle(node, "qcom,saw-reg", 0);
+	if (saw) {
+		saw_base = devm_of_iomap(dev, saw, 0, NULL);
+		of_node_put(saw);
+		if (IS_ERR(saw_base))
+			return dev_err_probe(dev, PTR_ERR(saw_base),
+					     "failed to map the SAW\n");
+
+		saw_regmap = devm_regmap_init_mmio(dev, saw_base,
+						   &saw_regmap_config);
+		if (IS_ERR(saw_regmap)) {
+			ret = PTR_ERR(saw_regmap);
+			saw_regmap = NULL;
+			return dev_err_probe(dev, ret,
+					     "failed to set the SAW regmap up\n");
+		}
 	}
 
 	for (; reg->name; reg++) {
@@ -2547,7 +2561,7 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 				continue;
 		}
 
-		vreg = devm_kzalloc(dev, sizeof(*vreg), GFP_KERNEL);
+		vreg = devm_kzalloc_obj(dev, *vreg);
 		if (!vreg)
 			return -ENOMEM;
 
@@ -2577,15 +2591,13 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 
 		if (saw_regmap) {
 			reg_node = of_get_child_by_name(node, reg->name);
-			reg_prop = of_find_property(reg_node, "qcom,saw-leader",
-						    &lenp);
-			of_node_put(reg_node);
-			if (reg_prop) {
+			if (of_property_read_bool(reg_node, "qcom,saw-leader")) {
 				spmi_saw_ops = *(vreg->desc.ops);
 				spmi_saw_ops.set_voltage_sel =
 					spmi_regulator_saw_set_voltage;
 				vreg->desc.ops = &spmi_saw_ops;
 			}
+			of_node_put(reg_node);
 		}
 
 		if (vreg->set_points && vreg->set_points->count == 1) {

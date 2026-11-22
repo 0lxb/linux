@@ -623,7 +623,7 @@ static ssize_t ds2781_set_pio_pin(struct device *dev,
 
 static ssize_t ds2781_read_param_eeprom_bin(struct file *filp,
 				struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -636,7 +636,7 @@ static ssize_t ds2781_read_param_eeprom_bin(struct file *filp,
 
 static ssize_t ds2781_write_param_eeprom_bin(struct file *filp,
 				struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -656,7 +656,7 @@ static ssize_t ds2781_write_param_eeprom_bin(struct file *filp,
 	return count;
 }
 
-static struct bin_attribute ds2781_param_eeprom_bin_attr = {
+static const struct bin_attribute ds2781_param_eeprom_bin_attr = {
 	.attr = {
 		.name = "param_eeprom",
 		.mode = S_IRUGO | S_IWUSR,
@@ -668,7 +668,7 @@ static struct bin_attribute ds2781_param_eeprom_bin_attr = {
 
 static ssize_t ds2781_read_user_eeprom_bin(struct file *filp,
 				struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -682,7 +682,7 @@ static ssize_t ds2781_read_user_eeprom_bin(struct file *filp,
 
 static ssize_t ds2781_write_user_eeprom_bin(struct file *filp,
 				struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -702,7 +702,7 @@ static ssize_t ds2781_write_user_eeprom_bin(struct file *filp,
 	return count;
 }
 
-static struct bin_attribute ds2781_user_eeprom_bin_attr = {
+static const struct bin_attribute ds2781_user_eeprom_bin_attr = {
 	.attr = {
 		.name = "user_eeprom",
 		.mode = S_IRUGO | S_IWUSR,
@@ -729,7 +729,7 @@ static struct attribute *ds2781_sysfs_attrs[] = {
 	NULL
 };
 
-static struct bin_attribute *ds2781_sysfs_bin_attrs[] = {
+static const struct bin_attribute *const ds2781_sysfs_bin_attrs[] = {
 	&ds2781_param_eeprom_bin_attr,
 	&ds2781_user_eeprom_bin_attr,
 	NULL,
@@ -751,7 +751,7 @@ static int ds2781_battery_probe(struct platform_device *pdev)
 	struct power_supply_config psy_cfg = {};
 	struct ds2781_device_info *dev_info;
 
-	dev_info = devm_kzalloc(&pdev->dev, sizeof(*dev_info), GFP_KERNEL);
+	dev_info = devm_kzalloc_obj(&pdev->dev, *dev_info);
 	if (!dev_info)
 		return -ENOMEM;
 

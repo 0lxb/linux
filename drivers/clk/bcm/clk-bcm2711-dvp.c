@@ -29,14 +29,12 @@ static int clk_dvp_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
-	dvp = devm_kzalloc(&pdev->dev, sizeof(*dvp), GFP_KERNEL);
+	dvp = devm_kzalloc_obj(&pdev->dev, *dvp);
 	if (!dvp)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, dvp);
 
-	dvp->data = devm_kzalloc(&pdev->dev,
-				 struct_size(dvp->data, hws, NR_CLOCKS),
-				 GFP_KERNEL);
+	dvp->data = devm_kzalloc_flex(&pdev->dev, *dvp->data, hws, NR_CLOCKS);
 	if (!dvp->data)
 		return -ENOMEM;
 	data = dvp->data;
@@ -55,6 +53,8 @@ static int clk_dvp_probe(struct platform_device *pdev)
 	ret = devm_reset_controller_register(&pdev->dev, &dvp->reset.rcdev);
 	if (ret)
 		return ret;
+
+	data->num = NR_CLOCKS;
 
 	data->hws[0] = clk_hw_register_gate_parent_data(&pdev->dev,
 							"hdmi0-108MHz",
@@ -76,7 +76,6 @@ static int clk_dvp_probe(struct platform_device *pdev)
 		goto unregister_clk0;
 	}
 
-	data->num = NR_CLOCKS;
 	ret = of_clk_add_hw_provider(pdev->dev.of_node, of_clk_hw_onecell_get,
 				     data);
 	if (ret)
@@ -109,7 +108,7 @@ MODULE_DEVICE_TABLE(of, clk_dvp_dt_ids);
 
 static struct platform_driver clk_dvp_driver = {
 	.probe	= clk_dvp_probe,
-	.remove_new = clk_dvp_remove,
+	.remove = clk_dvp_remove,
 	.driver	= {
 		.name		= "brcm2711-dvp",
 		.of_match_table	= clk_dvp_dt_ids,

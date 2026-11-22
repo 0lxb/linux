@@ -32,6 +32,7 @@
 
 #define MEMORY_TYPE_MULTIPLIER_CZ 4
 #define MEMORY_TYPE_HBM 2
+#define MAX_MCACHES 8
 
 
 #define IS_PIPE_SYNCD_VALID(pipe) ((((pipe)->pipe_idx_syncd) & 0x80)?1:0)
@@ -44,9 +45,11 @@ enum dce_version resource_parse_asic_id(
 struct resource_caps {
 	int num_timing_generator;
 	int num_opp;
+	int num_dpp;
 	int num_video_plane;
 	int num_audio;
 	int num_stream_encoder;
+	int num_analog_stream_encoder;
 	int num_pll;
 	int num_dwb;
 	int num_ddc;
@@ -54,15 +57,26 @@ struct resource_caps {
 	int num_dsc;
 	unsigned int num_dig_link_enc; // Total number of DIGs (digital encoders) in DIO (Display Input/Output).
 	unsigned int num_usb4_dpia; // Total number of USB4 DPIA (DisplayPort Input Adapters).
+	int num_hpo_frl;
 	int num_hpo_dp_stream_encoder;
 	int num_hpo_dp_link_encoder;
 	int num_mpc_3dlut;
+	int num_mpc;
+	int num_rmcm;
+	int num_aux;
 };
 
 struct resource_straps {
 	uint32_t hdmi_disable;
 	uint32_t dc_pinstraps_audio;
 	uint32_t audio_stream_number;
+};
+
+struct dc_mcache_allocations {
+	int global_mcache_ids_plane0[MAX_MCACHES + 1];
+	int global_mcache_ids_plane1[MAX_MCACHES + 1];
+	int global_mcache_ids_mall_plane0[MAX_MCACHES + 1];
+	int global_mcache_ids_mall_plane1[MAX_MCACHES + 1];
 };
 
 struct resource_create_funcs {
@@ -75,13 +89,15 @@ struct resource_create_funcs {
 	struct stream_encoder *(*create_stream_encoder)(
 			enum engine_id eng_id, struct dc_context *ctx);
 
+	struct hpo_frl_stream_encoder *(*create_hpo_frl_stream_encoder)(
+			enum engine_id eng_id, struct dc_context *ctx);
+	struct hpo_frl_link_encoder *(*create_hpo_frl_link_encoder)(
+			enum engine_id eng_id, struct dc_context *ctx);
 	struct hpo_dp_stream_encoder *(*create_hpo_dp_stream_encoder)(
 			enum engine_id eng_id, struct dc_context *ctx);
-
 	struct hpo_dp_link_encoder *(*create_hpo_dp_link_encoder)(
 			uint8_t inst,
 			struct dc_context *ctx);
-
 	struct dce_hwseq *(*create_hwseq)(
 			struct dc_context *ctx);
 };
@@ -106,6 +122,9 @@ enum dc_status resource_map_pool_resources(
 void resource_build_test_pattern_params(
 		struct resource_context *res_ctx,
 		struct pipe_ctx *pipe_ctx);
+
+enum upsp_mode resource_is_upsp_required(enum surface_pixel_format format,
+		enum dc_scaling_linearity scaling_linearity);
 
 bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx);
 
@@ -152,6 +171,8 @@ bool resource_attach_surfaces_to_context(
 		struct dc_stream_state *dc_stream,
 		struct dc_state *context,
 		const struct resource_pool *pool);
+
+bool resource_can_pipe_disable_cursor(const struct pipe_ctx *pipe_ctx);
 
 #define FREE_PIPE_INDEX_NOT_FOUND -1
 
@@ -316,6 +337,21 @@ void resource_remove_dpp_pipes_for_plane_composition(
 		const struct dc_plane_state *plane_state);
 
 /*
+ * RMCM resource management. Instances are handed out for a whole context at once so that a
+ * plane that is only now asking cannot evict one that is already using an instance.
+ * Tracking is via res_ctx->rmcm_in_use[].
+ */
+void resource_assign_rmcm(
+		struct dc_state *new_ctx,
+		const struct dc_state *cur_ctx,
+		const struct resource_pool *pool);
+
+void resource_release_rmcm(
+		struct resource_context *res_ctx,
+		const struct resource_pool *pool,
+		struct rmcm **rmcm);
+
+/*
  * Update ODM slice count by acquiring or releasing pipes. If new slices need
  * to be added, it is going to add them to the last ODM index. If existing
  * slices need to be removed, it is going to remove them from the last ODM
@@ -443,6 +479,16 @@ int resource_get_odm_slice_count(const struct pipe_ctx *pipe);
 /* Get the ODM slice index counting from 0 from left most slice */
 int resource_get_odm_slice_index(const struct pipe_ctx *opp_head);
 
+/* Get ODM slice source rect in timing active as input to OPP block */
+struct rect resource_get_odm_slice_src_rect(struct pipe_ctx *pipe_ctx);
+
+/* Get ODM slice destination rect in timing active as output from OPP block */
+struct rect resource_get_odm_slice_dst_rect(struct pipe_ctx *pipe_ctx);
+
+/* Get ODM slice destination width in timing active as output from OPP block */
+int resource_get_odm_slice_dst_width(struct pipe_ctx *otg_master,
+		bool is_last_segment);
+
 /* determine if pipe topology is changed between state a and state b */
 bool resource_is_pipe_topology_changed(const struct dc_state *state_a,
 		const struct dc_state *state_b);
@@ -510,6 +556,17 @@ int recource_find_free_pipe_used_as_otg_master_in_cur_res_ctx(
 
 /*
  * Look for a free pipe in new resource context that is used as a secondary DPP
+ * pipe in current resource context.
+ * return - FREE_PIPE_INDEX_NOT_FOUND if free pipe is not found, otherwise
+ * pipe idx of the free pipe
+ */
+int resource_find_free_pipe_used_as_cur_sec_dpp(
+		const struct resource_context *cur_res_ctx,
+		struct resource_context *new_res_ctx,
+		const struct resource_pool *pool);
+
+/*
+ * Look for a free pipe in new resource context that is used as a secondary DPP
  * pipe in any MPCC combine in current resource context.
  * return - FREE_PIPE_INDEX_NOT_FOUND if free pipe is not found, otherwise
  * pipe idx of the free pipe
@@ -538,11 +595,14 @@ struct pipe_ctx *resource_find_free_secondary_pipe_legacy(
 		const struct pipe_ctx *primary_pipe);
 
 bool resource_validate_attach_surfaces(
-		const struct dc_validation_set set[],
-		int set_count,
+		const struct dc_validation_set *set,
 		const struct dc_state *old_context,
 		struct dc_state *context,
 		const struct resource_pool *pool);
+
+enum dc_status resource_validate_probe_set(struct dc *dc,
+		const struct dc_probe_state *probes,
+		uint8_t probe_count);
 
 enum dc_status resource_map_clock_resources(
 		const struct dc *dc,
@@ -572,13 +632,8 @@ unsigned int resource_pixel_format_to_bpp(enum surface_pixel_format format);
 bool get_temp_dp_link_res(struct dc_link *link,
 		struct link_resource *link_res,
 		struct dc_link_settings *link_settings);
-
-#if defined(CONFIG_DRM_AMD_DC_FP)
-struct hpo_dp_link_encoder *resource_get_hpo_dp_link_enc_for_det_lt(
-		const struct resource_context *res_ctx,
-		const struct resource_pool *pool,
-		const struct dc_link *link);
-#endif
+bool get_temp_frl_link_res(struct dc_link *link,
+		struct link_resource *link_res);
 
 void reset_syncd_pipes_from_disabled_pipes(struct dc *dc,
 	struct dc_state *context);
@@ -614,5 +669,26 @@ enum dc_status update_dp_encoder_resources_for_test_harness(const struct dc *dc,
 		struct dc_state *context,
 		struct pipe_ctx *pipe_ctx);
 
-bool check_subvp_sw_cursor_fallback_req(const struct dc *dc, struct dc_stream_state *stream);
+/* Get hw programming parameters container from pipe context
+ * @pipe_ctx: pipe context
+ * @dscl_prog_data: struct to hold programmable hw reg values
+ */
+struct dscl_prog_data *resource_get_dscl_prog_data(struct pipe_ctx *pipe_ctx);
+/* Setup dc callbacks for dml2
+ * @dc: the display core structure
+ * @dml2_options: struct to hold callbacks
+ */
+void resource_init_common_dml2_callbacks(struct dc *dc, struct dml2_configuration_options *dml2_options);
+
+/*
+ *Calculate total DET allocated for all pipes for a given OTG_MASTER pipe
+ */
+int resource_calculate_det_for_stream(struct dc_state *state, struct pipe_ctx *otg_master);
+
+bool resource_is_hpo_acquired(struct dc_state *context);
+
+struct link_encoder *get_temp_dio_link_enc(
+		const struct resource_context *res_ctx,
+		const struct resource_pool *const pool,
+		const struct dc_link *link);
 #endif /* DRIVERS_GPU_DRM_AMD_DC_DEV_DC_INC_RESOURCE_H_ */

@@ -44,9 +44,6 @@
 #define X86_CAPABILITY	new_cpu_data+CPUINFO_x86_capability
 #define X86_VENDOR_ID	new_cpu_data+CPUINFO_x86_vendor_id
 
-
-#define SIZEOF_PTREGS 17*4
-
 /*
  * Worst-case size of the kernel mapping we need to make:
  * a relocatable kernel can live anywhere in lowmem, so we need to be able
@@ -64,7 +61,7 @@ RESERVE_BRK(pagetables, INIT_MAP_SIZE)
  * any particular GDT layout, because we load our own as soon as we
  * can.
  */
-__HEAD
+	__INIT
 SYM_CODE_START(startup_32)
 	movl pa(initial_stack),%ecx
 	
@@ -89,7 +86,7 @@ SYM_CODE_START(startup_32)
 	movl $pa(__bss_stop),%ecx
 	subl %edi,%ecx
 	shrl $2,%ecx
-	rep ; stosl
+	rep stosl
 /*
  * Copy bootup parameters out of the way.
  * Note: %esi still has the pointer to the real-mode data.
@@ -101,15 +98,13 @@ SYM_CODE_START(startup_32)
 	movl $pa(boot_params),%edi
 	movl $(PARAM_SIZE/4),%ecx
 	cld
-	rep
-	movsl
+	rep movsl
 	movl pa(boot_params) + NEW_CL_POINTER,%esi
 	andl %esi,%esi
 	jz 1f			# No command line
 	movl $pa(boot_command_line),%edi
 	movl $(COMMAND_LINE_SIZE/4),%ecx
-	rep
-	movsl
+	rep movsl
 1:
 
 #ifdef CONFIG_OLPC
@@ -141,6 +136,9 @@ SYM_CODE_END(startup_32)
  * If cpu hotplug is not supported then this code can go in init section
  * which will be freed later
  */
+#ifdef CONFIG_HOTPLUG_CPU
+       .text
+#endif
 SYM_FUNC_START(startup_32_smp)
 	cld
 	movl $(__BOOT_DS),%eax
@@ -443,10 +441,6 @@ initial_pg_fixmap:
 swapper_pg_dir:
 	.fill 1024,4,0
 	.fill PTI_USER_PGD_FILL,4,0
-.globl empty_zero_page
-empty_zero_page:
-	.fill 4096,1,0
-EXPORT_SYMBOL(empty_zero_page)
 
 /*
  * This starts the data section.
@@ -488,19 +482,13 @@ SYM_DATA_END(initial_page_table)
 
 .data
 .balign 4
-/*
- * The SIZEOF_PTREGS gap is a convention which helps the in-kernel unwinder
- * reliably detect the end of the stack.
- */
-SYM_DATA(initial_stack,
-		.long init_thread_union + THREAD_SIZE -
-		SIZEOF_PTREGS - TOP_OF_KERNEL_STACK_PADDING)
+SYM_DATA(initial_stack, .long __top_init_kernel_stack)
 
 __INITRODATA
 int_msg:
 	.asciz "Unknown interrupt or fault at: %p %p %p\n"
 
-#include "../../x86/xen/xen-head.S"
+#include "../xen/xen-head.S"
 
 /*
  * The IDT and GDT 'descriptors' are a strange 48-bit object

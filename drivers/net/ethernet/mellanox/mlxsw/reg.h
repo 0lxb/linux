@@ -4786,8 +4786,11 @@ MLXSW_ITEM32(reg, ptys, an_status, 0x04, 28, 4);
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_50GAUI_1_LAUI_1_50GBASE_CR_KR	BIT(8)
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_CAUI_4_100GBASE_CR4_KR4		BIT(9)
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_100GAUI_2_100GBASE_CR2_KR2		BIT(10)
+#define MLXSW_REG_PTYS_EXT_ETH_SPEED_100GAUI_1_100GBASE_CR_KR		BIT(11)
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_200GAUI_4_200GBASE_CR4_KR4		BIT(12)
+#define MLXSW_REG_PTYS_EXT_ETH_SPEED_200GAUI_2_200GBASE_CR2_KR2		BIT(13)
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_400GAUI_8				BIT(15)
+#define MLXSW_REG_PTYS_EXT_ETH_SPEED_400GAUI_4_400GBASE_CR4_KR4		BIT(16)
 #define MLXSW_REG_PTYS_EXT_ETH_SPEED_800GAUI_8				BIT(19)
 
 /* reg_ptys_ext_eth_proto_cap
@@ -5647,6 +5650,14 @@ MLXSW_ITEM64(reg, ppcnt, tx_pause_duration,
  */
 MLXSW_ITEM64(reg, ppcnt, tx_pause_transition,
 	     MLXSW_REG_PPCNT_COUNTERS_OFFSET + 0x70, 0, 64);
+
+/* reg_ppcnt_rx_discards
+ * Per-PG (ingress priority group) drop count.
+ * index slot is the PG, switch priority.
+ * Access: RO
+ */
+MLXSW_ITEM64(reg, ppcnt, rx_discards,
+	     MLXSW_REG_PPCNT_COUNTERS_OFFSET + 0x78, 0, 64);
 
 /* Ethernet Per Traffic Class Counters */
 
@@ -10668,6 +10679,8 @@ enum mlxsw_reg_mcam_mng_feature_cap_mask_bits {
 	MLXSW_REG_MCAM_MCIA_128B = 34,
 	/* If set, MRSR.command=6 is supported. */
 	MLXSW_REG_MCAM_PCI_RESET = 48,
+	/* If set, MRSR.command=6 is supported with Secondary Bus Reset. */
+	MLXSW_REG_MCAM_PCI_RESET_SBR = 67,
 };
 
 #define MLXSW_REG_BYTES_PER_DWORD 0x4

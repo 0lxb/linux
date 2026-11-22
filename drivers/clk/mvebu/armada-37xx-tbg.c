@@ -88,9 +88,7 @@ static int armada_3700_tbg_clock_probe(struct platform_device *pdev)
 	void __iomem *reg;
 	int i;
 
-	hw_tbg_data = devm_kzalloc(&pdev->dev,
-				   struct_size(hw_tbg_data, hws, NUM_TBG),
-				   GFP_KERNEL);
+	hw_tbg_data = devm_kzalloc_flex(&pdev->dev, *hw_tbg_data, hws, NUM_TBG);
 	if (!hw_tbg_data)
 		return -ENOMEM;
 	hw_tbg_data->num = NUM_TBG;
@@ -141,7 +139,7 @@ static const struct of_device_id armada_3700_tbg_clock_of_match[] = {
 
 static struct platform_driver armada_3700_tbg_clock_driver = {
 	.probe = armada_3700_tbg_clock_probe,
-	.remove_new = armada_3700_tbg_clock_remove,
+	.remove = armada_3700_tbg_clock_remove,
 	.driver		= {
 		.name	= "marvell-armada-3700-tbg-clock",
 		.of_match_table = armada_3700_tbg_clock_of_match,

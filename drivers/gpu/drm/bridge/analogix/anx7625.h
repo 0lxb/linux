@@ -51,9 +51,24 @@
 #define INTR_RECEIVED_MSG BIT(5)
 
 #define SYSTEM_STSTUS 0x45
+#define INTERFACE_CHANGE_INT_MASK 0x43
 #define INTERFACE_CHANGE_INT 0x44
-#define HPD_STATUS_CHANGE 0x80
-#define HPD_STATUS 0x80
+#define VCONN_STATUS	BIT(2)
+#define VBUS_STATUS	BIT(3)
+#define CC_STATUS	BIT(4)
+#define DATA_ROLE_STATUS	BIT(5)
+#define HPD_STATUS	BIT(7)
+
+#define NEW_CC_STATUS 0x46
+#define CC1_RD                  BIT(0)
+#define CC1_RA                  BIT(1)
+#define CC1_RP			(BIT(2) | BIT(3))
+#define CC2_RD                  BIT(4)
+#define CC2_RA                  BIT(5)
+#define CC2_RP			(BIT(6) | BIT(7))
+
+#define CMD_SEND_BUF		0xC0
+#define CMD_RECV_BUF		0xE0
 
 /******** END of I2C Address 0x58 ********/
 
@@ -286,8 +301,7 @@
 
 #define  MIPI_LANE_CTRL_10               0x0F
 #define  MIPI_DIGITAL_ADJ_1     0x1B
-#define  IVO_MID0               0x26
-#define  IVO_MID1               0xCF
+#define  IVO_MID                0x26CF
 
 #define  MIPI_PLL_M_NUM_23_16   0x1E
 #define  MIPI_PLL_M_NUM_15_8    0x1F
@@ -417,11 +431,6 @@ enum audio_wd_len {
 #define EDID_TRY_CNT	3
 #define SUPPORT_PIXEL_CLOCK	300000
 
-struct s_edid_data {
-	int edid_block_num;
-	u8 edid_raw_data[FOUR_BLOCK_SIZE];
-};
-
 /***************** Display End *****************/
 
 #define MAX_LANES_SUPPORT	4
@@ -453,9 +462,23 @@ struct anx7625_i2c_client {
 	struct i2c_client *tcpc_client;
 };
 
+struct typec_port;
+struct usb_role_switch;
+
+#define MAX_BUF_LEN	30
+struct fw_msg {
+	u8 msg_len;
+	u8 msg_type;
+	u8 buf[MAX_BUF_LEN];
+} __packed;
+#define HEADER_LEN		2
+
 struct anx7625_data {
 	struct anx7625_platform_data pdata;
 	struct platform_device *audio_pdev;
+	struct typec_port *typec_port;
+	struct usb_role_switch *role_sw;
+	int typec_data_role;
 	int hpd_status;
 	int hpd_high_cnt;
 	int dp_en;
@@ -466,7 +489,7 @@ struct anx7625_data {
 	struct anx7625_i2c_client i2c;
 	struct i2c_client *last_client;
 	struct timer_list hdcp_timer;
-	struct s_edid_data slimport_edid_p;
+	const struct drm_edid *cached_drm_edid;
 	struct device *codec_dev;
 	hdmi_codec_plugged_cb plugged_cb;
 	struct work_struct work;
@@ -485,6 +508,7 @@ struct anx7625_data {
 	struct drm_connector *connector;
 	struct mipi_dsi_device *dsi;
 	struct drm_dp_aux aux;
+	struct fw_msg send_msg;
 };
 
 #endif  /* __ANX7625_H__ */

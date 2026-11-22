@@ -48,8 +48,8 @@ static int loongson_gpio_get_value(struct gpio_chip *chip, unsigned gpio)
 	return !!(val & BIT(gpio + LOONGSON_GPIO_IN_OFFSET));
 }
 
-static void loongson_gpio_set_value(struct gpio_chip *chip,
-		unsigned gpio, int value)
+static int loongson_gpio_set_value(struct gpio_chip *chip, unsigned int gpio,
+				   int value)
 {
 	u32 val;
 
@@ -61,6 +61,8 @@ static void loongson_gpio_set_value(struct gpio_chip *chip,
 		val &= ~BIT(gpio);
 	LOONGSON_GPIODATA = val;
 	spin_unlock(&gpio_lock);
+
+	return 0;
 }
 
 static int loongson_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
@@ -96,7 +98,7 @@ static int loongson_gpio_probe(struct platform_device *pdev)
 	struct gpio_chip *gc;
 	struct device *dev = &pdev->dev;
 
-	gc = devm_kzalloc(dev, sizeof(*gc), GFP_KERNEL);
+	gc = devm_kzalloc_obj(dev, *gc);
 	if (!gc)
 		return -ENOMEM;
 

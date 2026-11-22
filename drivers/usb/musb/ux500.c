@@ -192,7 +192,7 @@ ux500_of_probe(struct platform_device *pdev, struct device_node *np)
 	const char *mode;
 	int strlen;
 
-	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 	if (!pdata)
 		return NULL;
 
@@ -236,7 +236,7 @@ static int ux500_probe(struct platform_device *pdev)
 		}
 	}
 
-	glue = devm_kzalloc(&pdev->dev, sizeof(*glue), GFP_KERNEL);
+	glue = devm_kzalloc_obj(&pdev->dev, *glue);
 	if (!glue)
 		goto err0;
 
@@ -355,7 +355,7 @@ MODULE_DEVICE_TABLE(of, ux500_match);
 
 static struct platform_driver ux500_driver = {
 	.probe		= ux500_probe,
-	.remove_new	= ux500_remove,
+	.remove		= ux500_remove,
 	.driver		= {
 		.name	= "musb-ux500",
 		.pm	= &ux500_pm_ops,

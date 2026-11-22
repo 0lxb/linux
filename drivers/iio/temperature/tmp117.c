@@ -9,14 +9,18 @@
  * Note: This driver assumes that the sensor has been calibrated beforehand.
  */
 
+#include <linux/array_size.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
+#include <linux/dev_printk.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
-#include <linux/module.h>
-#include <linux/bitops.h>
-#include <linux/types.h>
-#include <linux/kernel.h>
 #include <linux/limits.h>
+#include <linux/minmax.h>
+#include <linux/module.h>
 #include <linux/property.h>
+#include <linux/regulator/consumer.h>
+#include <linux/types.h>
 
 #include <linux/iio/iio.h>
 
@@ -36,6 +40,7 @@
 
 #define TMP116_DEVICE_ID		0x1116
 #define TMP117_DEVICE_ID		0x0117
+#define TMP119_DEVICE_ID		0x2117
 
 struct tmp117_data {
 	struct i2c_client *client;
@@ -93,15 +98,20 @@ static int tmp117_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec
 {
 	struct tmp117_data *data = iio_priv(indio_dev);
 	s16 off;
+	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_CALIBBIAS:
 		off = clamp_t(int, val, S16_MIN, S16_MAX);
 		if (off == data->calibbias)
 			return 0;
+
+		ret = i2c_smbus_write_word_swapped(data->client, TMP117_REG_TEMP_OFFSET, off);
+		if (ret)
+			return ret;
+
 		data->calibbias = off;
-		return i2c_smbus_write_word_swapped(data->client,
-						TMP117_REG_TEMP_OFFSET, off);
+		return 0;
 
 	default:
 		return -EINVAL;
@@ -137,6 +147,12 @@ static const struct tmp11x_info tmp117_channels_info = {
 	.num_channels = ARRAY_SIZE(tmp117_channels)
 };
 
+static const struct tmp11x_info tmp119_channels_info = {
+	.name = "tmp119",
+	.channels = tmp117_channels,
+	.num_channels = ARRAY_SIZE(tmp117_channels)
+};
+
 static const struct iio_info tmp117_info = {
 	.read_raw = tmp117_read_raw,
 	.write_raw = tmp117_write_raw,
@@ -148,9 +164,16 @@ static int tmp117_probe(struct i2c_client *client)
 	struct tmp117_data *data;
 	struct iio_dev *indio_dev;
 	int dev_id;
+	int ret;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_WORD_DATA))
 		return -EOPNOTSUPP;
+
+	ret = devm_regulator_get_enable(&client->dev, "vcc");
+	if (ret)
+		return ret;
+
+	fsleep(1500);
 
 	dev_id = i2c_smbus_read_word_swapped(client, TMP117_REG_DEVICE_ID);
 	if (dev_id < 0)
@@ -162,6 +185,9 @@ static int tmp117_probe(struct i2c_client *client)
 		break;
 	case TMP117_DEVICE_ID:
 		match_data = &tmp117_channels_info;
+		break;
+	case TMP119_DEVICE_ID:
+		match_data = &tmp119_channels_info;
 		break;
 	default:
 		dev_info(&client->dev,
@@ -195,13 +221,15 @@ static int tmp117_probe(struct i2c_client *client)
 static const struct of_device_id tmp117_of_match[] = {
 	{ .compatible = "ti,tmp116", .data = &tmp116_channels_info },
 	{ .compatible = "ti,tmp117", .data = &tmp117_channels_info },
+	{ .compatible = "ti,tmp119", .data = &tmp119_channels_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, tmp117_of_match);
 
 static const struct i2c_device_id tmp117_id[] = {
-	{ "tmp116", (kernel_ulong_t)&tmp116_channels_info },
-	{ "tmp117", (kernel_ulong_t)&tmp117_channels_info },
+	{ .name = "tmp116", .driver_data = (kernel_ulong_t)&tmp116_channels_info },
+	{ .name = "tmp117", .driver_data = (kernel_ulong_t)&tmp117_channels_info },
+	{ .name = "tmp119", .driver_data = (kernel_ulong_t)&tmp119_channels_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tmp117_id);

@@ -111,7 +111,7 @@ static int cdns_starfive_probe(struct platform_device *pdev)
 	unsigned int args;
 	int ret;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -230,7 +230,7 @@ MODULE_DEVICE_TABLE(of, cdns_starfive_of_match);
 
 static struct platform_driver cdns_starfive_driver = {
 	.probe		= cdns_starfive_probe,
-	.remove_new	= cdns_starfive_remove,
+	.remove		= cdns_starfive_remove,
 	.driver		= {
 		.name	= "cdns3-starfive",
 		.of_match_table	= cdns_starfive_of_match,

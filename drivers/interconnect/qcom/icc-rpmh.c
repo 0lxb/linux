@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include <linux/bitfield.h>
+#include <linux/clk.h>
 #include <linux/interconnect.h>
 #include <linux/interconnect-provider.h>
 #include <linux/module.h>
@@ -13,6 +16,38 @@
 #include "bcm-voter.h"
 #include "icc-common.h"
 #include "icc-rpmh.h"
+
+/* QNOC QoS */
+#define QOSGEN_MAINCTL_LO(p, qp)	(0x8 + (p->port_offsets[qp]))
+#define QOS_SLV_URG_MSG_EN_MASK		GENMASK(3, 3)
+#define QOS_DFLT_PRIO_MASK		GENMASK(6, 4)
+#define QOS_DISABLE_MASK		GENMASK(24, 24)
+
+/**
+ * qcom_icc_set_qos - initialize static QoS configurations
+ * @qp: qcom icc provider to which @node belongs
+ * @node: qcom icc node to operate on
+ */
+static void qcom_icc_set_qos(struct qcom_icc_provider *qp,
+			     struct qcom_icc_node *node)
+{
+	const struct qcom_icc_qosbox *qos = node->qosbox;
+	int port;
+
+	for (port = 0; port < qos->num_ports; port++) {
+		regmap_update_bits(qp->regmap, QOSGEN_MAINCTL_LO(qos, port),
+				   QOS_DISABLE_MASK,
+				   FIELD_PREP(QOS_DISABLE_MASK, qos->prio_fwd_disable));
+
+		regmap_update_bits(qp->regmap, QOSGEN_MAINCTL_LO(qos, port),
+				   QOS_DFLT_PRIO_MASK,
+				   FIELD_PREP(QOS_DFLT_PRIO_MASK, qos->prio));
+
+		regmap_update_bits(qp->regmap, QOSGEN_MAINCTL_LO(qos, port),
+				   QOS_SLV_URG_MSG_EN_MASK,
+				   FIELD_PREP(QOS_SLV_URG_MSG_EN_MASK, qos->urg_fwd));
+	}
+}
 
 /**
  * qcom_icc_pre_aggregate - cleans up stale values from prior icc_set
@@ -101,6 +136,61 @@ int qcom_icc_set(struct icc_node *src, struct icc_node *dst)
 }
 EXPORT_SYMBOL_GPL(qcom_icc_set);
 
+static int qcom_icc_get_bw(struct icc_node *node, u32 *avg, u32 *peak)
+{
+	struct qcom_icc_node *qn = node->data;
+	u32 avg_max = 0;
+	u32 peak_max = 0;
+	u64 x, y;
+	int i;
+
+	if (!qn->num_bcms) {
+		*avg = INT_MAX;
+		*peak = INT_MAX;
+
+		return 0;
+	}
+
+	for (i = 0; i < qn->num_bcms; ++i) {
+		struct qcom_icc_bcm *bcm = qn->bcms[i];
+
+		/* Use AMC vote for boot-up */
+		x = bcm->vote_x[QCOM_ICC_BUCKET_AMC];
+		y = bcm->vote_y[QCOM_ICC_BUCKET_AMC];
+
+		/* Consider enable mask and convert to INT_MAX */
+		if (bcm->enable_mask) {
+			if (x & bcm->enable_mask)
+				avg_max = INT_MAX;
+			if (y & bcm->enable_mask)
+				peak_max = INT_MAX;
+		} else {
+			if (x) {
+				x *= le32_to_cpu(bcm->aux_data.unit);
+				do_div(x, bcm->vote_scale);
+				x *= qn->buswidth * qn->channels;
+				do_div(x, le16_to_cpu(bcm->aux_data.width));
+
+				avg_max = max(avg_max, x);
+			}
+
+			if (y) {
+				y *= le32_to_cpu(bcm->aux_data.unit);
+				do_div(y, bcm->vote_scale);
+				y *= qn->buswidth;
+				do_div(y, le16_to_cpu(bcm->aux_data.width));
+
+				peak_max = max(peak_max, y);
+			}
+		}
+	}
+
+	*avg = avg_max;
+	*peak = peak_max;
+
+	return 0;
+}
+
 /**
  * qcom_icc_bcm_init - populates bcm aux data and connect qnodes
  * @bcm: bcm to be initialized
@@ -138,10 +228,7 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev)
 		return -EINVAL;
 	}
 
-	bcm->aux_data.unit = le32_to_cpu(data->unit);
-	bcm->aux_data.width = le16_to_cpu(data->width);
-	bcm->aux_data.vcd = data->vcd;
-	bcm->aux_data.reserved = data->reserved;
+	bcm->aux_data = *data;
 	INIT_LIST_HEAD(&bcm->list);
 	INIT_LIST_HEAD(&bcm->ws_list);
 
@@ -158,6 +245,36 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qcom_icc_bcm_init);
+
+/**
+ * qcom_icc_rpmh_configure_qos - configure QoS parameters
+ * @qp: qcom icc provider associated with QoS endpoint nodes
+ *
+ * Return: 0 on success, or an error code otherwise
+ */
+static int qcom_icc_rpmh_configure_qos(struct qcom_icc_provider *qp)
+{
+	struct qcom_icc_node *qnode;
+	size_t i;
+	int ret;
+
+	ret = clk_bulk_prepare_enable(qp->num_clks, qp->clks);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < qp->num_nodes; i++) {
+		qnode = qp->nodes[i];
+		if (!qnode)
+			continue;
+
+		if (qnode->qosbox)
+			qcom_icc_set_qos(qp, qnode);
+	}
+
+	clk_bulk_disable_unprepare(qp->num_clks, qp->clks);
+
+	return ret;
+}
 
 int qcom_icc_rpmh_probe(struct platform_device *pdev)
 {
@@ -178,11 +295,11 @@ int qcom_icc_rpmh_probe(struct platform_device *pdev)
 	qnodes = desc->nodes;
 	num_nodes = desc->num_nodes;
 
-	qp = devm_kzalloc(dev, sizeof(*qp), GFP_KERNEL);
+	qp = devm_kzalloc_obj(dev, *qp);
 	if (!qp)
 		return -ENOMEM;
 
-	data = devm_kzalloc(dev, struct_size(data, nodes, num_nodes), GFP_KERNEL);
+	data = devm_kzalloc_flex(dev, *data, nodes, num_nodes);
 	if (!data)
 		return -ENOMEM;
 	data->num_nodes = num_nodes;
@@ -190,6 +307,13 @@ int qcom_icc_rpmh_probe(struct platform_device *pdev)
 	provider = &qp->provider;
 	provider->dev = dev;
 	provider->set = qcom_icc_set;
+	/*
+	 * Programming the QoS registers below requires the NoC to be clocked,
+	 * which during probe is only guaranteed by the INT_MAX initial votes
+	 * the interconnect core applies when get_bw() is absent.
+	 */
+	if (!desc->config)
+		provider->get_bw = qcom_icc_get_bw;
 	provider->pre_aggregate = qcom_icc_pre_aggregate;
 	provider->aggregate = qcom_icc_aggregate;
 	provider->xlate_extended = qcom_icc_xlate_extended;
@@ -199,36 +323,82 @@ int qcom_icc_rpmh_probe(struct platform_device *pdev)
 
 	qp->dev = dev;
 	qp->bcms = desc->bcms;
+	qp->nodes = desc->nodes;
 	qp->num_bcms = desc->num_bcms;
+	qp->num_nodes = desc->num_nodes;
 
 	qp->voter = of_bcm_voter_get(qp->dev, NULL);
 	if (IS_ERR(qp->voter))
 		return PTR_ERR(qp->voter);
 
-	for (i = 0; i < qp->num_bcms; i++)
+	for (i = 0; i < qp->num_bcms; i++) {
 		qcom_icc_bcm_init(qp->bcms[i], dev);
+		qcom_icc_bcm_get_bw(qp->voter, qp->bcms[i]);
+	}
 
 	for (i = 0; i < num_nodes; i++) {
 		qn = qnodes[i];
 		if (!qn)
 			continue;
 
-		node = icc_node_create(qn->id);
+		if (!qn->node)
+			qn->node = icc_node_create_dyn();
+
+		node = qn->node;
 		if (IS_ERR(node)) {
 			ret = PTR_ERR(node);
 			goto err_remove_nodes;
 		}
 
-		node->name = qn->name;
+		ret = icc_node_set_name(node, provider, qn->name);
+		if (ret) {
+			icc_node_destroy(node->id);
+			goto err_remove_nodes;
+		}
+
 		node->data = qn;
 		icc_node_add(node, provider);
 
 		for (j = 0; j < qn->num_links; j++)
-			icc_link_create(node, qn->links[j]);
+			icc_link_nodes(node, &qn->link_nodes[j]->node);
 
 		data->nodes[i] = node;
 	}
 
+	if (desc->config) {
+		struct resource *res;
+		void __iomem *base;
+
+		/* Try parent's regmap first */
+		qp->regmap = dev_get_regmap(dev->parent, NULL);
+		if (!qp->regmap) {
+			base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+			if (IS_ERR(base))
+				goto skip_qos_config;
+
+			qp->regmap = devm_regmap_init_mmio(dev, base, desc->config);
+			if (IS_ERR(qp->regmap)) {
+				dev_info(dev, "Skipping QoS, regmap failed; %ld\n",
+					 PTR_ERR(qp->regmap));
+				goto skip_qos_config;
+			}
+		}
+
+		qp->num_clks = devm_clk_bulk_get_all(qp->dev, &qp->clks);
+		if (qp->num_clks == -EPROBE_DEFER)
+			return dev_err_probe(dev, qp->num_clks, "Failed to get QoS clocks\n");
+
+		if (qp->num_clks < 0 || (!qp->num_clks && desc->qos_requires_clocks)) {
+			dev_info(dev, "Skipping QoS, failed to get clk: %d\n", qp->num_clks);
+			goto skip_qos_config;
+		}
+
+		ret = qcom_icc_rpmh_configure_qos(qp);
+		if (ret)
+			dev_info(dev, "Failed to program QoS: %d\n", ret);
+	}
+
+skip_qos_config:
 	ret = icc_provider_register(provider);
 	if (ret)
 		goto err_remove_nodes;
@@ -262,4 +432,5 @@ void qcom_icc_rpmh_remove(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(qcom_icc_rpmh_remove);
 
+MODULE_DESCRIPTION("Qualcomm RPMh interconnect driver");
 MODULE_LICENSE("GPL v2");

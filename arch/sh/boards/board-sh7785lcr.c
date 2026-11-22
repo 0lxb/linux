@@ -256,7 +256,7 @@ static struct i2c_pca9564_pf_platform_data i2c_platform_data = {
 
 static struct platform_device i2c_device = {
 	.name		= "i2c-pca-platform",
-	.id		= -1,
+	.id		= 0,
 	.dev		= {
 		.platform_data	= &i2c_platform_data,
 	},
@@ -295,7 +295,7 @@ static int __init sh7785lcr_devices_setup(void)
 device_initcall(sh7785lcr_devices_setup);
 
 /* Initialize IRQ setting */
-void __init init_sh7785lcr_IRQ(void)
+static void __init init_sh7785lcr_IRQ(void)
 {
 	plat_irq_setup_pins(IRQ_MODE_IRQ7654);
 	plat_irq_setup_pins(IRQ_MODE_IRQ3210);

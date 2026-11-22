@@ -277,15 +277,14 @@ static struct pp_ctx *pp_create_data(struct ntb_dev *ntb)
 {
 	struct pp_ctx *pp;
 
-	pp = devm_kzalloc(&ntb->dev, sizeof(*pp), GFP_KERNEL);
+	pp = devm_kzalloc_obj(&ntb->dev, *pp);
 	if (!pp)
 		return ERR_PTR(-ENOMEM);
 
 	pp->ntb = ntb;
 	atomic_set(&pp->count, 0);
 	spin_lock_init(&pp->lock);
-	hrtimer_init(&pp->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	pp->timer.function = pp_timer_func;
+	hrtimer_setup(&pp->timer, pp_timer_func, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	return pp;
 }

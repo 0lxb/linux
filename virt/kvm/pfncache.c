@@ -23,7 +23,7 @@
  * MMU notifier 'invalidate_range_start' hook.
  */
 void gfn_to_pfn_cache_invalidate_start(struct kvm *kvm, unsigned long start,
-				       unsigned long end, bool may_block)
+				       unsigned long end)
 {
 	struct gfn_to_pfn_cache *gpc;
 
@@ -57,6 +57,19 @@ void gfn_to_pfn_cache_invalidate_start(struct kvm *kvm, unsigned long start,
 	spin_unlock(&kvm->gpc_lock);
 }
 
+static bool kvm_gpc_is_valid_len(gpa_t gpa, unsigned long uhva,
+				 unsigned long len)
+{
+	unsigned long offset = kvm_is_error_gpa(gpa) ? offset_in_page(uhva) :
+						       offset_in_page(gpa);
+
+	/*
+	 * The cached access must fit within a single page. The 'len' argument
+	 * to activate() and refresh() exists only to enforce that.
+	 */
+	return offset + len <= PAGE_SIZE;
+}
+
 bool kvm_gpc_check(struct gfn_to_pfn_cache *gpc, unsigned long len)
 {
 	struct kvm_memslots *slots = kvm_memslots(gpc->kvm);
@@ -74,7 +87,7 @@ bool kvm_gpc_check(struct gfn_to_pfn_cache *gpc, unsigned long len)
 	if (kvm_is_error_hva(gpc->uhva))
 		return false;
 
-	if (offset_in_page(gpc->uhva) + len > PAGE_SIZE)
+	if (!kvm_gpc_is_valid_len(gpc->gpa, gpc->uhva, len))
 		return false;
 
 	if (!gpc->valid)
@@ -111,7 +124,7 @@ static void gpc_unmap(kvm_pfn_t pfn, void *khva)
 #endif
 }
 
-static inline bool mmu_notifier_retry_cache(struct kvm *kvm, unsigned long mmu_seq)
+static inline bool mmu_notifier_retry_cache(struct kvm *kvm, unsigned long gpc_seq)
 {
 	/*
 	 * mn_active_invalidate_count acts for all intents and purposes
@@ -123,20 +136,20 @@ static inline bool mmu_notifier_retry_cache(struct kvm *kvm, unsigned long mmu_s
 	 * Note, it does not matter that mn_active_invalidate_count
 	 * is not protected by gpc->lock.  It is guaranteed to
 	 * be elevated before the mmu_notifier acquires gpc->lock, and
-	 * isn't dropped until after mmu_invalidate_seq is updated.
+	 * isn't dropped until after gpc_invalidate_seq is updated.
 	 */
 	if (kvm->mn_active_invalidate_count)
 		return true;
 
 	/*
 	 * Ensure mn_active_invalidate_count is read before
-	 * mmu_invalidate_seq.  This pairs with the smp_wmb() in
-	 * mmu_notifier_invalidate_range_end() to guarantee either the
+	 * gpc_invalidate_seq.  This pairs with the smp_wmb() in
+	 * kvm_mmu_notifier_invalidate_range_end() to guarantee either the
 	 * old (non-zero) value of mn_active_invalidate_count or the
-	 * new (incremented) value of mmu_invalidate_seq is observed.
+	 * new (incremented) value of gpc_invalidate_seq is observed.
 	 */
 	smp_rmb();
-	return kvm->mmu_invalidate_seq != mmu_seq;
+	return kvm->gpc_invalidate_seq != gpc_seq;
 }
 
 static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
@@ -145,7 +158,16 @@ static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
 	void *old_khva = (void *)PAGE_ALIGN_DOWN((uintptr_t)gpc->khva);
 	kvm_pfn_t new_pfn = KVM_PFN_ERR_FAULT;
 	void *new_khva = NULL;
-	unsigned long mmu_seq;
+	unsigned long gpc_seq;
+	struct page *page;
+
+	struct kvm_follow_pfn kfp = {
+		.slot = gpc->memslot,
+		.gfn = gpa_to_gfn(gpc->gpa),
+		.flags = FOLL_WRITE,
+		.hva = gpc->uhva,
+		.refcounted_page = &page,
+	};
 
 	lockdep_assert_held(&gpc->refresh_lock);
 
@@ -159,7 +181,7 @@ static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
 	gpc->valid = false;
 
 	do {
-		mmu_seq = gpc->kvm->mmu_invalidate_seq;
+		gpc_seq = gpc->kvm->gpc_invalidate_seq;
 		smp_rmb();
 
 		write_unlock_irq(&gpc->lock);
@@ -179,13 +201,12 @@ static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
 			if (new_khva != old_khva)
 				gpc_unmap(new_pfn, new_khva);
 
-			kvm_release_pfn_clean(new_pfn);
+			kvm_release_page_unused(page);
 
 			cond_resched();
 		}
 
-		/* We always request a writeable mapping */
-		new_pfn = hva_to_pfn(gpc->uhva, false, false, NULL, true, NULL);
+		new_pfn = hva_to_pfn(&kfp);
 		if (is_error_noslot_pfn(new_pfn))
 			goto out_error;
 
@@ -200,7 +221,7 @@ static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
 			new_khva = gpc_map(new_pfn);
 
 		if (!new_khva) {
-			kvm_release_pfn_clean(new_pfn);
+			kvm_release_page_unused(page);
 			goto out_error;
 		}
 
@@ -211,18 +232,18 @@ static kvm_pfn_t hva_to_pfn_retry(struct gfn_to_pfn_cache *gpc)
 		 * attempting to refresh.
 		 */
 		WARN_ON_ONCE(gpc->valid);
-	} while (mmu_notifier_retry_cache(gpc->kvm, mmu_seq));
+	} while (mmu_notifier_retry_cache(gpc->kvm, gpc_seq));
 
 	gpc->valid = true;
 	gpc->pfn = new_pfn;
 	gpc->khva = new_khva + offset_in_page(gpc->uhva);
 
 	/*
-	 * Put the reference to the _new_ pfn.  The pfn is now tracked by the
+	 * Put the reference to the _new_ page.  The page is now tracked by the
 	 * cache and can be safely migrated, swapped, etc... as the cache will
 	 * invalidate any mappings in response to relevant mmu_notifier events.
 	 */
-	kvm_release_pfn_clean(new_pfn);
+	kvm_release_page_clean(page);
 
 	return 0;
 
@@ -232,8 +253,7 @@ out_error:
 	return -EFAULT;
 }
 
-static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long uhva,
-			     unsigned long len)
+static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long uhva)
 {
 	unsigned long page_offset;
 	bool unmap_old = false;
@@ -245,15 +265,6 @@ static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned l
 
 	/* Either gpa or uhva must be valid, but not both */
 	if (WARN_ON_ONCE(kvm_is_error_gpa(gpa) == kvm_is_error_hva(uhva)))
-		return -EINVAL;
-
-	/*
-	 * The cached acces must fit within a single page. The 'len' argument
-	 * exists only to enforce that.
-	 */
-	page_offset = kvm_is_error_gpa(gpa) ? offset_in_page(uhva) :
-					      offset_in_page(gpa);
-	if (page_offset + len > PAGE_SIZE)
 		return -EINVAL;
 
 	lockdep_assert_held(&gpc->refresh_lock);
@@ -270,6 +281,8 @@ static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned l
 	old_uhva = PAGE_ALIGN_DOWN(gpc->uhva);
 
 	if (kvm_is_error_gpa(gpa)) {
+		page_offset = offset_in_page(uhva);
+
 		gpc->gpa = INVALID_GPA;
 		gpc->memslot = NULL;
 		gpc->uhva = PAGE_ALIGN_DOWN(uhva);
@@ -278,6 +291,8 @@ static int __kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned l
 			hva_change = true;
 	} else {
 		struct kvm_memslots *slots = kvm_memslots(gpc->kvm);
+
+		page_offset = offset_in_page(gpa);
 
 		if (gpc->gpa != gpa || gpc->generation != slots->generation ||
 		    kvm_is_error_hva(gpc->uhva)) {
@@ -354,6 +369,9 @@ int kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, unsigned long len)
 
 	guard(mutex)(&gpc->refresh_lock);
 
+	if (!kvm_gpc_is_valid_len(gpc->gpa, gpc->uhva, len))
+		return -EINVAL;
+
 	/*
 	 * If the GPA is valid then ignore the HVA, as a cache can be GPA-based
 	 * or HVA-based, not both.  For GPA-based caches, the HVA will be
@@ -361,7 +379,7 @@ int kvm_gpc_refresh(struct gfn_to_pfn_cache *gpc, unsigned long len)
 	 */
 	uhva = kvm_is_error_gpa(gpc->gpa) ? gpc->uhva : KVM_HVA_ERR_BAD;
 
-	return __kvm_gpc_refresh(gpc, gpc->gpa, uhva, len);
+	return __kvm_gpc_refresh(gpc, gpc->gpa, uhva);
 }
 
 void kvm_gpc_init(struct gfn_to_pfn_cache *gpc, struct kvm *kvm)
@@ -380,6 +398,9 @@ static int __kvm_gpc_activate(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned 
 			      unsigned long len)
 {
 	struct kvm *kvm = gpc->kvm;
+
+	if (!kvm_gpc_is_valid_len(gpa, uhva, len))
+		return -EINVAL;
 
 	guard(mutex)(&gpc->refresh_lock);
 
@@ -400,16 +421,26 @@ static int __kvm_gpc_activate(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned 
 		gpc->active = true;
 		write_unlock_irq(&gpc->lock);
 	}
-	return __kvm_gpc_refresh(gpc, gpa, uhva, len);
+	return __kvm_gpc_refresh(gpc, gpa, uhva);
 }
 
 int kvm_gpc_activate(struct gfn_to_pfn_cache *gpc, gpa_t gpa, unsigned long len)
 {
+	/*
+	 * Explicitly disallow INVALID_GPA so that the magic value can be used
+	 * by KVM to differentiate between GPA-based and HVA-based caches.
+	 */
+	if (WARN_ON_ONCE(kvm_is_error_gpa(gpa)))
+		return -EINVAL;
+
 	return __kvm_gpc_activate(gpc, gpa, KVM_HVA_ERR_BAD, len);
 }
 
 int kvm_gpc_activate_hva(struct gfn_to_pfn_cache *gpc, unsigned long uhva, unsigned long len)
 {
+	if (!access_ok((void __user *)uhva, len))
+		return -EINVAL;
+
 	return __kvm_gpc_activate(gpc, INVALID_GPA, uhva, len);
 }
 

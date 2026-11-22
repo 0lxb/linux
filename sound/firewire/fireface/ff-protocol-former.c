@@ -95,7 +95,7 @@ static int former_switch_fetching_mode(struct snd_ff *ff, bool enable)
 	for (i = 0; i < SND_FF_STREAM_MODE_COUNT; ++i)
 		count = max(count, ff->spec->pcm_playback_channels[i]);
 
-	reg = kcalloc(count, sizeof(__le32), GFP_KERNEL);
+	reg = kzalloc_objs(__le32, count);
 	if (!reg)
 		return -ENOMEM;
 
@@ -135,13 +135,13 @@ static void dump_clock_config(struct snd_ff *ff, struct snd_info_buffer *buffer)
 
 	snd_iprintf(buffer, "Output S/PDIF format: %s (Emphasis: %s)\n",
 		    (data & 0x00000020) ? "Professional" : "Consumer",
-		    (data & 0x00000040) ? "on" : "off");
+		    str_on_off(data & 0x00000040));
 
 	snd_iprintf(buffer, "Optical output interface format: %s\n",
 		    (data & 0x00000100) ? "S/PDIF" : "ADAT");
 
 	snd_iprintf(buffer, "Word output single speed: %s\n",
-		    (data & 0x00002000) ? "on" : "off");
+		    str_on_off(data & 0x00002000));
 
 	snd_iprintf(buffer, "S/PDIF input interface: %s\n",
 		    (data & 0x00000200) ? "Optical" : "Coaxial");

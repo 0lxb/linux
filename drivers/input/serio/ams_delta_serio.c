@@ -111,7 +111,7 @@ static int ams_delta_serio_init(struct platform_device *pdev)
 	struct serio *serio;
 	int irq, err;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -150,7 +150,7 @@ static int ams_delta_serio_init(struct platform_device *pdev)
 		return err;
 	}
 
-	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
+	serio = kzalloc_obj(*serio);
 	if (!serio)
 		return -ENOMEM;
 
@@ -182,7 +182,7 @@ static void ams_delta_serio_exit(struct platform_device *pdev)
 
 static struct platform_driver ams_delta_serio_driver = {
 	.probe	= ams_delta_serio_init,
-	.remove_new = ams_delta_serio_exit,
+	.remove	= ams_delta_serio_exit,
 	.driver	= {
 		.name	= DRIVER_NAME
 	},

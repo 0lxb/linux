@@ -191,7 +191,7 @@ static struct tps65090_platform_data *
 	struct device_node *np = pdev->dev.of_node;
 	unsigned int prop;
 
-	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 	if (!pdata) {
 		dev_err(&pdev->dev, "Memory alloc for tps65090_pdata failed\n");
 		return NULL;
@@ -246,7 +246,7 @@ static int tps65090_charger_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	cdata = devm_kzalloc(&pdev->dev, sizeof(*cdata), GFP_KERNEL);
+	cdata = devm_kzalloc_obj(&pdev->dev, *cdata);
 	if (!cdata) {
 		dev_err(&pdev->dev, "failed to allocate memory status\n");
 		return -ENOMEM;
@@ -259,7 +259,7 @@ static int tps65090_charger_probe(struct platform_device *pdev)
 
 	psy_cfg.supplied_to		= pdata->supplied_to;
 	psy_cfg.num_supplicants		= pdata->num_supplicants;
-	psy_cfg.of_node			= pdev->dev.of_node;
+	psy_cfg.fwnode			= dev_fwnode(&pdev->dev);
 	psy_cfg.drv_data		= cdata;
 
 	cdata->ac = devm_power_supply_register(&pdev->dev, &tps65090_charger_desc,
@@ -302,12 +302,8 @@ static int tps65090_charger_probe(struct platform_device *pdev)
 	if (irq != -ENXIO) {
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 			tps65090_charger_isr, IRQF_ONESHOT, "tps65090-charger", cdata);
-		if (ret) {
-			dev_err(cdata->dev,
-				"Unable to register irq %d err %d\n", irq,
-				ret);
+		if (ret)
 			return ret;
-		}
 	} else {
 		cdata->poll_task = kthread_run(tps65090_charger_poll_task,
 					      cdata, "ktps65090charger");
@@ -343,7 +339,7 @@ static struct platform_driver tps65090_charger_driver = {
 		.of_match_table = of_tps65090_charger_match,
 	},
 	.probe	= tps65090_charger_probe,
-	.remove_new = tps65090_charger_remove,
+	.remove = tps65090_charger_remove,
 };
 module_platform_driver(tps65090_charger_driver);
 

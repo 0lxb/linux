@@ -5,7 +5,6 @@
 
 #include <linux/delay.h>
 #include <linux/mfd/syscon.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -839,7 +838,7 @@ static int clk_mt8183_reg_mfg_mux_notifier(struct device *dev, struct clk *clk)
 	struct mtk_mux_nb *mfg_mux_nb;
 	int i;
 
-	mfg_mux_nb = devm_kzalloc(dev, sizeof(*mfg_mux_nb), GFP_KERNEL);
+	mfg_mux_nb = devm_kzalloc_obj(dev, *mfg_mux_nb);
 	if (!mfg_mux_nb)
 		return -ENOMEM;
 
@@ -899,11 +898,13 @@ MODULE_DEVICE_TABLE(of, of_match_clk_mt8183);
 
 static struct platform_driver clk_mt8183_drv = {
 	.probe = mtk_clk_simple_probe,
-	.remove_new = mtk_clk_simple_remove,
+	.remove = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt8183",
 		.of_match_table = of_match_clk_mt8183,
 	},
 };
 module_platform_driver(clk_mt8183_drv)
+
+MODULE_DESCRIPTION("MediaTek MT8183 main clocks driver");
 MODULE_LICENSE("GPL");

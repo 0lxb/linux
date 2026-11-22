@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/resource.h>
 #include <linux/reset.h>
 
@@ -151,7 +152,7 @@ static struct pci_ops histb_pci_ops = {
 	.write = histb_pcie_wr_own_conf,
 };
 
-static int histb_pcie_link_up(struct dw_pcie *pci)
+static bool histb_pcie_link_up(struct dw_pcie *pci)
 {
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
 	u32 regval;
@@ -160,11 +161,8 @@ static int histb_pcie_link_up(struct dw_pcie *pci)
 	regval = histb_pcie_readl(hipcie, PCIE_SYS_STAT0);
 	status = histb_pcie_readl(hipcie, PCIE_SYS_STAT4);
 	status &= PCIE_LTSSM_STATE_MASK;
-	if ((regval & PCIE_XMLH_LINK_UP) && (regval & PCIE_RDLH_LINK_UP) &&
-	    (status == PCIE_LTSSM_STATE_ACTIVE))
-		return 1;
-
-	return 0;
+	return ((regval & PCIE_XMLH_LINK_UP) && (regval & PCIE_RDLH_LINK_UP) &&
+		(status == PCIE_LTSSM_STATE_ACTIVE));
 }
 
 static int histb_pcie_start_link(struct dw_pcie *pci)
@@ -301,11 +299,11 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	hipcie = devm_kzalloc(dev, sizeof(*hipcie), GFP_KERNEL);
+	hipcie = devm_kzalloc_obj(dev, *hipcie);
 	if (!hipcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
+	pci = devm_kzalloc_obj(dev, *pci);
 	if (!pci)
 		return -ENOMEM;
 
@@ -409,16 +407,21 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	ret = histb_pcie_host_enable(pp);
 	if (ret) {
 		dev_err(dev, "failed to enable host\n");
-		return ret;
+		goto err_exit_phy;
 	}
 
 	ret = dw_pcie_host_init(pp);
 	if (ret) {
 		dev_err(dev, "failed to initialize host\n");
-		return ret;
+		goto err_exit_phy;
 	}
 
 	return 0;
+
+err_exit_phy:
+	phy_exit(hipcie->phy);
+
+	return ret;
 }
 
 static void histb_pcie_remove(struct platform_device *pdev)
@@ -427,8 +430,7 @@ static void histb_pcie_remove(struct platform_device *pdev)
 
 	histb_pcie_host_disable(hipcie);
 
-	if (hipcie->phy)
-		phy_exit(hipcie->phy);
+	phy_exit(hipcie->phy);
 }
 
 static const struct of_device_id histb_pcie_of_match[] = {
@@ -439,7 +441,7 @@ MODULE_DEVICE_TABLE(of, histb_pcie_of_match);
 
 static struct platform_driver histb_pcie_platform_driver = {
 	.probe	= histb_pcie_probe,
-	.remove_new = histb_pcie_remove,
+	.remove = histb_pcie_remove,
 	.driver = {
 		.name = "histb-pcie",
 		.of_match_table = histb_pcie_of_match,

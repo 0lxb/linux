@@ -10,10 +10,10 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/fb.h>
 #include <linux/kernel.h>
 #include <linux/mfd/as3711.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -406,7 +406,7 @@ static int as3711_backlight_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	supply = devm_kzalloc(&pdev->dev, sizeof(*supply), GFP_KERNEL);
+	supply = devm_kzalloc_obj(&pdev->dev, *supply);
 	if (!supply)
 		return -ENOMEM;
 

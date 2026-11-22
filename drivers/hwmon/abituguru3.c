@@ -965,8 +965,7 @@ static int abituguru3_probe(struct platform_device *pdev)
 	u8 buf[2];
 	u16 id;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(struct abituguru3_data),
-			    GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, struct abituguru3_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -1147,12 +1146,12 @@ static int abituguru3_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(abituguru3_pm, abituguru3_suspend, abituguru3_resume);
 
 static struct platform_driver abituguru3_driver = {
-	.driver = {
+	.driver	= {
 		.name	= ABIT_UGURU3_NAME,
 		.pm	= pm_sleep_ptr(&abituguru3_pm),
 	},
 	.probe	= abituguru3_probe,
-	.remove_new = abituguru3_remove,
+	.remove	= abituguru3_remove,
 };
 
 static int __init abituguru3_dmi_detect(void)

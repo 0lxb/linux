@@ -206,6 +206,7 @@ static int rockchip_rk3399_efuse_read(void *context, unsigned int offset,
 static struct nvmem_config econfig = {
 	.name = "rockchip-efuse",
 	.add_legacy_fixed_of_cells = true,
+	.type = NVMEM_TYPE_OTP,
 	.stride = 1,
 	.word_size = 1,
 	.read_only = true,
@@ -263,8 +264,7 @@ static int rockchip_efuse_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	efuse = devm_kzalloc(dev, sizeof(struct rockchip_efuse_chip),
-			     GFP_KERNEL);
+	efuse = devm_kzalloc_obj(dev, struct rockchip_efuse_chip);
 	if (!efuse)
 		return -ENOMEM;
 

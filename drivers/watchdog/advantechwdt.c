@@ -37,6 +37,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 
 #define DRV_NAME "advantechwdt"
@@ -71,13 +72,13 @@ static int timeout = WATCHDOG_TIMEOUT;	/* in seconds */
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout,
 	"Watchdog timeout in seconds. 1<= timeout <=63, default="
-		__MODULE_STRING(WATCHDOG_TIMEOUT) ".");
+		__stringify(WATCHDOG_TIMEOUT) ".");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
-		__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+		__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /*
  *	Watchdog Operations
@@ -217,7 +218,6 @@ static int advwdt_close(struct inode *inode, struct file *file)
 
 static const struct file_operations advwdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= advwdt_write,
 	.unlocked_ioctl	= advwdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -294,7 +294,7 @@ static void advwdt_shutdown(struct platform_device *dev)
 }
 
 static struct platform_driver advwdt_driver = {
-	.remove_new	= advwdt_remove,
+	.remove		= advwdt_remove,
 	.shutdown	= advwdt_shutdown,
 	.driver		= {
 		.name	= DRV_NAME,

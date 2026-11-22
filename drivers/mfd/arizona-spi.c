@@ -59,9 +59,8 @@ static int arizona_spi_acpi_windows_probe(struct arizona *arizona)
 	devm_acpi_dev_add_driver_gpios(arizona->dev, arizona_acpi_gpios);
 
 	/* Add lookups for the SoCs own GPIOs used for micdet-polarity and spkVDD-enable */
-	lookup = devm_kzalloc(arizona->dev,
-			      struct_size(lookup, table, ARRAY_SIZE(arizona_soc_gpios) + 1),
-			      GFP_KERNEL);
+	lookup = devm_kzalloc_flex(arizona->dev, *lookup, table,
+				   ARRAY_SIZE(arizona_soc_gpios) + 1);
 	if (!lookup)
 		return -ENOMEM;
 
@@ -190,19 +189,12 @@ static int arizona_spi_acpi_probe(struct arizona *arizona)
 
 static int arizona_spi_probe(struct spi_device *spi)
 {
-	const struct spi_device_id *id = spi_get_device_id(spi);
-	const void *match_data;
 	struct arizona *arizona;
 	const struct regmap_config *regmap_config = NULL;
 	unsigned long type = 0;
 	int ret;
 
-	match_data = device_get_match_data(&spi->dev);
-	if (match_data)
-		type = (unsigned long)match_data;
-	else if (id)
-		type = id->driver_data;
-
+	type = (unsigned long)spi_get_device_match_data(spi);
 	switch (type) {
 	case WM5102:
 		if (IS_ENABLED(CONFIG_MFD_WM5102))
@@ -229,7 +221,7 @@ static int arizona_spi_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	arizona = devm_kzalloc(&spi->dev, sizeof(*arizona), GFP_KERNEL);
+	arizona = devm_kzalloc_obj(&spi->dev, *arizona);
 	if (arizona == NULL)
 		return -ENOMEM;
 
@@ -262,12 +254,12 @@ static void arizona_spi_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id arizona_spi_ids[] = {
-	{ "wm5102", WM5102 },
-	{ "wm5110", WM5110 },
-	{ "wm8280", WM8280 },
-	{ "wm1831", WM1831 },
-	{ "cs47l24", CS47L24 },
-	{ },
+	{ .name = "wm5102", .driver_data = WM5102 },
+	{ .name = "wm5110", .driver_data = WM5110 },
+	{ .name = "wm8280", .driver_data = WM8280 },
+	{ .name = "wm1831", .driver_data = WM1831 },
+	{ .name = "cs47l24", .driver_data = CS47L24 },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, arizona_spi_ids);
 

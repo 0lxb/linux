@@ -16,7 +16,10 @@ allOf:
 properties:
   compatible:
     items:
-      - const: renesas,r8a779f0-pcie-ep   # R-Car S4-8
+      - enum:
+          - renesas,r8a779f0-pcie-ep      # R-Car S4-8
+          - renesas,r8a779g0-pcie-ep      # R-Car V4H
+          - renesas,r8a779h0-pcie-ep      # R-Car V4M
       - const: renesas,rcar-gen4-pcie-ep  # R-Car Gen4
 
   reg:
@@ -53,11 +56,14 @@ properties:
     maxItems: 1
 
   resets:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   reset-names:
+    minItems: 1
     items:
       - const: pwr
+      - const: core
 
   max-link-speed:
     maximum: 4
@@ -106,8 +112,8 @@ examples:
             clocks = <&cpg CPG_MOD 624>, <&pcie0_clkref>;
             clock-names = "core", "ref";
             power-domains = <&sysc R8A779F0_PD_ALWAYS_ON>;
-            resets = <&cpg 624>;
-            reset-names = "pwr";
+            resets = <&cpg 624>,<&cpg 1121>;
+            reset-names = "pwr", "core";
             max-link-speed = <4>;
             num-lanes = <2>;
             max-functions = /bits/ 8 <2>;

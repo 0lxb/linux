@@ -41,7 +41,7 @@
  * What it means for a task to be productive is defined differently
  * for each resource. For IO, productive means a running task. For
  * memory, productive means a running task that isn't a reclaimer. For
- * CPU, productive means an oncpu task.
+ * CPU, productive means an on-CPU task.
  *
  * Naturally, the FULL state doesn't exist for the CPU resource at the
  * system level, but exist at the cgroup level. At the cgroup level,
@@ -49,7 +49,7 @@
  * resource which is being used by others outside of the cgroup or
  * throttled by the cgroup cpu.max configuration.
  *
- * The percentage of wallclock time spent in those compound stall
+ * The percentage of wall clock time spent in those compound stall
  * states gives pressure numbers between 0 and 100 for each resource,
  * where the SOME percentage indicates workload slowdowns and the FULL
  * percentage indicates reduced CPU utilization:
@@ -136,6 +136,10 @@
  * cost-wise, yet way more sensitive and accurate than periodic
  * sampling of the aggregate task states would be.
  */
+#include <linux/sched/clock.h>
+#include <linux/workqueue.h>
+#include <linux/psi.h>
+#include "sched.h"
 
 static int psi_bug __read_mostly;
 
@@ -172,17 +176,35 @@ struct psi_group psi_system = {
 	.pcpu = &system_group_pcpu,
 };
 
+static DEFINE_PER_CPU(seqcount_t, psi_seq) = SEQCNT_ZERO(psi_seq);
+
+static inline void psi_write_begin(int cpu)
+{
+	write_seqcount_begin(per_cpu_ptr(&psi_seq, cpu));
+}
+
+static inline void psi_write_end(int cpu)
+{
+	write_seqcount_end(per_cpu_ptr(&psi_seq, cpu));
+}
+
+static inline u32 psi_read_begin(int cpu)
+{
+	return read_seqcount_begin(per_cpu_ptr(&psi_seq, cpu));
+}
+
+static inline bool psi_read_retry(int cpu, u32 seq)
+{
+	return read_seqcount_retry(per_cpu_ptr(&psi_seq, cpu), seq);
+}
+
 static void psi_avgs_work(struct work_struct *work);
 
 static void poll_timer_fn(struct timer_list *t);
 
 static void group_init(struct psi_group *group)
 {
-	int cpu;
-
 	group->enabled = true;
-	for_each_possible_cpu(cpu)
-		seqcount_init(&per_cpu_ptr(group->pcpu, cpu)->seq);
 	group->avg_last_update = sched_clock();
 	group->avg_next_update = group->avg_last_update + psi_period;
 	mutex_init(&group->avgs_lock);
@@ -218,28 +240,32 @@ void __init psi_init(void)
 	group_init(&psi_system);
 }
 
-static bool test_state(unsigned int *tasks, enum psi_states state, bool oncpu)
+static u32 test_states(unsigned int *tasks, u32 state_mask)
 {
-	switch (state) {
-	case PSI_IO_SOME:
-		return unlikely(tasks[NR_IOWAIT]);
-	case PSI_IO_FULL:
-		return unlikely(tasks[NR_IOWAIT] && !tasks[NR_RUNNING]);
-	case PSI_MEM_SOME:
-		return unlikely(tasks[NR_MEMSTALL]);
-	case PSI_MEM_FULL:
-		return unlikely(tasks[NR_MEMSTALL] &&
-			tasks[NR_RUNNING] == tasks[NR_MEMSTALL_RUNNING]);
-	case PSI_CPU_SOME:
-		return unlikely(tasks[NR_RUNNING] > oncpu);
-	case PSI_CPU_FULL:
-		return unlikely(tasks[NR_RUNNING] && !oncpu);
-	case PSI_NONIDLE:
-		return tasks[NR_IOWAIT] || tasks[NR_MEMSTALL] ||
-			tasks[NR_RUNNING];
-	default:
-		return false;
+	const bool oncpu = state_mask & PSI_ONCPU;
+
+	if (tasks[NR_IOWAIT]) {
+		state_mask |= BIT(PSI_IO_SOME);
+		if (!tasks[NR_RUNNING])
+			state_mask |= BIT(PSI_IO_FULL);
 	}
+
+	if (tasks[NR_MEMSTALL]) {
+		state_mask |= BIT(PSI_MEM_SOME);
+		if (tasks[NR_RUNNING] == tasks[NR_MEMSTALL_RUNNING])
+			state_mask |= BIT(PSI_MEM_FULL);
+	}
+
+	if (tasks[NR_RUNNING] > oncpu)
+		state_mask |= BIT(PSI_CPU_SOME);
+
+	if (tasks[NR_RUNNING] && !oncpu)
+		state_mask |= BIT(PSI_CPU_FULL);
+
+	if (tasks[NR_IOWAIT] || tasks[NR_MEMSTALL] || tasks[NR_RUNNING])
+		state_mask |= BIT(PSI_NONIDLE);
+
+	return state_mask;
 }
 
 static void get_recent_times(struct psi_group *group, int cpu,
@@ -258,14 +284,14 @@ static void get_recent_times(struct psi_group *group, int cpu,
 
 	/* Snapshot a coherent view of the CPU state */
 	do {
-		seq = read_seqcount_begin(&groupc->seq);
+		seq = psi_read_begin(cpu);
 		now = cpu_clock(cpu);
 		memcpy(times, groupc->times, sizeof(groupc->times));
 		state_mask = groupc->state_mask;
 		state_start = groupc->state_start;
 		if (cpu == current_cpu)
 			memcpy(tasks, groupc->tasks, sizeof(groupc->tasks));
-	} while (read_seqcount_retry(&groupc->seq, seq));
+	} while (psi_read_retry(cpu, seq));
 
 	/* Calculate state time deltas against the previous snapshot */
 	for (s = 0; s < NR_PSI_STATES; s++) {
@@ -345,7 +371,7 @@ static void collect_percpu_times(struct psi_group *group,
 
 	/*
 	 * Collect the per-cpu time buckets and average them into a
-	 * single time sample that is normalized to wallclock time.
+	 * single time sample that is normalized to wall clock time.
 	 *
 	 * For averaging, each CPU is weighted by its non-idle time in
 	 * the sampling period. This eliminates artifacts from uneven
@@ -600,8 +626,6 @@ static void init_rtpoll_triggers(struct psi_group *group, u64 now)
 static void psi_schedule_rtpoll_work(struct psi_group *group, unsigned long delay,
 				   bool force)
 {
-	struct task_struct *task;
-
 	/*
 	 * atomic_xchg should be called even when !force to provide a
 	 * full memory barrier (see the comment inside psi_rtpoll_work).
@@ -609,19 +633,16 @@ static void psi_schedule_rtpoll_work(struct psi_group *group, unsigned long dela
 	if (atomic_xchg(&group->rtpoll_scheduled, 1) && !force)
 		return;
 
-	rcu_read_lock();
-
-	task = rcu_dereference(group->rtpoll_task);
 	/*
-	 * kworker might be NULL in case psi_trigger_destroy races with
-	 * psi_task_change (hotpath) which can't use locks
+	 * Only test whether a worker is installed; do not dereference the task.
+	 * A racing trigger destruction may leave the timer armed.
+	 * psi_cgroup_free() shuts it down before freeing the group.
+	 * The system PSI group is static.
 	 */
-	if (likely(task))
+	if (likely(rcu_access_pointer(group->rtpoll_task)))
 		mod_timer(&group->rtpoll_timer, jiffies + delay);
 	else
 		atomic_set(&group->rtpoll_scheduled, 0);
-
-	rcu_read_unlock();
 }
 
 static void psi_rtpoll_work(struct psi_group *group)
@@ -729,7 +750,7 @@ static int psi_rtpoll_worker(void *data)
 
 static void poll_timer_fn(struct timer_list *t)
 {
-	struct psi_group *group = from_timer(group, t, rtpoll_timer);
+	struct psi_group *group = timer_container_of(group, t, rtpoll_timer);
 
 	atomic_set(&group->rtpoll_wakeup, 1);
 	wake_up_interruptible(&group->rtpoll_wait);
@@ -764,27 +785,19 @@ static void record_times(struct psi_group_cpu *groupc, u64 now)
 		groupc->times[PSI_NONIDLE] += delta;
 }
 
+#define for_each_group(iter, group) \
+	for (typeof(group) iter = group; iter; iter = iter->parent)
+
 static void psi_group_change(struct psi_group *group, int cpu,
-			     unsigned int clear, unsigned int set, u64 now,
-			     bool wake_clock)
+			     unsigned int clear, unsigned int set,
+			     u64 now, bool wake_clock)
 {
 	struct psi_group_cpu *groupc;
 	unsigned int t, m;
-	enum psi_states s;
 	u32 state_mask;
 
+	lockdep_assert_rq_held(cpu_rq(cpu));
 	groupc = per_cpu_ptr(group->pcpu, cpu);
-
-	/*
-	 * First we update the task counts according to the state
-	 * change requested through the @clear and @set bits.
-	 *
-	 * Then if the cgroup PSI stats accounting enabled, we
-	 * assess the aggregate resource states this CPU's tasks
-	 * have been in since the last change, and account any
-	 * SOME and FULL time these may have resulted in.
-	 */
-	write_seqcount_begin(&groupc->seq);
 
 	/*
 	 * Start with TSK_ONCPU, which doesn't have a corresponding
@@ -837,14 +850,10 @@ static void psi_group_change(struct psi_group *group, int cpu,
 
 		groupc->state_mask = state_mask;
 
-		write_seqcount_end(&groupc->seq);
 		return;
 	}
 
-	for (s = 0; s < NR_PSI_STATES; s++) {
-		if (test_state(groupc->tasks, s, state_mask & PSI_ONCPU))
-			state_mask |= (1 << s);
-	}
+	state_mask = test_states(groupc->tasks, state_mask);
 
 	/*
 	 * Since we care about lost potential, a memstall is FULL
@@ -860,8 +869,6 @@ static void psi_group_change(struct psi_group *group, int cpu,
 	record_times(groupc, now);
 
 	groupc->state_mask = state_mask;
-
-	write_seqcount_end(&groupc->seq);
 
 	if (state_mask & group->rtpoll_states)
 		psi_schedule_rtpoll_work(group, 1, false);
@@ -897,7 +904,6 @@ static void psi_flags_change(struct task_struct *task, int clear, int set)
 void psi_task_change(struct task_struct *task, int clear, int set)
 {
 	int cpu = task_cpu(task);
-	struct psi_group *group;
 	u64 now;
 
 	if (!task->pid)
@@ -905,20 +911,22 @@ void psi_task_change(struct task_struct *task, int clear, int set)
 
 	psi_flags_change(task, clear, set);
 
+	psi_write_begin(cpu);
 	now = cpu_clock(cpu);
-
-	group = task_psi_group(task);
-	do {
+	for_each_group(group, task_psi_group(task))
 		psi_group_change(group, cpu, clear, set, now, true);
-	} while ((group = group->parent));
+	psi_write_end(cpu);
 }
 
 void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 		     bool sleep)
 {
-	struct psi_group *group, *common = NULL;
+	struct psi_group *common = NULL;
 	int cpu = task_cpu(prev);
-	u64 now = cpu_clock(cpu);
+	u64 now;
+
+	psi_write_begin(cpu);
+	now = cpu_clock(cpu);
 
 	if (next->pid) {
 		psi_flags_change(next, 0, TSK_ONCPU);
@@ -927,16 +935,15 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 		 * ancestors with @prev, those will already have @prev's
 		 * TSK_ONCPU bit set, and we can stop the iteration there.
 		 */
-		group = task_psi_group(next);
-		do {
-			if (per_cpu_ptr(group->pcpu, cpu)->state_mask &
-			    PSI_ONCPU) {
+		for_each_group(group, task_psi_group(next)) {
+			struct psi_group_cpu *groupc = per_cpu_ptr(group->pcpu, cpu);
+
+			if (groupc->state_mask & PSI_ONCPU) {
 				common = group;
 				break;
 			}
-
 			psi_group_change(group, cpu, 0, TSK_ONCPU, now, true);
-		} while ((group = group->parent));
+		}
 	}
 
 	if (prev->pid) {
@@ -969,12 +976,11 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 
 		psi_flags_change(prev, clear, set);
 
-		group = task_psi_group(prev);
-		do {
+		for_each_group(group, task_psi_group(prev)) {
 			if (group == common)
 				break;
 			psi_group_change(group, cpu, clear, set, now, wake_clock);
-		} while ((group = group->parent));
+		}
 
 		/*
 		 * TSK_ONCPU is handled up to the common ancestor. If there are
@@ -984,47 +990,56 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 		 */
 		if ((prev->psi_flags ^ next->psi_flags) & ~TSK_ONCPU) {
 			clear &= ~TSK_ONCPU;
-			for (; group; group = group->parent)
+			for_each_group(group, common)
 				psi_group_change(group, cpu, clear, set, now, wake_clock);
 		}
 	}
+	psi_write_end(cpu);
 }
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
-void psi_account_irqtime(struct task_struct *task, u32 delta)
+void psi_account_irqtime(struct rq *rq, struct task_struct *curr, struct task_struct *prev)
 {
-	int cpu = task_cpu(task);
-	struct psi_group *group;
+	int cpu = task_cpu(curr);
 	struct psi_group_cpu *groupc;
+	s64 delta;
+	u64 irq;
 	u64 now;
 
-	if (static_branch_likely(&psi_disabled))
+	if (static_branch_likely(&psi_disabled) || !irqtime_enabled())
 		return;
 
-	if (!task->pid)
+	if (!curr->pid)
 		return;
 
+	lockdep_assert_rq_held(rq);
+	if (prev && task_psi_group(prev) == task_psi_group(curr))
+		return;
+
+	irq = irq_time_read(cpu);
+	delta = (s64)(irq - rq->psi_irq_time);
+	if (delta <= 0)
+		return;
+	rq->psi_irq_time = irq;
+
+	psi_write_begin(cpu);
 	now = cpu_clock(cpu);
 
-	group = task_psi_group(task);
-	do {
+	for_each_group(group, task_psi_group(curr)) {
 		if (!group->enabled)
 			continue;
 
 		groupc = per_cpu_ptr(group->pcpu, cpu);
 
-		write_seqcount_begin(&groupc->seq);
-
 		record_times(groupc, now);
 		groupc->times[PSI_IRQ_FULL] += delta;
 
-		write_seqcount_end(&groupc->seq);
-
 		if (group->rtpoll_states & (1 << PSI_IRQ_FULL))
 			psi_schedule_rtpoll_work(group, 1, false);
-	} while ((group = group->parent));
+	}
+	psi_write_end(cpu);
 }
-#endif
+#endif /* CONFIG_IRQ_TIME_ACCOUNTING */
 
 /**
  * psi_memstall_enter - mark the beginning of a memory stall section
@@ -1094,7 +1109,7 @@ int psi_cgroup_alloc(struct cgroup *cgroup)
 	if (!static_branch_likely(&psi_cgroups_enabled))
 		return 0;
 
-	cgroup->psi = kzalloc(sizeof(struct psi_group), GFP_KERNEL);
+	cgroup->psi = kzalloc_obj(struct psi_group);
 	if (!cgroup->psi)
 		return -ENOMEM;
 
@@ -1114,6 +1129,12 @@ void psi_cgroup_free(struct cgroup *cgroup)
 		return;
 
 	cancel_delayed_work_sync(&cgroup->psi->avgs_work);
+	/*
+	 * A psi_schedule_rtpoll_work() call racing the last trigger's
+	 * destruction may have re-armed the timer after psi_trigger_destroy()
+	 * deleted it. Spurious firing while the group is alive is harmless.
+	 */
+	timer_shutdown_sync(&cgroup->psi->rtpoll_timer);
 	free_percpu(cgroup->psi->pcpu);
 	/* All triggers must be removed by now */
 	WARN_ONCE(cgroup->psi->rtpoll_states, "psi: trigger leak\n");
@@ -1194,7 +1215,7 @@ void psi_cgroup_restart(struct psi_group *group)
 	/*
 	 * After we disable psi_group->enabled, we don't actually
 	 * stop percpu tasks accounting in each psi_group_cpu,
-	 * instead only stop test_state() loop, record_times()
+	 * instead only stop test_states() loop, record_times()
 	 * and averaging worker, see psi_group_change() for details.
 	 *
 	 * When disable cgroup PSI, this function has nothing to sync
@@ -1202,7 +1223,7 @@ void psi_cgroup_restart(struct psi_group *group)
 	 * would see !psi_group->enabled and only do task accounting.
 	 *
 	 * When re-enable cgroup PSI, this function use psi_group_change()
-	 * to get correct state mask from test_state() loop on tasks[],
+	 * to get correct state mask from test_states() loop on tasks[],
 	 * and restart groupc->state_start from now, use .clear = .set = 0
 	 * here since no task status really changed.
 	 */
@@ -1210,14 +1231,14 @@ void psi_cgroup_restart(struct psi_group *group)
 		return;
 
 	for_each_possible_cpu(cpu) {
-		struct rq *rq = cpu_rq(cpu);
-		struct rq_flags rf;
 		u64 now;
 
-		rq_lock_irq(rq, &rf);
+		guard(rq_lock_irq)(cpu_rq(cpu));
+
+		psi_write_begin(cpu);
 		now = cpu_clock(cpu);
 		psi_group_change(group, cpu, 0, 0, now, true);
-		rq_unlock_irq(rq, &rf);
+		psi_write_end(cpu);
 	}
 }
 #endif /* CONFIG_CGROUPS */
@@ -1230,6 +1251,11 @@ int psi_show(struct seq_file *m, struct psi_group *group, enum psi_res res)
 
 	if (static_branch_likely(&psi_disabled))
 		return -EOPNOTSUPP;
+
+#ifdef CONFIG_IRQ_TIME_ACCOUNTING
+	if (!irqtime_enabled() && res == PSI_IRQ)
+		return -EOPNOTSUPP;
+#endif
 
 	/* Update averages before reporting them */
 	mutex_lock(&group->avgs_lock);
@@ -1267,15 +1293,52 @@ int psi_show(struct seq_file *m, struct psi_group *group, enum psi_res res)
 	return 0;
 }
 
+/*
+ * Create @group's rtpoll worker after psi_trigger_create() reported the need
+ * for one. kthread creation depends on the whole fork path and we don't want
+ * all of that nested inside cgroup_mutex, so the caller must drop it and any
+ * other lock that forks can wait behind. If two callers race, the loser stops
+ * its never-woken kthread.
+ */
+int psi_trigger_create_rtpoll_worker(struct psi_group *group)
+{
+	struct task_struct *task;
+
+	task = kthread_create(psi_rtpoll_worker, group, "psimon");
+	if (IS_ERR(task))
+		return PTR_ERR(task);
+
+	scoped_guard(mutex, &group->rtpoll_trigger_lock) {
+		if (!rcu_access_pointer(group->rtpoll_task)) {
+			atomic_set(&group->rtpoll_wakeup, 0);
+			wake_up_process(task);
+			rcu_assign_pointer(group->rtpoll_task, task);
+
+			/*
+			 * Poll once to catch up on scheduling attempts dropped
+			 * while there was no rtpoll worker.
+			 */
+			psi_schedule_rtpoll_work(group, 1, true);
+			return 0;
+		}
+	}
+
+	kthread_stop(task);
+	return 0;
+}
+
 struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 				       enum psi_res res, struct file *file,
-				       struct kernfs_open_file *of)
+				       struct kernfs_open_file *of,
+				       bool *need_rtpoll_worker)
 {
 	struct psi_trigger *t;
 	enum psi_states state;
 	u32 threshold_us;
 	bool privileged;
 	u32 window_us;
+
+	*need_rtpoll_worker = false;
 
 	if (static_branch_likely(&psi_disabled))
 		return ERR_PTR(-EOPNOTSUPP);
@@ -1315,7 +1378,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 	if (threshold_us == 0 || threshold_us > window_us)
 		return ERR_PTR(-EINVAL);
 
-	t = kmalloc(sizeof(*t), GFP_KERNEL);
+	t = kmalloc_obj(*t);
 	if (!t)
 		return ERR_PTR(-ENOMEM);
 
@@ -1337,25 +1400,13 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 	if (privileged) {
 		mutex_lock(&group->rtpoll_trigger_lock);
 
-		if (!rcu_access_pointer(group->rtpoll_task)) {
-			struct task_struct *task;
-
-			task = kthread_create(psi_rtpoll_worker, group, "psimon");
-			if (IS_ERR(task)) {
-				kfree(t);
-				mutex_unlock(&group->rtpoll_trigger_lock);
-				return ERR_CAST(task);
-			}
-			atomic_set(&group->rtpoll_wakeup, 0);
-			wake_up_process(task);
-			rcu_assign_pointer(group->rtpoll_task, task);
-		}
-
 		list_add(&t->node, &group->rtpoll_triggers);
 		group->rtpoll_min_period = min(group->rtpoll_min_period,
 			div_u64(t->win.size, UPDATES_PER_WINDOW));
 		group->rtpoll_nr_triggers[t->state]++;
 		group->rtpoll_states |= (1 << t->state);
+
+		*need_rtpoll_worker = !rcu_access_pointer(group->rtpoll_task);
 
 		mutex_unlock(&group->rtpoll_trigger_lock);
 	} else {
@@ -1426,28 +1477,18 @@ void psi_trigger_destroy(struct psi_trigger *t)
 						group->rtpoll_task,
 						lockdep_is_held(&group->rtpoll_trigger_lock));
 				rcu_assign_pointer(group->rtpoll_task, NULL);
-				del_timer(&group->rtpoll_timer);
+				timer_delete(&group->rtpoll_timer);
 			}
 		}
 		mutex_unlock(&group->rtpoll_trigger_lock);
 	}
 
 	/*
-	 * Wait for psi_schedule_rtpoll_work RCU to complete its read-side
-	 * critical section before destroying the trigger and optionally the
-	 * rtpoll_task.
-	 */
-	synchronize_rcu();
-	/*
 	 * Stop kthread 'psimon' after releasing rtpoll_trigger_lock to prevent
 	 * a deadlock while waiting for psi_rtpoll_work to acquire
 	 * rtpoll_trigger_lock
 	 */
 	if (task_to_destroy) {
-		/*
-		 * After the RCU grace period has expired, the worker
-		 * can no longer be found through group->rtpoll_task.
-		 */
 		kthread_stop(task_to_destroy);
 		atomic_set(&group->rtpoll_scheduled, 0);
 	}
@@ -1516,6 +1557,8 @@ static ssize_t psi_write(struct file *file, const char __user *user_buf,
 	size_t buf_size;
 	struct seq_file *seq;
 	struct psi_trigger *new;
+	bool need_rtpoll_worker;
+	int ret;
 
 	if (static_branch_likely(&psi_disabled))
 		return -EOPNOTSUPP;
@@ -1540,10 +1583,20 @@ static ssize_t psi_write(struct file *file, const char __user *user_buf,
 		return -EBUSY;
 	}
 
-	new = psi_trigger_create(&psi_system, buf, res, file, NULL);
+	new = psi_trigger_create(&psi_system, buf, res, file, NULL,
+				 &need_rtpoll_worker);
 	if (IS_ERR(new)) {
 		mutex_unlock(&seq->lock);
 		return PTR_ERR(new);
+	}
+
+	if (need_rtpoll_worker) {
+		ret = psi_trigger_create_rtpoll_worker(&psi_system);
+		if (ret) {
+			psi_trigger_destroy(new);
+			mutex_unlock(&seq->lock);
+			return ret;
+		}
 	}
 
 	smp_store_release(&seq->private, new);
@@ -1637,7 +1690,7 @@ static const struct proc_ops psi_irq_proc_ops = {
 	.proc_poll	= psi_fop_poll,
 	.proc_release	= psi_fop_release,
 };
-#endif
+#endif /* CONFIG_IRQ_TIME_ACCOUNTING */
 
 static int __init psi_proc_init(void)
 {

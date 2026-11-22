@@ -137,7 +137,7 @@ static int da9062_thermal_get_temp(struct thermal_zone_device *z,
 	return 0;
 }
 
-static struct thermal_zone_device_ops da9062_thermal_ops = {
+static const struct thermal_zone_device_ops da9062_thermal_ops = {
 	.get_temp	= da9062_thermal_get_temp,
 };
 
@@ -182,8 +182,7 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 		}
 	}
 
-	thermal = devm_kzalloc(&pdev->dev, sizeof(struct da9062_thermal),
-			       GFP_KERNEL);
+	thermal = devm_kzalloc_obj(&pdev->dev, struct da9062_thermal);
 	if (!thermal) {
 		ret = -ENOMEM;
 		goto err;
@@ -250,10 +249,10 @@ static void da9062_thermal_remove(struct platform_device *pdev)
 
 static struct platform_driver da9062_thermal_driver = {
 	.probe	= da9062_thermal_probe,
-	.remove_new = da9062_thermal_remove,
+	.remove	= da9062_thermal_remove,
 	.driver	= {
-		.name	= "da9062-thermal",
-		.of_match_table = da9062_compatible_reg_id_table,
+		.name		= "da9062-thermal",
+		.of_match_table	= da9062_compatible_reg_id_table,
 	},
 };
 

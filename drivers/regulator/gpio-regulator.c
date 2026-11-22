@@ -136,9 +136,7 @@ of_get_gpio_regulator_config(struct device *dev, struct device_node *np,
 	int ngpios;
 	int ret;
 
-	config = devm_kzalloc(dev,
-			sizeof(struct gpio_regulator_config),
-			GFP_KERNEL);
+	config = devm_kzalloc_obj(dev, struct gpio_regulator_config);
 	if (!config)
 		return ERR_PTR(-ENOMEM);
 
@@ -193,10 +191,8 @@ of_get_gpio_regulator_config(struct device *dev, struct device_node *np,
 		return ERR_PTR(-EINVAL);
 	}
 
-	config->states = devm_kcalloc(dev,
-				proplen / 2,
-				sizeof(struct gpio_regulator_state),
-				GFP_KERNEL);
+	config->states = devm_kzalloc_objs(dev, struct gpio_regulator_state,
+					   proplen / 2);
 	if (!config->states)
 		return ERR_PTR(-ENOMEM);
 
@@ -240,10 +236,9 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 	struct regulator_config cfg = { };
 	struct regulator_dev *rdev;
 	enum gpiod_flags gflags;
-	int ptr, ret, state, i;
+	int ptr, state, i;
 
-	drvdata = devm_kzalloc(dev, sizeof(struct gpio_regulator_data),
-			       GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(dev, struct gpio_regulator_data);
 	if (drvdata == NULL)
 		return -ENOMEM;
 
@@ -260,8 +255,10 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	drvdata->gpiods = devm_kzalloc(dev, sizeof(struct gpio_desc *),
-				       GFP_KERNEL);
+	drvdata->gpiods = devm_kzalloc_objs(dev, struct gpio_desc *,
+					    config->ngpios);
+	if (!drvdata->gpiods)
+		return -ENOMEM;
 
 	if (config->input_supply) {
 		drvdata->desc.supply_name = devm_kstrdup(&pdev->dev,
@@ -274,8 +271,6 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (!drvdata->gpiods)
-		return -ENOMEM;
 	for (i = 0; i < config->ngpios; i++) {
 		drvdata->gpiods[i] = devm_gpiod_get_index(dev,
 							  NULL,
@@ -345,11 +340,9 @@ static int gpio_regulator_probe(struct platform_device *pdev)
 		return PTR_ERR(cfg.ena_gpiod);
 
 	rdev = devm_regulator_register(dev, &drvdata->desc, &cfg);
-	if (IS_ERR(rdev)) {
-		ret = PTR_ERR(rdev);
-		dev_err(dev, "Failed to register regulator: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(rdev))
+		return dev_err_probe(dev, PTR_ERR(rdev),
+				     "Failed to register regulator\n");
 
 	platform_set_drvdata(pdev, drvdata);
 

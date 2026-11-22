@@ -75,6 +75,18 @@
 		};
 	};
 
+	hdmi-connector {
+		compatible = "hdmi-connector";
+		label = "X28";
+		type = "a";
+
+		port {
+			hdmi_connector_in: endpoint {
+				remote-endpoint = <&hdmi_tx_out>;
+			};
+		};
+	};
+
 	led {
 		compatible = "gpio-leds";
 
@@ -153,7 +165,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		i2cmuxed0: i2c@0 {
+		i2c_dhpdk_panel: i2cmuxed0: i2c@0 {
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0>;
@@ -165,6 +177,16 @@
 				clocks = <&clk_ext_audio_codec>;
 				VDDA-supply = <&reg_3p3vdd>;
 				VDDIO-supply = <&reg_vdd_3p3v_awo>;
+			};
+
+			csi2exp: gpio@24 {
+				compatible = "nxp,pca9570";
+				reg = <0x24>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				gpio-line-names =
+					"CSI2_#RESET", "CSI2_#PWDN",
+					"CSI_#PWDN", "CSI_#RESET";
 			};
 
 			typec@3d {
@@ -238,6 +260,33 @@
 	status = "okay";
 };
 
+&hdmi_pvi {
+	status = "okay";
+};
+
+&hdmi_tx {
+	ddc-i2c-bus = <&i2cmuxed1>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_hdmi>;
+	status = "okay";
+
+	ports {
+		port@1 {
+			hdmi_tx_out: endpoint {
+				remote-endpoint = <&hdmi_connector_in>;
+			};
+		};
+	};
+};
+
+&hdmi_tx_phy {
+	status = "okay";
+};
+
+&lcdif3 {
+	status = "okay";
+};
+
 &pcie_phy {
 	clocks = <&pcieclk 1>;
 	clock-names = "ref";
@@ -296,7 +345,7 @@
 
 	pinctrl_ptn5150: ptn5150grp {
 		fsl,pins = <
-			MX8MP_IOMUXC_SAI2_TXC__GPIO4_IO25		0x40000000
+			MX8MP_IOMUXC_SAI2_TXC__GPIO4_IO25		MX8MP_SION
 		>;
 	};
 };

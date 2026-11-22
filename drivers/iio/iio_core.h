@@ -34,6 +34,10 @@ void iio_device_ioctl_handler_register(struct iio_dev *indio_dev,
 				       struct iio_ioctl_handler *h);
 void iio_device_ioctl_handler_unregister(struct iio_ioctl_handler *h);
 
+ssize_t do_iio_read_channel_label(struct iio_dev *indio_dev,
+				  const struct iio_chan_spec *c,
+				  char *buf);
+
 int __iio_add_chan_devattr(const char *postfix,
 			   struct iio_chan_spec const *chan,
 			   ssize_t (*func)(struct device *dev,
@@ -104,5 +108,12 @@ void iio_device_wakeup_eventset(struct iio_dev *indio_dev);
 
 struct iio_event_interface;
 bool iio_event_enabled(const struct iio_event_interface *ev_int);
+
+#if IS_ENABLED(CONFIG_KUNIT)
+ssize_t __iio_chan_prefix_emit(struct device *dev,
+			       const struct iio_chan_spec *chan,
+			       enum iio_shared_by shared_by,
+			       char *buf, size_t len);
+#endif
 
 #endif

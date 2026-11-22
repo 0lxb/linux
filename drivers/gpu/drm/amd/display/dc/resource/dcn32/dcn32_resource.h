@@ -42,6 +42,7 @@
 #define SUBVP_ACTIVE_MARGIN_LIST_LEN 2
 #define DCN3_2_MAX_SUBVP_PIXEL_RATE_MHZ 1800
 #define DCN3_2_VMIN_DISPCLK_HZ 717000000
+#define MIN_SUBVP_DCFCLK_KHZ 400000
 
 #define TO_DCN32_RES_POOL(pool)\
 	container_of(pool, struct dcn32_resource_pool, base)
@@ -97,24 +98,20 @@ void dcn32_add_phantom_pipes(struct dc *dc,
 		unsigned int pipe_cnt,
 		unsigned int index);
 
-bool dcn32_validate_bandwidth(struct dc *dc,
+enum dc_status dcn32_validate_bandwidth(struct dc *dc,
 		struct dc_state *context,
-		bool fast_validate);
+		enum dc_validate_mode validate_mode);
 
 int dcn32_populate_dml_pipes_from_context(
 	struct dc *dc, struct dc_state *context,
 	display_e2e_pipe_params_st *pipes,
-	bool fast_validate);
+	enum dc_validate_mode validate_mode);
 
 void dcn32_calculate_wm_and_dlg(
 		struct dc *dc, struct dc_state *context,
 		display_e2e_pipe_params_st *pipes,
 		int pipe_cnt,
 		int vlevel);
-
-uint32_t dcn32_helper_mall_bytes_to_ways(
-		struct dc *dc,
-		uint32_t total_size_in_mall_bytes);
 
 uint32_t dcn32_helper_calculate_mall_bytes_for_cursor(
 		struct dc *dc,
@@ -139,6 +136,12 @@ bool dcn32_mpo_in_use(struct dc_state *context);
 bool dcn32_any_surfaces_rotated(struct dc *dc, struct dc_state *context);
 bool dcn32_is_center_timing(struct pipe_ctx *pipe);
 bool dcn32_is_psr_capable(struct pipe_ctx *pipe);
+
+int dcn32_find_optimal_free_pipe_as_secondary_dpp_pipe(
+		const struct resource_context *cur_res_ctx,
+		struct resource_context *new_res_ctx,
+		const struct resource_pool *pool,
+		const struct pipe_ctx *new_opp_head);
 
 struct pipe_ctx *dcn32_acquire_free_pipe_as_secondary_dpp_pipe(
 		const struct dc_state *cur_ctx,
@@ -180,6 +183,14 @@ bool dcn32_subvp_drr_admissable(struct dc *dc, struct dc_state *context);
 bool dcn32_subvp_vblank_admissable(struct dc *dc, struct dc_state *context, int vlevel);
 
 void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc_state *context, display_e2e_pipe_params_st *pipes);
+
+void dcn32_override_min_req_dcfclk(struct dc *dc, struct dc_state *context);
+
+unsigned int dcn32_calculate_mall_ways_from_bytes(const struct dc *dc, unsigned int total_size_in_mall_bytes);
+
+unsigned int dcn32_get_max_hw_cursor_size(const struct dc *dc,
+			struct dc_state *state,
+			const struct dc_stream_state *stream);
 
 /* definitions for run time init of reg offsets */
 
@@ -306,23 +317,33 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
   AUX_REG_LIST_RI(id), SRI_ARR(AUX_DPHY_TX_CONTROL, DP_AUX, id)
 
 /* HDP */
-#define HPD_REG_LIST_RI(id) SRI_ARR(DC_HPD_CONTROL, HPD, id)
+#define HPD_REG_LIST_RI(id)                                                  \
+	(SRI_ARR(DC_HPD_CONTROL, HPD, id),                                   \
+		SRI_ARR(DC_HPD_INT_STATUS, HPD, id),                         \
+		SRI_ARR(DC_HPD_TOGGLE_FILT_CNTL, HPD, id))
 
 /* Link encoder */
-#define LE_DCN3_REG_LIST_RI(id)                                                \
-  SRI_ARR(DIG_BE_CNTL, DIG, id), SRI_ARR(DIG_BE_EN_CNTL, DIG, id),             \
-      SRI_ARR(TMDS_CTL_BITS, DIG, id),                                         \
-      SRI_ARR(TMDS_DCBALANCER_CONTROL, DIG, id), SRI_ARR(DP_CONFIG, DP, id),   \
-      SRI_ARR(DP_DPHY_CNTL, DP, id), SRI_ARR(DP_DPHY_PRBS_CNTL, DP, id),       \
-      SRI_ARR(DP_DPHY_SCRAM_CNTL, DP, id), SRI_ARR(DP_DPHY_SYM0, DP, id),      \
-      SRI_ARR(DP_DPHY_SYM1, DP, id), SRI_ARR(DP_DPHY_SYM2, DP, id),            \
-      SRI_ARR(DP_DPHY_TRAINING_PATTERN_SEL, DP, id),                           \
-      SRI_ARR(DP_LINK_CNTL, DP, id), SRI_ARR(DP_LINK_FRAMING_CNTL, DP, id),    \
-      SRI_ARR(DP_MSE_SAT0, DP, id), SRI_ARR(DP_MSE_SAT1, DP, id),              \
-      SRI_ARR(DP_MSE_SAT2, DP, id), SRI_ARR(DP_MSE_SAT_UPDATE, DP, id),        \
-      SRI_ARR(DP_SEC_CNTL, DP, id), SRI_ARR(DP_VID_STREAM_CNTL, DP, id),       \
-      SRI_ARR(DP_DPHY_FAST_TRAINING, DP, id), SRI_ARR(DP_SEC_CNTL1, DP, id),   \
-      SRI_ARR(DP_DPHY_BS_SR_SWAP_CNTL, DP, id),                                \
+#define LE_DCN3_REG_LIST_RI(id)                                      \
+      SRI_ARR(DIG_BE_CNTL, DIG, id),                                 \
+      SRI_ARR(DIG_BE_EN_CNTL, DIG, id),                              \
+      SRI_ARR(TMDS_CTL_BITS, DIG, id),                               \
+      SRI_ARR(TMDS_DCBALANCER_CONTROL, DIG, id),                     \
+      SRI_ARR(DP_CONFIG, DP, id), SRI_ARR(DP_DPHY_CNTL, DP, id),     \
+      SRI_ARR(DP_DPHY_PRBS_CNTL, DP, id),                            \
+      SRI_ARR(DP_DPHY_SCRAM_CNTL, DP, id),                           \
+      SRI_ARR(DP_DPHY_SYM0, DP, id), SRI_ARR(DP_DPHY_SYM1, DP, id),  \
+      SRI_ARR(DP_DPHY_SYM2, DP, id),                                 \
+      SRI_ARR(DP_DPHY_TRAINING_PATTERN_SEL, DP, id),                 \
+      SRI_ARR(DP_LINK_CNTL, DP, id),                                 \
+      SRI_ARR(DP_LINK_FRAMING_CNTL, DP, id),                         \
+      SRI_ARR(DP_MSE_SAT0, DP, id), SRI_ARR(DP_MSE_SAT1, DP, id),    \
+      SRI_ARR(DP_MSE_SAT2, DP, id),                                  \
+      SRI_ARR(DP_MSE_SAT_UPDATE, DP, id),                            \
+      SRI_ARR(DP_SEC_CNTL, DP, id),                                  \
+      SRI_ARR(DP_VID_STREAM_CNTL, DP, id),                           \
+      SRI_ARR(DP_DPHY_FAST_TRAINING, DP, id),                        \
+      SRI_ARR(DP_SEC_CNTL1, DP, id),                                 \
+      SRI_ARR(DP_DPHY_BS_SR_SWAP_CNTL, DP, id),                      \
       SRI_ARR(DP_DPHY_HBR2_PATTERN_CONTROL, DP, id)
 
 #define LE_DCN31_REG_LIST_RI(id)                                               \
@@ -498,6 +519,8 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SRI_ARR(CM_POST_CSC_B_C11_C12, CM, id),                                  \
       SRI_ARR(CM_POST_CSC_B_C33_C34, CM, id),                                  \
       SRI_ARR(CM_MEM_PWR_CTRL, CM, id), SRI_ARR(CM_CONTROL, CM, id),           \
+      SRI_ARR(CM_TEST_DEBUG_INDEX, CM, id),                                    \
+      SRI_ARR(CM_TEST_DEBUG_DATA, CM, id),                                     \
       SRI_ARR(FORMAT_CONTROL, CNVC_CFG, id),                                   \
       SRI_ARR(CNVC_SURFACE_PIXEL_FORMAT, CNVC_CFG, id),                        \
       SRI_ARR(CURSOR0_CONTROL, CNVC_CUR, id),                                  \
@@ -754,6 +777,7 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SRI_ARR(DSCC_RATE_CONTROL_BUFFER1_MAX_FULLNESS_LEVEL, DSCC, id),         \
       SRI_ARR(DSCC_RATE_CONTROL_BUFFER2_MAX_FULLNESS_LEVEL, DSCC, id),         \
       SRI_ARR(DSCC_RATE_CONTROL_BUFFER3_MAX_FULLNESS_LEVEL, DSCC, id),         \
+      SRI_ARR(DSCC_TEST_DEBUG_BUS_ROTATE, DSCC, id),                           \
       SRI_ARR(DSCCIF_CONFIG0, DSCCIF, id),                                     \
       SRI_ARR(DSCCIF_CONFIG1, DSCCIF, id),                                     \
       SRI_ARR(DSCRM_DSC_FORWARD_CONFIG, DSCRM, id)
@@ -1030,6 +1054,12 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SRI_ARR(OTG_CRC0_WINDOWA_Y_CONTROL, OTG, inst),                          \
       SRI_ARR(OTG_CRC0_WINDOWB_X_CONTROL, OTG, inst),                          \
       SRI_ARR(OTG_CRC0_WINDOWB_Y_CONTROL, OTG, inst),                          \
+      SRI_ARR(OTG_CRC1_DATA_RG, OTG, inst),                                    \
+      SRI_ARR(OTG_CRC1_DATA_B, OTG, inst),                                     \
+      SRI_ARR(OTG_CRC1_WINDOWA_X_CONTROL, OTG, inst),                          \
+      SRI_ARR(OTG_CRC1_WINDOWA_Y_CONTROL, OTG, inst),                          \
+      SRI_ARR(OTG_CRC1_WINDOWB_X_CONTROL, OTG, inst),                          \
+      SRI_ARR(OTG_CRC1_WINDOWB_Y_CONTROL, OTG, inst),                          \
       SR_ARR(GSL_SOURCE_SELECT, inst),                                         \
       SRI_ARR(OTG_TRIGA_MANUAL_TRIG, OTG, inst),                               \
       SRI_ARR(OTG_GLOBAL_CONTROL1, OTG, inst),                                 \
@@ -1044,7 +1074,9 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SRI_ARR(OPTC_BYTES_PER_PIXEL, ODM, inst),                                \
       SRI_ARR(OPTC_WIDTH_CONTROL, ODM, inst),                                  \
       SRI_ARR(OPTC_MEMORY_CONFIG, ODM, inst),                                  \
-      SRI_ARR(OTG_DRR_CONTROL, OTG, inst)
+      SRI_ARR(OTG_DRR_CONTROL, OTG, inst),                                     \
+      SRI_ARR(OTG_PIPE_UPDATE_STATUS, OTG, inst),                              \
+      SRI_ARR(INTERRUPT_DEST, OTG, inst)
 
 /* HUBP */
 
@@ -1125,7 +1157,8 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SRI_ARR(DCN_SURF1_TTU_CNTL1, HUBPREQ, id),                               \
       SRI_ARR(DCN_CUR0_TTU_CNTL0, HUBPREQ, id),                                \
       SRI_ARR(DCN_CUR0_TTU_CNTL1, HUBPREQ, id),                                \
-      SRI_ARR(HUBP_CLK_CNTL, HUBP, id)
+      SRI_ARR(HUBP_CLK_CNTL, HUBP, id),                                        \
+      SRI_ARR(HUBPRET_READ_LINE_VALUE, HUBPRET, id)
 #define HUBP_REG_LIST_DCN2_COMMON_RI(id)                                       \
   HUBP_REG_LIST_DCN_RI(id), HUBP_REG_LIST_DCN_VM_RI(id),                       \
       SRI_ARR(PREFETCH_SETTINGS, HUBPREQ, id),                                 \
@@ -1178,6 +1211,8 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SR(DCHUBBUB_ARB_WATERMARK_CHANGE_CNTL),                                  \
       SR(DCHUBBUB_ARB_DRAM_STATE_CNTL), SR(DCHUBBUB_ARB_SAT_LEVEL),            \
       SR(DCHUBBUB_ARB_DF_REQ_OUTSTAND), SR(DCHUBBUB_GLOBAL_TIMER_CNTL),        \
+      SR(DCHUBBUB_TEST_DEBUG_INDEX),                                           \
+      SR(DCHUBBUB_TEST_DEBUG_DATA),                                            \
       SR(DCHUBBUB_SOFT_RESET), SR(DCHUBBUB_CRC_CTRL),                          \
       SR(DCN_VM_FB_LOCATION_BASE), SR(DCN_VM_FB_LOCATION_TOP),                 \
       SR(DCN_VM_FB_OFFSET), SR(DCN_VM_AGP_BOT), SR(DCN_VM_AGP_TOP),            \
@@ -1211,7 +1246,8 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
       SR(DCHUBBUB_ARB_MALL_CNTL),                                              \
       SR(DCN_VM_FAULT_ADDR_MSB), SR(DCN_VM_FAULT_ADDR_LSB),                    \
       SR(DCN_VM_FAULT_CNTL), SR(DCN_VM_FAULT_STATUS),                          \
-      SR(SDPIF_REQUEST_RATE_LIMIT)
+      SR(SDPIF_REQUEST_RATE_LIMIT),                                            \
+      SR(DCHUBBUB_SDPIF_CFG0)
 
 /* DCCG */
 
@@ -1257,5 +1293,49 @@ void dcn32_update_dml_pipes_odm_policy_based_on_context(struct dc *dc, struct dc
 #define I2C_HW_ENGINE_COMMON_REG_LIST_DCN30_RI(id)                             \
       I2C_HW_ENGINE_COMMON_REG_LIST_RI(id), SR_ARR_I2C(DIO_MEM_PWR_CTRL, id),  \
       SR_ARR_I2C(DIO_MEM_PWR_STATUS, id)
+
+#define DCN3_0_HDMI_STREAM_ENC_REG_LIST_RI(id)                                 \
+  SR_ARR(HDMI_STREAM_ENC_CLOCK_CONTROL, id),                                   \
+      SR_ARR(HDMI_STREAM_ENC_INPUT_MUX_CONTROL, id),                          \
+      SR_ARR(HDMI_STREAM_ENC_CLOCK_RAMP_ADJUSTER_FIFO_STATUS_CONTROL0, id),    \
+      SR_ARR(HDMI_STREAM_ENC_CLOCK_RAMP_ADJUSTER_FIFO_STATUS_CONTROL2, id)
+
+#define DCN3_0_HDMI_TB_ENC_REG_LIST_RI(id)                                     \
+  SR_ARR(HDMI_TB_ENC_CONTROL, id), SR_ARR(HDMI_TB_ENC_H_ACTIVE_BLANK, id),     \
+      SR_ARR(HDMI_TB_ENC_HC_ACTIVE_BLANK, id), SR_ARR(HDMI_TB_ENC_MODE, id),   \
+      SR_ARR(HDMI_TB_ENC_PACKET_CONTROL, id),                                  \
+      SR_ARR(HDMI_TB_ENC_DB_CONTROL, id),                                      \
+      SR_ARR(HDMI_TB_ENC_PIXEL_FORMAT, id),                                    \
+      SR_ARR(HDMI_TB_ENC_VBI_PACKET_CONTROL1, id),                             \
+      SR_ARR(HDMI_TB_ENC_GC_CONTROL, id),                                      \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET_CONTROL0, id),                         \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET_CONTROL1, id),                         \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET0_1_LINE, id),                          \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET2_3_LINE, id),                          \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET4_5_LINE, id),                          \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET6_7_LINE, id),                          \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET8_9_LINE, id),                          \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET10_11_LINE, id),                        \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET12_13_LINE, id),                        \
+      SR_ARR(HDMI_TB_ENC_GENERIC_PACKET14_LINE, id),                           \
+      SR_ARR(HDMI_TB_ENC_ACR_PACKET_CONTROL, id),                              \
+      SR_ARR(HDMI_TB_ENC_ACR_32_0, id), SR_ARR(HDMI_TB_ENC_ACR_32_1, id),      \
+      SR_ARR(HDMI_TB_ENC_ACR_44_0, id), SR_ARR(HDMI_TB_ENC_ACR_44_1, id),      \
+      SR_ARR(HDMI_TB_ENC_ACR_48_0, id), SR_ARR(HDMI_TB_ENC_ACR_48_1, id),      \
+      SR_ARR(HDMI_TB_ENC_CRC_CNTL, id),                                        \
+      SR_ARR(HDMI_TB_ENC_METADATA_PACKET_CONTROL, id)
+
+#define DCN3_0_HPO_STREAM_ENC_DME_REG_LIST_RI(id, offset) \
+	SRI_ARR_DME(DME_CONTROL, DME, id, offset)
+
+#define DCN3_0_HPO_FRL_STREAM_ENC_REG_LIST_RI(id)                              \
+  DCN3_0_HDMI_STREAM_ENC_REG_LIST_RI(id), DCN3_0_HDMI_TB_ENC_REG_LIST_RI(id)
+
+#define DCN3_0_HPO_FRL_LINK_ENC_REG_LIST_RI(id) \
+	SR_ARR(HDMI_LINK_ENC_CLK_CTRL, id), \
+	SR_ARR(HDMI_LINK_ENC_CONTROL, id), \
+	SR_ARR(HDMI_FRL_ENC_CONFIG, id), \
+	SR_ARR(HDMI_FRL_ENC_CONFIG2, id),\
+	SR_ARR(HDMI_FRL_ENC_MEM_CTRL, id)
 
 #endif /* _DCN32_RESOURCE_H_ */

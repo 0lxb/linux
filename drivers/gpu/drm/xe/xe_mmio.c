@@ -3,426 +3,277 @@
  * Copyright © 2021-2023 Intel Corporation
  */
 
-#include <linux/minmax.h>
-
 #include "xe_mmio.h"
 
+#include <linux/delay.h>
+#include <linux/error-injection.h>
+#include <linux/io-64-nonatomic-lo-hi.h>
+#include <linux/minmax.h>
+#include <linux/pci.h>
+
 #include <drm/drm_managed.h>
-#include <drm/xe_drm.h>
 
-#include "regs/xe_engine_regs.h"
-#include "regs/xe_gt_regs.h"
-#include "regs/xe_regs.h"
-#include "xe_bo.h"
+#include "regs/xe_bars.h"
 #include "xe_device.h"
-#include "xe_ggtt.h"
-#include "xe_gt.h"
-#include "xe_gt_mcr.h"
-#include "xe_macros.h"
-#include "xe_module.h"
+#include "xe_gt_sriov_vf.h"
+#include "xe_printk.h"
 #include "xe_sriov.h"
-#include "xe_tile.h"
+#include "xe_tile_printk.h"
+#include "xe_trace.h"
+#include "xe_wa.h"
 
-#define XEHP_MTCFG_ADDR		XE_REG(0x101800)
-#define TILE_COUNT		REG_GENMASK(15, 8)
-
-#define BAR_SIZE_SHIFT 20
-
-static void
-_resize_bar(struct xe_device *xe, int resno, resource_size_t size)
-{
-	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
-	int bar_size = pci_rebar_bytes_to_size(size);
-	int ret;
-
-	if (pci_resource_len(pdev, resno))
-		pci_release_resource(pdev, resno);
-
-	ret = pci_resize_resource(pdev, resno, bar_size);
-	if (ret) {
-		drm_info(&xe->drm, "Failed to resize BAR%d to %dM (%pe). Consider enabling 'Resizable BAR' support in your BIOS\n",
-			 resno, 1 << bar_size, ERR_PTR(ret));
-		return;
-	}
-
-	drm_info(&xe->drm, "BAR%d resized to %dM\n", resno, 1 << bar_size);
-}
+#include "generated/xe_device_wa_oob.h"
 
 /*
- * if force_vram_bar_size is set, attempt to set to the requested size
- * else set to maximum possible size
+ * On multi-tile devices, partition the BAR space for MMIO on each tile,
+ * possibly accounting for register override on the number of tiles available.
+ * tile_mmio_size contains both the tile's 4MB register space, as well as
+ * additional space for the GTT and other (possibly unused) regions).
+ * Resulting memory layout is like below:
+ *
+ * .----------------------. <- tile_count * tile_mmio_size
+ * |         ....         |
+ * |----------------------| <- 2 * tile_mmio_size
+ * |   tile1 GTT + other  |
+ * |----------------------| <- 1 * tile_mmio_size + 4MB
+ * |   tile1->mmio.regs   |
+ * |----------------------| <- 1 * tile_mmio_size
+ * |   tile0 GTT + other  |
+ * |----------------------| <- 4MB
+ * |   tile0->mmio.regs   |
+ * '----------------------' <- 0MB
  */
-static void xe_resize_vram_bar(struct xe_device *xe)
+static void mmio_multi_tile_setup(struct xe_device *xe, size_t tile_mmio_size)
 {
-	u64 force_vram_bar_size = xe_modparam.force_vram_bar_size;
-	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
-	struct pci_bus *root = pdev->bus;
-	resource_size_t current_size;
-	resource_size_t rebar_size;
-	struct resource *root_res;
-	u32 bar_size_mask;
-	u32 pci_cmd;
-	int i;
+	struct xe_tile *tile;
+	u8 id;
 
-	/* gather some relevant info */
-	current_size = pci_resource_len(pdev, LMEM_BAR);
-	bar_size_mask = pci_rebar_get_possible_sizes(pdev, LMEM_BAR);
-
-	if (!bar_size_mask)
-		return;
-
-	/* set to a specific size? */
-	if (force_vram_bar_size) {
-		u32 bar_size_bit;
-
-		rebar_size = force_vram_bar_size * (resource_size_t)SZ_1M;
-
-		bar_size_bit = bar_size_mask & BIT(pci_rebar_bytes_to_size(rebar_size));
-
-		if (!bar_size_bit) {
-			drm_info(&xe->drm,
-				 "Requested size: %lluMiB is not supported by rebar sizes: 0x%x. Leaving default: %lluMiB\n",
-				 (u64)rebar_size >> 20, bar_size_mask, (u64)current_size >> 20);
-			return;
-		}
-
-		rebar_size = 1ULL << (__fls(bar_size_bit) + BAR_SIZE_SHIFT);
-
-		if (rebar_size == current_size)
-			return;
-	} else {
-		rebar_size = 1ULL << (__fls(bar_size_mask) + BAR_SIZE_SHIFT);
-
-		/* only resize if larger than current */
-		if (rebar_size <= current_size)
-			return;
-	}
-
-	drm_info(&xe->drm, "Attempting to resize bar from %lluMiB -> %lluMiB\n",
-		 (u64)current_size >> 20, (u64)rebar_size >> 20);
-
-	while (root->parent)
-		root = root->parent;
-
-	pci_bus_for_each_resource(root, root_res, i) {
-		if (root_res && root_res->flags & (IORESOURCE_MEM | IORESOURCE_MEM_64) &&
-		    (u64)root_res->start > 0x100000000ul)
-			break;
-	}
-
-	if (!root_res) {
-		drm_info(&xe->drm, "Can't resize VRAM BAR - platform support is missing. Consider enabling 'Resizable BAR' support in your BIOS\n");
-		return;
-	}
-
-	pci_read_config_dword(pdev, PCI_COMMAND, &pci_cmd);
-	pci_write_config_dword(pdev, PCI_COMMAND, pci_cmd & ~PCI_COMMAND_MEMORY);
-
-	_resize_bar(xe, LMEM_BAR, rebar_size);
-
-	pci_assign_unassigned_bus_resources(pdev->bus);
-	pci_write_config_dword(pdev, PCI_COMMAND, pci_cmd);
-}
-
-static bool xe_pci_resource_valid(struct pci_dev *pdev, int bar)
-{
-	if (!pci_resource_flags(pdev, bar))
-		return false;
-
-	if (pci_resource_flags(pdev, bar) & IORESOURCE_UNSET)
-		return false;
-
-	if (!pci_resource_len(pdev, bar))
-		return false;
-
-	return true;
-}
-
-static int xe_determine_lmem_bar_size(struct xe_device *xe)
-{
-	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
-
-	if (!xe_pci_resource_valid(pdev, LMEM_BAR)) {
-		drm_err(&xe->drm, "pci resource is not valid\n");
-		return -ENXIO;
-	}
-
-	xe_resize_vram_bar(xe);
-
-	xe->mem.vram.io_start = pci_resource_start(pdev, LMEM_BAR);
-	xe->mem.vram.io_size = pci_resource_len(pdev, LMEM_BAR);
-	if (!xe->mem.vram.io_size)
-		return -EIO;
-
-	/* XXX: Need to change when xe link code is ready */
-	xe->mem.vram.dpa_base = 0;
-
-	/* set up a map to the total memory area. */
-	xe->mem.vram.mapping = ioremap_wc(xe->mem.vram.io_start, xe->mem.vram.io_size);
-
-	return 0;
+	for_each_remote_tile(tile, xe, id)
+		xe_mmio_init(&tile->mmio, tile, xe->mmio.regs + id * tile_mmio_size, SZ_4M);
 }
 
 /**
- * xe_mmio_tile_vram_size() - Collect vram size and offset information
- * @tile: tile to get info for
- * @vram_size: available vram (size - device reserved portions)
- * @tile_size: actual vram size
- * @tile_offset: physical start point in the vram address space
+ * xe_mmio_probe_tiles() - Initialize all tiles' MMIO
+ * @xe: the &xe_device
  *
- * There are 4 places for size information:
- * - io size (from pci_resource_len of LMEM bar) (only used for small bar and DG1)
- * - TILEx size (actual vram size)
- * - GSMBASE offset (TILEx - "stolen")
- * - CSSBASE offset (TILEx - CSS space necessary)
+ * Initialize the remaining tiles' MMIO instances.
  *
- * CSSBASE is always a lower/smaller offset then GSMBASE.
- *
- * The actual available size of memory is to the CCS or GSM base.
- * NOTE: multi-tile bases will include the tile offset.
- *
+ * Return: 0 on success or a negative error code on failure.
  */
-static int xe_mmio_tile_vram_size(struct xe_tile *tile, u64 *vram_size,
-				  u64 *tile_size, u64 *tile_offset)
+int xe_mmio_probe_tiles(struct xe_device *xe)
 {
-	struct xe_device *xe = tile_to_xe(tile);
-	struct xe_gt *gt = tile->primary_gt;
-	u64 offset;
-	int err;
-	u32 reg;
-
-	err = xe_force_wake_get(gt_to_fw(gt), XE_FW_GT);
-	if (err)
-		return err;
-
-	/* actual size */
-	if (unlikely(xe->info.platform == XE_DG1)) {
-		*tile_size = pci_resource_len(to_pci_dev(xe->drm.dev), LMEM_BAR);
-		*tile_offset = 0;
-	} else {
-		reg = xe_gt_mcr_unicast_read_any(gt, XEHP_TILE_ADDR_RANGE(gt->info.id));
-		*tile_size = (u64)REG_FIELD_GET(GENMASK(14, 8), reg) * SZ_1G;
-		*tile_offset = (u64)REG_FIELD_GET(GENMASK(7, 1), reg) * SZ_1G;
-	}
-
-	/* minus device usage */
-	if (xe->info.has_flat_ccs) {
-		reg = xe_gt_mcr_unicast_read_any(gt, XEHP_FLAT_CCS_BASE_ADDR);
-		offset = (u64)REG_FIELD_GET(GENMASK(31, 8), reg) * SZ_64K;
-	} else {
-		offset = xe_mmio_read64_2x32(gt, GSMBASE);
-	}
-
-	/* remove the tile offset so we have just the available size */
-	*vram_size = offset - *tile_offset;
-
-	return xe_force_wake_put(gt_to_fw(gt), XE_FW_GT);
-}
-
-int xe_mmio_probe_vram(struct xe_device *xe)
-{
-	struct xe_tile *tile;
-	resource_size_t io_size;
-	u64 available_size = 0;
-	u64 total_size = 0;
-	u64 tile_offset;
-	u64 tile_size;
-	u64 vram_size;
-	int err;
-	u8 id;
-
-	if (!IS_DGFX(xe))
-		return 0;
-
-	/* Get the size of the root tile's vram for later accessibility comparison */
-	tile = xe_device_get_root_tile(xe);
-	err = xe_mmio_tile_vram_size(tile, &vram_size, &tile_size, &tile_offset);
-	if (err)
-		return err;
-
-	err = xe_determine_lmem_bar_size(xe);
-	if (err)
-		return err;
-
-	drm_info(&xe->drm, "VISIBLE VRAM: %pa, %pa\n", &xe->mem.vram.io_start,
-		 &xe->mem.vram.io_size);
-
-	io_size = xe->mem.vram.io_size;
-
-	/* tile specific ranges */
-	for_each_tile(tile, xe, id) {
-		err = xe_mmio_tile_vram_size(tile, &vram_size, &tile_size, &tile_offset);
-		if (err)
-			return err;
-
-		tile->mem.vram.actual_physical_size = tile_size;
-		tile->mem.vram.io_start = xe->mem.vram.io_start + tile_offset;
-		tile->mem.vram.io_size = min_t(u64, vram_size, io_size);
-
-		if (!tile->mem.vram.io_size) {
-			drm_err(&xe->drm, "Tile without any CPU visible VRAM. Aborting.\n");
-			return -ENODEV;
-		}
-
-		tile->mem.vram.dpa_base = xe->mem.vram.dpa_base + tile_offset;
-		tile->mem.vram.usable_size = vram_size;
-		tile->mem.vram.mapping = xe->mem.vram.mapping + tile_offset;
-
-		if (tile->mem.vram.io_size < tile->mem.vram.usable_size)
-			drm_info(&xe->drm, "Small BAR device\n");
-		drm_info(&xe->drm, "VRAM[%u, %u]: Actual physical size %pa, usable size exclude stolen %pa, CPU accessible size %pa\n", id,
-			 tile->id, &tile->mem.vram.actual_physical_size, &tile->mem.vram.usable_size, &tile->mem.vram.io_size);
-		drm_info(&xe->drm, "VRAM[%u, %u]: DPA range: [%pa-%llx], io range: [%pa-%llx]\n", id, tile->id,
-			 &tile->mem.vram.dpa_base, tile->mem.vram.dpa_base + (u64)tile->mem.vram.actual_physical_size,
-			 &tile->mem.vram.io_start, tile->mem.vram.io_start + (u64)tile->mem.vram.io_size);
-
-		/* calculate total size using tile size to get the correct HW sizing */
-		total_size += tile_size;
-		available_size += vram_size;
-
-		if (total_size > xe->mem.vram.io_size) {
-			drm_info(&xe->drm, "VRAM: %pa is larger than resource %pa\n",
-				 &total_size, &xe->mem.vram.io_size);
-		}
-
-		io_size -= min_t(u64, tile_size, io_size);
-	}
-
-	xe->mem.vram.actual_physical_size = total_size;
-
-	drm_info(&xe->drm, "Total VRAM: %pa, %pa\n", &xe->mem.vram.io_start,
-		 &xe->mem.vram.actual_physical_size);
-	drm_info(&xe->drm, "Available VRAM: %pa, %pa\n", &xe->mem.vram.io_start,
-		 &available_size);
-
-	return 0;
-}
-
-void xe_mmio_probe_tiles(struct xe_device *xe)
-{
-	size_t tile_mmio_size = SZ_16M, tile_mmio_ext_size = xe->info.tile_mmio_ext_size;
-	u8 id, tile_count = xe->info.tile_count;
-	struct xe_gt *gt = xe_root_mmio_gt(xe);
-	struct xe_tile *tile;
-	void __iomem *regs;
-	u32 mtcfg;
-
-	if (tile_count == 1)
-		goto add_mmio_ext;
-
-	if (!xe->info.skip_mtcfg) {
-		mtcfg = xe_mmio_read64_2x32(gt, XEHP_MTCFG_ADDR);
-		tile_count = REG_FIELD_GET(TILE_COUNT, mtcfg) + 1;
-		if (tile_count < xe->info.tile_count) {
-			drm_info(&xe->drm, "tile_count: %d, reduced_tile_count %d\n",
-					xe->info.tile_count, tile_count);
-			xe->info.tile_count = tile_count;
-
-			/*
-			 * FIXME: Needs some work for standalone media, but should be impossible
-			 * with multi-tile for now.
-			 */
-			xe->info.gt_count = xe->info.tile_count;
-		}
-	}
-
-	regs = xe->mmio.regs;
-	for_each_tile(tile, xe, id) {
-		tile->mmio.size = tile_mmio_size;
-		tile->mmio.regs = regs;
-		regs += tile_mmio_size;
-	}
-
-add_mmio_ext:
-	/*
-	 * By design, there's a contiguous multi-tile MMIO space (16MB hard coded per tile).
-	 * When supported, there could be an additional contiguous multi-tile MMIO extension
-	 * space ON TOP of it, and hence the necessity for distinguished MMIO spaces.
-	 */
-	if (xe->info.has_mmio_ext) {
-		regs = xe->mmio.regs + tile_mmio_size * tile_count;
-
-		for_each_tile(tile, xe, id) {
-			tile->mmio_ext.size = tile_mmio_ext_size;
-			tile->mmio_ext.regs = regs;
-
-			regs += tile_mmio_ext_size;
-		}
-	}
-}
-
-static void mmio_fini(struct drm_device *drm, void *arg)
-{
-	struct xe_device *xe = arg;
-
-	pci_iounmap(to_pci_dev(xe->drm.dev), xe->mmio.regs);
-	if (xe->mem.vram.mapping)
-		iounmap(xe->mem.vram.mapping);
-}
-
-static int xe_verify_lmem_ready(struct xe_device *xe)
-{
-	struct xe_gt *gt = xe_root_mmio_gt(xe);
-
-	if (!IS_DGFX(xe))
-		return 0;
-
-	if (IS_SRIOV_VF(xe))
-		return 0;
+	size_t tile_mmio_size = SZ_16M;
 
 	/*
-	 * The boot firmware initializes local memory and assesses its health.
-	 * If memory training fails, the punit will have been instructed to
-	 * keep the GT powered down; we won't be able to communicate with it
-	 * and we should not continue with driver initialization.
+	 * Nothing to be done as tile 0 has already been setup earlier with the
+	 * entire BAR mapped - see xe_mmio_probe_early()
 	 */
-	if (!(xe_mmio_read32(gt, GU_CNTL) & LMEM_INIT)) {
-		drm_err(&xe->drm, "VRAM not initialized by firmware\n");
-		return -ENODEV;
-	}
+	if (xe->info.tile_count == 1)
+		return 0;
 
-	return 0;
-}
-
-int xe_mmio_init(struct xe_device *xe)
-{
-	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
-	const int mmio_bar = 0;
-
-	/*
-	 * Map the entire BAR.
-	 * The first 16MB of the BAR, belong to the root tile, and include:
-	 * registers (0-4MB), reserved space (4MB-8MB) and GGTT (8MB-16MB).
-	 */
-	xe->mmio.size = pci_resource_len(pdev, mmio_bar);
-	xe->mmio.regs = pci_iomap(pdev, mmio_bar, 0);
-	if (xe->mmio.regs == NULL) {
-		drm_err(&xe->drm, "failed to map registers\n");
+	if (xe->mmio.size < xe->info.tile_count * tile_mmio_size) {
+		xe_err(xe, "GTTMMADR_BAR is too small for %d tiles: %zu\n",
+		       xe->info.tile_count, xe->mmio.size);
 		return -EIO;
 	}
 
-	return drmm_add_action_or_reset(&xe->drm, mmio_fini, xe);
+	mmio_multi_tile_setup(xe, tile_mmio_size);
+	return 0;
 }
 
-int xe_mmio_root_tile_init(struct xe_device *xe)
+static void mmio_fini(void *arg)
+{
+	struct xe_device *xe = arg;
+
+	xe->mmio.regs = NULL;
+}
+
+/**
+ * xe_mmio_probe_early() - Probe and initialize device's MMIO
+ * @xe: the &xe_device
+ *
+ * Map the entire GTTMMADR_BAR and initialize the first tile's MMIO instance.
+ *
+ * The first 16MB of the GTTMMADR_BAR always belongs to the root tile, and
+ * includes: registers (0-4MB), reserved space (4MB-8MB) and GGTT (8MB-16MB).
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int xe_mmio_probe_early(struct xe_device *xe)
 {
 	struct xe_tile *root_tile = xe_device_get_root_tile(xe);
-	int err;
+	struct pci_dev *pdev = to_pci_dev(xe->drm.dev);
+
+	xe->mmio.regs = pcim_iomap(pdev, GTTMMADR_BAR, 0);
+	if (!xe->mmio.regs) {
+		xe_err(xe, "Failed to map GTTMMADR_BAR\n");
+		return -EIO;
+	}
+
+	xe->mmio.size = pci_resource_len(pdev, GTTMMADR_BAR);
+	if (xe->mmio.size < SZ_16M) {
+		xe_err(xe, "GTTMMADR_BAR is too small: %zu\n", xe->mmio.size);
+		return -EIO;
+	}
 
 	/* Setup first tile; other tiles (if present) will be setup later. */
-	root_tile->mmio.size = SZ_16M;
-	root_tile->mmio.regs = xe->mmio.regs;
+	xe_mmio_init(&root_tile->mmio, root_tile, xe->mmio.regs, SZ_4M);
 
-	err = xe_verify_lmem_ready(xe);
-	if (err)
-		return err;
+	return devm_add_action_or_reset(xe->drm.dev, mmio_fini, xe);
+}
+ALLOW_ERROR_INJECTION(xe_mmio_probe_early, ERRNO); /* See xe_pci_probe() */
 
-	return 0;
+/**
+ * xe_mmio_init() - Initialize an MMIO instance
+ * @mmio: Pointer to the MMIO instance to initialize
+ * @tile: The tile to which the MMIO region belongs
+ * @ptr: Pointer to the start of the MMIO region
+ * @size: The size of the MMIO region in bytes
+ *
+ * This is a convenience function for minimal initialization of struct xe_mmio.
+ */
+void xe_mmio_init(struct xe_mmio *mmio, struct xe_tile *tile, void __iomem *ptr, u32 size)
+{
+	xe_tile_assert(tile, size <= XE_REG_ADDR_MAX);
+
+	mmio->regs = ptr;
+	mmio->regs_size = size;
+	mmio->tile = tile;
+}
+
+static bool mmio_available(struct xe_mmio *mmio)
+{
+	return !xe_tile_WARN_ON_ONCE(mmio->tile, !mmio->tile->xe->mmio.regs);
+}
+
+static void mmio_flush_pending_writes(struct xe_mmio *mmio)
+{
+#define DUMMY_REG_OFFSET	0x130030
+	int i;
+
+	if (!XE_DEVICE_WA(mmio->tile->xe, 15015404425))
+		return;
+
+	/* 4 dummy writes */
+	for (i = 0; i < 4; i++)
+		writel(0, mmio->regs + DUMMY_REG_OFFSET);
+}
+
+u8 xe_mmio_read8(struct xe_mmio *mmio, struct xe_reg reg)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+	u8 val;
+
+	if (!mmio_available(mmio))
+		return 0;
+
+	mmio_flush_pending_writes(mmio);
+
+	val = readb(mmio->regs + addr);
+	trace_xe_reg_rw(mmio, false, addr, val, sizeof(val));
+
+	return val;
+}
+
+void xe_mmio_write8(struct xe_mmio *mmio, struct xe_reg reg, u8 val)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+
+	if (!mmio_available(mmio))
+		return;
+
+	trace_xe_reg_rw(mmio, true, addr, val, sizeof(val));
+
+	writeb(val, mmio->regs + addr);
+}
+
+u16 xe_mmio_read16(struct xe_mmio *mmio, struct xe_reg reg)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+	u16 val;
+
+	if (!mmio_available(mmio))
+		return 0;
+
+	mmio_flush_pending_writes(mmio);
+
+	val = readw(mmio->regs + addr);
+	trace_xe_reg_rw(mmio, false, addr, val, sizeof(val));
+
+	return val;
+}
+
+void xe_mmio_write32(struct xe_mmio *mmio, struct xe_reg reg, u32 val)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+
+	if (!mmio_available(mmio))
+		return;
+
+	trace_xe_reg_rw(mmio, true, addr, val, sizeof(val));
+
+	if (!reg.vf && IS_SRIOV_VF(mmio->tile->xe))
+		xe_gt_sriov_vf_write32(mmio->sriov_vf_gt ?:
+				       mmio->tile->primary_gt, reg, val);
+	else
+		writel(val, mmio->regs + addr);
+}
+
+u32 xe_mmio_read32(struct xe_mmio *mmio, struct xe_reg reg)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+	u32 val;
+
+	if (!mmio_available(mmio))
+		return 0;
+
+	mmio_flush_pending_writes(mmio);
+
+	if (!reg.vf && IS_SRIOV_VF(mmio->tile->xe))
+		val = xe_gt_sriov_vf_read32(mmio->sriov_vf_gt ?:
+					    mmio->tile->primary_gt, reg);
+	else
+		val = readl(mmio->regs + addr);
+
+	trace_xe_reg_rw(mmio, false, addr, val, sizeof(val));
+
+	return val;
+}
+
+u32 xe_mmio_rmw32(struct xe_mmio *mmio, struct xe_reg reg, u32 clr, u32 set)
+{
+	u32 old, reg_val;
+
+	old = xe_mmio_read32(mmio, reg);
+	reg_val = (old & ~clr) | set;
+	xe_mmio_write32(mmio, reg, reg_val);
+
+	return old;
+}
+
+int xe_mmio_write32_and_verify(struct xe_mmio *mmio,
+			       struct xe_reg reg, u32 val, u32 mask, u32 eval)
+{
+	u32 reg_val;
+
+	xe_mmio_write32(mmio, reg, val);
+	reg_val = xe_mmio_read32(mmio, reg);
+
+	return (reg_val & mask) != eval ? -EINVAL : 0;
+}
+
+bool xe_mmio_in_range(const struct xe_mmio *mmio,
+		      const struct xe_mmio_range *range,
+		      struct xe_reg reg)
+{
+	u32 addr = xe_mmio_adjusted_addr(mmio, reg.addr);
+
+	return range && addr >= range->start && addr <= range->end;
 }
 
 /**
  * xe_mmio_read64_2x32() - Read a 64-bit register as two 32-bit reads
- * @gt: MMIO target GT
+ * @mmio: MMIO target
  * @reg: register to read value from
  *
  * Although Intel GPUs have some 64-bit registers, the hardware officially
@@ -442,20 +293,21 @@ int xe_mmio_root_tile_init(struct xe_device *xe)
  *
  * Returns the value of the 64-bit register.
  */
-u64 xe_mmio_read64_2x32(struct xe_gt *gt, struct xe_reg reg)
+u64 xe_mmio_read64_2x32(struct xe_mmio *mmio, struct xe_reg reg)
 {
 	struct xe_reg reg_udw = { .addr = reg.addr + 0x4 };
 	u32 ldw, udw, oldudw, retries;
 
-	if (reg.addr < gt->mmio.adj_limit) {
-		reg.addr += gt->mmio.adj_offset;
-		reg_udw.addr += gt->mmio.adj_offset;
-	}
+	/*
+	 * The two dwords of a 64-bit register can never straddle the offset
+	 * adjustment cutoff.
+	 */
+	xe_tile_assert(mmio->tile, !in_range(mmio->adj_limit, reg.addr + 1, 7));
 
-	oldudw = xe_mmio_read32(gt, reg_udw);
+	oldudw = xe_mmio_read32(mmio, reg_udw);
 	for (retries = 5; retries; --retries) {
-		ldw = xe_mmio_read32(gt, reg);
-		udw = xe_mmio_read32(gt, reg_udw);
+		ldw = xe_mmio_read32(mmio, reg);
+		udw = xe_mmio_read32(mmio, reg_udw);
 
 		if (udw == oldudw)
 			break;
@@ -463,15 +315,69 @@ u64 xe_mmio_read64_2x32(struct xe_gt *gt, struct xe_reg reg)
 		oldudw = udw;
 	}
 
-	xe_gt_WARN(gt, retries == 0,
-		   "64-bit read of %#x did not stabilize\n", reg.addr);
+	xe_tile_WARN(mmio->tile, retries == 0,
+		     "MMIO: 64-bit read of %#x did not stabilize\n", reg.addr);
 
 	return (u64)udw << 32 | ldw;
 }
 
+#define __XE_MMIO_WAIT_MAX_BACKOFF_100MS (100 * USEC_PER_MSEC)
+static int __xe_mmio_wait32(struct xe_mmio *mmio, struct xe_reg reg, u32 mask, u32 val,
+			    u32 timeout_us, u32 *out_val, bool atomic, bool expect_match)
+{
+	ktime_t cur = ktime_get_raw();
+	const ktime_t end = ktime_add_us(cur, timeout_us);
+	int ret = -ETIMEDOUT;
+	s64 wait = 10;
+	u32 read;
+	bool check;
+
+	for (;;) {
+		read = xe_mmio_read32(mmio, reg);
+
+		check = (read & mask) == val;
+		if (!expect_match)
+			check = !check;
+
+		if (check) {
+			ret = 0;
+			break;
+		}
+
+		cur = ktime_get_raw();
+		if (!ktime_before(cur, end))
+			break;
+
+		if (ktime_after(ktime_add_us(cur, wait), end))
+			wait = ktime_us_delta(end, cur);
+
+		if (atomic)
+			udelay(min_t(s64, wait, (MAX_UDELAY_MS * 1000)));
+		else
+			usleep_range(wait, wait << 1);
+		wait = min_t(s64, wait << 1, __XE_MMIO_WAIT_MAX_BACKOFF_100MS);
+	}
+
+	if (ret != 0) {
+		read = xe_mmio_read32(mmio, reg);
+
+		check = (read & mask) == val;
+		if (!expect_match)
+			check = !check;
+
+		if (check)
+			ret = 0;
+	}
+
+	if (out_val)
+		*out_val = read;
+
+	return ret;
+}
+
 /**
  * xe_mmio_wait32() - Wait for a register to match the desired masked value
- * @gt: MMIO target GT
+ * @mmio: MMIO target
  * @reg: register to read value from
  * @mask: mask to be applied to the value read from the register
  * @val: desired value after applying the mask
@@ -488,44 +394,56 @@ u64 xe_mmio_read64_2x32(struct xe_gt *gt, struct xe_reg reg)
  * @timeout_us for different reasons, specially in non-atomic contexts. Thus,
  * it is possible that this function succeeds even after @timeout_us has passed.
  */
-int xe_mmio_wait32(struct xe_gt *gt, struct xe_reg reg, u32 mask, u32 val, u32 timeout_us,
+int xe_mmio_wait32(struct xe_mmio *mmio, struct xe_reg reg, u32 mask, u32 val, u32 timeout_us,
 		   u32 *out_val, bool atomic)
 {
-	ktime_t cur = ktime_get_raw();
-	const ktime_t end = ktime_add_us(cur, timeout_us);
-	int ret = -ETIMEDOUT;
-	s64 wait = 10;
-	u32 read;
-
-	for (;;) {
-		read = xe_mmio_read32(gt, reg);
-		if ((read & mask) == val) {
-			ret = 0;
-			break;
-		}
-
-		cur = ktime_get_raw();
-		if (!ktime_before(cur, end))
-			break;
-
-		if (ktime_after(ktime_add_us(cur, wait), end))
-			wait = ktime_us_delta(end, cur);
-
-		if (atomic)
-			udelay(wait);
-		else
-			usleep_range(wait, wait << 1);
-		wait <<= 1;
-	}
-
-	if (ret != 0) {
-		read = xe_mmio_read32(gt, reg);
-		if ((read & mask) == val)
-			ret = 0;
-	}
-
-	if (out_val)
-		*out_val = read;
-
-	return ret;
+	return __xe_mmio_wait32(mmio, reg, mask, val, timeout_us, out_val, atomic, true);
 }
+
+/**
+ * xe_mmio_wait32_not() - Wait for a register to return anything other than the given masked value
+ * @mmio: MMIO target
+ * @reg: register to read value from
+ * @mask: mask to be applied to the value read from the register
+ * @val: value not to be matched after applying the mask
+ * @timeout_us: time out after this period of time
+ * @out_val: if not NULL, points where to store the last unmasked value
+ * @atomic: needs to be true if calling from an atomic context
+ *
+ * This function works exactly like xe_mmio_wait32() with the exception that
+ * @val is expected not to be matched.
+ */
+int xe_mmio_wait32_not(struct xe_mmio *mmio, struct xe_reg reg, u32 mask, u32 val, u32 timeout_us,
+		       u32 *out_val, bool atomic)
+{
+	return __xe_mmio_wait32(mmio, reg, mask, val, timeout_us, out_val, atomic, false);
+}
+
+#ifdef CONFIG_PCI_IOV
+static size_t vf_regs_stride(struct xe_device *xe)
+{
+	return GRAPHICS_VERx100(xe) > 1200 ? 0x400 : 0x1000;
+}
+
+/**
+ * xe_mmio_init_vf_view() - Initialize an MMIO instance for accesses like the VF
+ * @mmio: the target &xe_mmio to initialize as VF's view
+ * @base: the source &xe_mmio to initialize from
+ * @vfid: the VF identifier
+ */
+void xe_mmio_init_vf_view(struct xe_mmio *mmio, const struct xe_mmio *base, unsigned int vfid)
+{
+	struct xe_tile *tile = base->tile;
+	struct xe_device *xe = tile->xe;
+	size_t offset = vf_regs_stride(xe) * vfid;
+
+	xe_assert(xe, IS_SRIOV_PF(xe));
+	xe_assert(xe, vfid);
+	xe_assert(xe, !base->sriov_vf_gt);
+	xe_assert(xe, base->regs_size > offset);
+
+	*mmio = *base;
+	mmio->regs += offset;
+	mmio->regs_size -= offset;
+}
+#endif

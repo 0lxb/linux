@@ -10,9 +10,9 @@
 #endif
 
 enum {
-	MLX5_ESW_IPSEC_RX_POL_FT_LEVEL,
 	MLX5_ESW_IPSEC_RX_ESP_FT_LEVEL,
 	MLX5_ESW_IPSEC_RX_ESP_FT_CHK_LEVEL,
+	MLX5_ESW_IPSEC_RX_POL_FT_LEVEL,
 };
 
 enum {
@@ -34,10 +34,21 @@ void mlx5_esw_ipsec_rx_create_attr_set(struct mlx5e_ipsec *ipsec,
 int mlx5_esw_ipsec_rx_status_pass_dest_get(struct mlx5e_ipsec *ipsec,
 					   struct mlx5_flow_destination *dest)
 {
-	dest->type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
-	dest->ft = mlx5_chains_get_table(esw_chains(ipsec->mdev->priv.eswitch), 0, 1, 0);
+	struct mlx5_flow_table *ft;
 
+	ft = mlx5_chains_get_table(esw_chains(ipsec->mdev->priv.eswitch),
+				   0, 1, 0);
+	if (IS_ERR(ft))
+		return PTR_ERR(ft);
+
+	dest->type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
+	dest->ft = ft;
 	return 0;
+}
+
+void mlx5_esw_ipsec_rx_status_pass_dest_put(struct mlx5e_ipsec *ipsec)
+{
+	mlx5_chains_put_table(esw_chains(ipsec->mdev->priv.eswitch), 0, 1, 0);
 }
 
 int mlx5_esw_ipsec_rx_setup_modify_header(struct mlx5e_ipsec_sa_entry *sa_entry,
@@ -85,6 +96,19 @@ err_header_alloc:
 	return err;
 }
 
+void mlx5_esw_ipsec_rx_rule_add_match_obj(struct mlx5e_ipsec_sa_entry *sa_entry,
+					  struct mlx5_flow_spec *spec)
+{
+	MLX5_SET(fte_match_param, spec->match_criteria,
+		 misc_parameters_2.metadata_reg_c_1,
+		 ESW_IPSEC_RX_MAPPED_ID_MATCH_MASK);
+	MLX5_SET(fte_match_param, spec->match_value,
+		 misc_parameters_2.metadata_reg_c_1,
+		 sa_entry->rx_mapped_id << ESW_ZONE_ID_BITS);
+
+	spec->match_criteria_enable |= MLX5_MATCH_MISC_PARAMETERS_2;
+}
+
 void mlx5_esw_ipsec_rx_id_mapping_remove(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct mlx5e_ipsec *ipsec = sa_entry->ipsec;
@@ -129,7 +153,8 @@ static int mlx5_esw_ipsec_modify_flow_dests(struct mlx5_eswitch *esw,
 
 	attr = flow->attr;
 	esw_attr = attr->esw_attr;
-	if (esw_attr->out_count - esw_attr->split_count > 1)
+	if (!esw_attr->out_count ||
+	    esw_attr->out_count - esw_attr->split_count > 1)
 		return 0;
 
 	err = mlx5_eswitch_restore_ipsec_rule(esw, flow->rule[0], esw_attr,
@@ -150,11 +175,11 @@ void mlx5_esw_ipsec_restore_dest_uplink(struct mlx5_core_dev *mdev)
 	unsigned long i;
 	int err;
 
-	xa_for_each(&esw->offloads.vport_reps, i, rep) {
-		rpriv = rep->rep_data[REP_ETH].priv;
-		if (!rpriv || !rpriv->netdev)
+	mlx5_esw_for_each_rep(esw, i, rep) {
+		if (atomic_read(&rep->rep_data[REP_ETH].state) != REP_LOADED)
 			continue;
 
+		rpriv = rep->rep_data[REP_ETH].priv;
 		rhashtable_walk_enter(&rpriv->tc_ht, &iter);
 		rhashtable_walk_start(&iter);
 		while ((flow = rhashtable_walk_next(&iter)) != NULL) {

@@ -158,7 +158,7 @@ static int goldfish_rtc_probe(struct platform_device *pdev)
 	struct goldfish_rtc *rtcdrv;
 	int err;
 
-	rtcdrv = devm_kzalloc(&pdev->dev, sizeof(*rtcdrv), GFP_KERNEL);
+	rtcdrv = devm_kzalloc_obj(&pdev->dev, *rtcdrv);
 	if (!rtcdrv)
 		return -ENOMEM;
 
@@ -203,4 +203,5 @@ static struct platform_driver goldfish_rtc = {
 
 module_platform_driver(goldfish_rtc);
 
+MODULE_DESCRIPTION("Android Goldfish Real Time Clock driver");
 MODULE_LICENSE("GPL v2");

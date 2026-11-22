@@ -5,12 +5,13 @@
  * Copyright (C) 2020 Nvidia Technologies Ltd.
  */
 
+#include <linux/bitops.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+
 #include "pmbus.h"
 
 /* Vendor specific registers. */
@@ -97,27 +98,20 @@ static const int mp2975_max_phases[][MP2975_PAGE_NUM] = {
 	[mp2971] = { MP2971_MAX_PHASE_RAIL1, MP2971_MAX_PHASE_RAIL2 },
 };
 
+struct mp2975_driver_info {
+	const struct pmbus_driver_info *info;
+	enum chips chip_id;
+};
+
 struct mp2975_data {
 	struct pmbus_driver_info info;
 	enum chips chip_id;
 	int vout_scale;
 	int max_phases[MP2975_PAGE_NUM];
 	int vid_step[MP2975_PAGE_NUM];
-	int vref[MP2975_PAGE_NUM];
-	int vref_off[MP2975_PAGE_NUM];
 	int vout_max[MP2975_PAGE_NUM];
-	int vout_ov_fixed[MP2975_PAGE_NUM];
 	int curr_sense_gain[MP2975_PAGE_NUM];
 };
-
-static const struct i2c_device_id mp2975_id[] = {
-	{"mp2971", mp2971},
-	{"mp2973", mp2973},
-	{"mp2975", mp2975},
-	{}
-};
-
-MODULE_DEVICE_TABLE(i2c, mp2975_id);
 
 static const struct regulator_desc __maybe_unused mp2975_reg_desc[] = {
 	PMBUS_REGULATOR("vout", 0),
@@ -179,7 +173,6 @@ mp2975_vid2direct(int vrf, int val)
 static u16 mp2975_data2reg_linear11(s64 val)
 {
 	s16 exponent = 0, mantissa;
-	bool negative = false;
 
 	/* simple case */
 	if (val == 0)
@@ -198,10 +191,6 @@ static u16 mp2975_data2reg_linear11(s64 val)
 
 	/* Convert mantissa from milli-units to units */
 	mantissa = clamp_val(DIV_ROUND_CLOSEST_ULL(val, 1000), 0, 0x3ff);
-
-	/* restore sign */
-	if (negative)
-		mantissa = -mantissa;
 
 	/* Convert to 5 bit exponent, 11 bit mantissa */
 	return (mantissa & 0x7ff) | ((exponent << 11) & 0xf800);
@@ -315,6 +304,8 @@ static int mp2973_read_word_data(struct i2c_client *client, int page,
 	case PMBUS_STATUS_WORD:
 		/* MP2973 & MP2971 return PGOOD instead of PB_STATUS_POWER_GOOD_N. */
 		ret = pmbus_read_word_data(client, page, phase, reg);
+		if (ret < 0)
+			return ret;
 		ret ^= PB_STATUS_POWER_GOOD_N;
 		break;
 	case PMBUS_OT_FAULT_LIMIT:
@@ -392,12 +383,151 @@ static int mp2973_read_word_data(struct i2c_client *client, int page,
 	return ret;
 }
 
+static int mp2973_write_word_data(struct i2c_client *client, int page,
+				  int reg, u16 word)
+{
+	u8 target, mask;
+	long ret;
+
+	if (reg != PMBUS_SMBALERT_MASK)
+		return -ENODATA;
+
+	/*
+	 * Vendor-specific SMBALERT_MASK register with 16 maskable bits.
+	 */
+	ret = pmbus_read_word_data(client, 0, 0, PMBUS_SMBALERT_MASK);
+	if (ret < 0)
+		return ret;
+
+	target = word & 0xff;
+	mask = word >> 8;
+
+/*
+ * Set/Clear 'bit' in 'ret' based on condition followed by define for each bit in SMBALERT_MASK.
+ * Also bit 2 & 15 are reserved.
+ */
+
+#define MP2973_TEMP_OT		0
+#define MP2973_VIN_UVLO		1
+#define MP2973_VIN_OVP		3
+#define MP2973_MTP_FAULT	4
+#define MP2973_OTHER_COMM	5
+#define MP2973_MTP_BLK_TRIG	6
+#define MP2973_PACKET_ERROR	7
+#define MP2973_INVALID_DATA	8
+#define MP2973_INVALID_COMMAND	9
+#define MP2973_IOUT_OC_LV	10
+#define MP2973_IOUT_OC		11
+#define MP2973_VOUT_MAX_MIN_WARNING 12
+#define MP2973_VOLTAGE_UV	13
+#define MP2973_VOLTAGE_OV	14
+
+	switch (target) {
+	case PMBUS_STATUS_CML:
+		__assign_bit(MP2973_INVALID_DATA, &ret, !(mask & PB_CML_FAULT_INVALID_DATA));
+		__assign_bit(MP2973_INVALID_COMMAND, &ret, !(mask & PB_CML_FAULT_INVALID_COMMAND));
+		__assign_bit(MP2973_OTHER_COMM, &ret, !(mask & PB_CML_FAULT_OTHER_COMM));
+		__assign_bit(MP2973_PACKET_ERROR, &ret, !(mask & PB_CML_FAULT_PACKET_ERROR));
+		break;
+	case PMBUS_STATUS_VOUT:
+		__assign_bit(MP2973_VOLTAGE_UV, &ret, !(mask & PB_VOLTAGE_UV_FAULT));
+		__assign_bit(MP2973_VOLTAGE_OV, &ret, !(mask & PB_VOLTAGE_OV_FAULT));
+		break;
+	case PMBUS_STATUS_IOUT:
+		__assign_bit(MP2973_IOUT_OC, &ret, !(mask & PB_IOUT_OC_FAULT));
+		__assign_bit(MP2973_IOUT_OC_LV, &ret, !(mask & PB_IOUT_OC_LV_FAULT));
+		break;
+	case PMBUS_STATUS_TEMPERATURE:
+		__assign_bit(MP2973_TEMP_OT, &ret, !(mask & PB_TEMP_OT_FAULT));
+		break;
+	/*
+	 * Map remaining bits to MFR specific to let the PMBUS core mask
+	 * those bits by default.
+	 */
+	case PMBUS_STATUS_MFR_SPECIFIC:
+		__assign_bit(MP2973_VIN_UVLO, &ret, !(mask & BIT(1)));
+		__assign_bit(MP2973_VIN_OVP, &ret, !(mask & BIT(3)));
+		__assign_bit(MP2973_MTP_FAULT, &ret, !(mask & BIT(4)));
+		__assign_bit(MP2973_MTP_BLK_TRIG, &ret, !(mask & BIT(6)));
+		break;
+	default:
+		return 0;
+	}
+
+	return pmbus_write_word_data(client, 0, PMBUS_SMBALERT_MASK, ret);
+}
+
+/*
+ * Let the PMBus core change the page, so that the page it caches matches the
+ * device. The core does not issue PAGE commands for a single rail
+ * configuration, thus change the page directly then.
+ */
+static int
+mp2975_page_set(struct i2c_client *client, struct mp2975_data *data, int page)
+{
+	if (data->info.pages > 1)
+		return pmbus_set_page(client, page, 0xff);
+
+	return i2c_smbus_write_byte_data(client, PMBUS_PAGE, page);
+}
+
+/*
+ * Voltage reference is available on page 3 only. The callers read a register
+ * of the rail through the core first, thus the core caches the rail page.
+ */
+static int
+mp2975_vref_get(struct i2c_client *client, struct mp2975_data *data, int page)
+{
+	int ret, vref;
+
+	ret = mp2975_page_set(client, data, 3);
+	if (ret < 0)
+		return ret;
+
+	vref = i2c_smbus_read_word_data(client, page ? MP2975_MFR_READ_VREF_R2 :
+						       MP2975_MFR_READ_VREF_R1);
+
+	ret = mp2975_page_set(client, data, page);
+	if (ret < 0)
+		return ret;
+
+	return (vref < 0) ? vref : vref * data->vid_step[page];
+}
+
+static int
+mp2975_ovp2_offset_get(int ovp_th_set)
+{
+	switch ((ovp_th_set & GENMASK(5, 3)) >> 3) {
+	case 1:
+		return 140;
+	case 2:
+		return 220;
+	case 4:
+		return 400;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int
+mp2975_vout_ovp2_get(struct i2c_client *client, struct mp2975_data *data,
+		     int page, int vref_off)
+{
+	int vref;
+
+	vref = mp2975_vref_get(client, data, page);
+	if (vref < 0)
+		return vref;
+
+	return vref + DIV_ROUND_CLOSEST(vref_off * data->vout_scale, 10);
+}
+
 static int mp2975_read_word_data(struct i2c_client *client, int page,
 				 int phase, int reg)
 {
 	const struct pmbus_driver_info *info = pmbus_get_driver_info(client);
 	struct mp2975_data *data = to_mp2975_data(info);
-	int ret;
+	int ret, ovp1, vref_off, uv_off;
 
 	switch (reg) {
 	case PMBUS_OT_FAULT_LIMIT:
@@ -414,19 +544,35 @@ static int mp2975_read_word_data(struct i2c_client *client, int page,
 		break;
 	case PMBUS_VOUT_OV_FAULT_LIMIT:
 		/*
-		 * Register provides two values for over-voltage protection
-		 * threshold for fixed (ovp2) and tracking (ovp1) modes. The
-		 * minimum of these two values is provided as over-voltage
-		 * fault alarm.
+		 * Device provides dual over-voltage protection. OVP1 is
+		 * referred to the maximum reference voltage, while OVP2 is
+		 * referred to the current voltage reference, which is changed
+		 * at runtime. Protection is tripped by any of them, thus the
+		 * minimum of the two is exposed as over-voltage fault alarm,
+		 * and OVP2 is obtained on each read.
 		 */
 		ret = mp2975_read_word_helper(client, page, phase,
 					      MP2975_MFR_OVP_TH_SET,
-					      GENMASK(2, 0));
+					      GENMASK(5, 0));
 		if (ret < 0)
 			return ret;
 
-		ret = min_t(int, data->vout_max[page] + 50 * (ret + 1),
-			    data->vout_ov_fixed[page]);
+		ovp1 = data->vout_max[page] + 50 * ((ret & GENMASK(2, 0)) + 1);
+
+		/* OVP1 still applies if the OVP2 threshold is unknown. */
+		vref_off = mp2975_ovp2_offset_get(ret);
+		if (vref_off < 0) {
+			dev_warn_once(&client->dev,
+				      "unsupported OVP2 selector, reporting OVP1 threshold\n");
+			ret = ovp1;
+			break;
+		}
+
+		ret = mp2975_vout_ovp2_get(client, data, page, vref_off);
+		if (ret < 0)
+			return ret;
+
+		ret = min_t(int, ovp1, ret);
 		break;
 	case PMBUS_VOUT_UV_FAULT_LIMIT:
 		ret = mp2975_read_word_helper(client, page, phase,
@@ -435,8 +581,17 @@ static int mp2975_read_word_data(struct i2c_client *client, int page,
 		if (ret < 0)
 			return ret;
 
-		ret = DIV_ROUND_CLOSEST(data->vref[page] * 10 - 50 *
-					(ret + 1) * data->vout_scale, 10);
+		uv_off = 50 * (ret + 1) * data->vout_scale;
+
+		ret = mp2975_vref_get(client, data, page);
+		if (ret < 0)
+			return ret;
+
+		/*
+		 * Offset can exceed the voltage reference, while a negative
+		 * value would be reported as a read error.
+		 */
+		ret = max_t(int, DIV_ROUND_CLOSEST(ret * 10 - uv_off, 10), 0);
 		break;
 	case PMBUS_VIRT_READ_POUT_MAX:
 		ret = mp2975_read_word_helper(client, page, phase,
@@ -686,60 +841,6 @@ mp2975_current_sense_gain_get(struct i2c_client *client,
 }
 
 static int
-mp2975_vref_get(struct i2c_client *client, struct mp2975_data *data,
-		struct pmbus_driver_info *info)
-{
-	int ret;
-
-	ret = i2c_smbus_write_byte_data(client, PMBUS_PAGE, 3);
-	if (ret < 0)
-		return ret;
-
-	/* Get voltage reference value for rail 1. */
-	ret = i2c_smbus_read_word_data(client, MP2975_MFR_READ_VREF_R1);
-	if (ret < 0)
-		return ret;
-
-	data->vref[0] = ret * data->vid_step[0];
-
-	/* Get voltage reference value for rail 2, if connected. */
-	if (data->info.pages == MP2975_PAGE_NUM) {
-		ret = i2c_smbus_read_word_data(client, MP2975_MFR_READ_VREF_R2);
-		if (ret < 0)
-			return ret;
-
-		data->vref[1] = ret * data->vid_step[1];
-	}
-	return 0;
-}
-
-static int
-mp2975_vref_offset_get(struct i2c_client *client, struct mp2975_data *data,
-		       int page)
-{
-	int ret;
-
-	ret = i2c_smbus_read_word_data(client, MP2975_MFR_OVP_TH_SET);
-	if (ret < 0)
-		return ret;
-
-	switch ((ret & GENMASK(5, 3)) >> 3) {
-	case 1:
-		data->vref_off[page] = 140;
-		break;
-	case 2:
-		data->vref_off[page] = 220;
-		break;
-	case 4:
-		data->vref_off[page] = 400;
-		break;
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-
-static int
 mp2975_vout_max_get(struct i2c_client *client, struct mp2975_data *data,
 		    struct pmbus_driver_info *info, int page)
 {
@@ -843,31 +944,12 @@ mp2975_vout_per_rail_config_get(struct i2c_client *client,
 		ret = mp2975_vout_max_get(client, data, info, i);
 		if (ret < 0)
 			return ret;
-
-		/* Skip if reading Vref is unsupported */
-		if (data->chip_id != mp2975)
-			continue;
-
-		/* Obtain voltage reference offsets. */
-		ret = mp2975_vref_offset_get(client, data, i);
-		if (ret < 0)
-			return ret;
-
-		/*
-		 * Set over-voltage fixed value. Thresholds are provided as
-		 * fixed value, and tracking value. The minimum of them are
-		 * exposed as over-voltage critical threshold.
-		 */
-		data->vout_ov_fixed[i] = data->vref[i] +
-					 DIV_ROUND_CLOSEST(data->vref_off[i] *
-							   data->vout_scale,
-							   10);
 	}
 
 	return 0;
 }
 
-static struct pmbus_driver_info mp2975_info = {
+static const struct pmbus_driver_info mp2975_info = {
 	.pages = 1,
 	.format[PSC_VOLTAGE_IN] = linear,
 	.format[PSC_VOLTAGE_OUT] = direct,
@@ -892,7 +974,7 @@ static struct pmbus_driver_info mp2975_info = {
 #endif
 };
 
-static struct pmbus_driver_info mp2973_info = {
+static const struct pmbus_driver_info mp2973_info = {
 	.pages = 1,
 	.format[PSC_VOLTAGE_IN] = linear,
 	.format[PSC_VOLTAGE_OUT] = direct,
@@ -907,35 +989,40 @@ static struct pmbus_driver_info mp2973_info = {
 		PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP | PMBUS_HAVE_POUT |
 		PMBUS_HAVE_PIN | PMBUS_HAVE_STATUS_INPUT,
 	.read_word_data = mp2973_read_word_data,
+	.write_word_data = mp2973_write_word_data,
 #if IS_ENABLED(CONFIG_SENSORS_MP2975_REGULATOR)
 	.num_regulators = 1,
 	.reg_desc = mp2975_reg_desc,
 #endif
 };
 
+static const struct mp2975_driver_info mp2975_ddinfo[] = {
+	[mp2975] = { .info = &mp2975_info, .chip_id = mp2975 },
+	[mp2973] = { .info = &mp2973_info, .chip_id = mp2973 },
+	[mp2971] = { .info = &mp2973_info, .chip_id = mp2971 },
+};
+
 static int mp2975_probe(struct i2c_client *client)
 {
+	const struct mp2975_driver_info *ddinfo;
 	struct pmbus_driver_info *info;
 	struct mp2975_data *data;
 	int ret;
 
-	data = devm_kzalloc(&client->dev, sizeof(struct mp2975_data),
-			    GFP_KERNEL);
+	ddinfo = i2c_get_match_data(client);
+	if (!ddinfo)
+		return -ENODEV;
+
+	data = devm_kzalloc_obj(&client->dev, struct mp2975_data);
 	if (!data)
 		return -ENOMEM;
 
-	if (client->dev.of_node)
-		data->chip_id = (enum chips)(unsigned long)of_device_get_match_data(&client->dev);
-	else
-		data->chip_id = i2c_match_id(mp2975_id, client)->driver_data;
+	data->chip_id = ddinfo->chip_id;
 
 	memcpy(data->max_phases, mp2975_max_phases[data->chip_id],
 	       sizeof(data->max_phases));
 
-	if (data->chip_id == mp2975)
-		memcpy(&data->info, &mp2975_info, sizeof(*info));
-	else
-		memcpy(&data->info, &mp2973_info, sizeof(*info));
+	memcpy(&data->info, ddinfo->info, sizeof(data->info));
 
 	info = &data->info;
 
@@ -969,11 +1056,6 @@ static int mp2975_probe(struct i2c_client *client)
 		if (ret)
 			return ret;
 
-		/* Obtain voltage reference values. */
-		ret = mp2975_vref_get(client, data, info);
-		if (ret)
-			return ret;
-
 		/* Obtain vout over-voltage scales. */
 		ret = mp2975_vout_ov_scale_get(client, data, info);
 		if (ret < 0)
@@ -990,21 +1072,43 @@ static int mp2975_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	return pmbus_do_probe(client, info);
+	ret = pmbus_do_probe(client, info);
+	if (ret)
+		return ret;
+
+	/*
+	 * Vout over- and under-voltage fault limits are relative to the
+	 * voltage reference, which is changed at runtime. Do not allow the
+	 * PMBus core to cache them.
+	 */
+	if (data->chip_id == mp2975) {
+		pmbus_set_update(client, PMBUS_VOUT_OV_FAULT_LIMIT, true);
+		pmbus_set_update(client, PMBUS_VOUT_UV_FAULT_LIMIT, true);
+	}
+
+	return 0;
 }
 
-static const struct of_device_id __maybe_unused mp2975_of_match[] = {
-	{.compatible = "mps,mp2971", .data = (void *)mp2971},
-	{.compatible = "mps,mp2973", .data = (void *)mp2973},
-	{.compatible = "mps,mp2975", .data = (void *)mp2975},
+static const struct of_device_id mp2975_of_match[] = {
+	{.compatible = "mps,mp2971", .data = &mp2975_ddinfo[mp2971]},
+	{.compatible = "mps,mp2973", .data = &mp2975_ddinfo[mp2973]},
+	{.compatible = "mps,mp2975", .data = &mp2975_ddinfo[mp2975]},
 	{}
 };
 MODULE_DEVICE_TABLE(of, mp2975_of_match);
 
+static const struct i2c_device_id mp2975_id[] = {
+	{ .name = "mp2971", .driver_data = (kernel_ulong_t)&mp2975_ddinfo[mp2971] },
+	{ .name = "mp2973", .driver_data = (kernel_ulong_t)&mp2975_ddinfo[mp2973] },
+	{ .name = "mp2975", .driver_data = (kernel_ulong_t)&mp2975_ddinfo[mp2975] },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, mp2975_id);
+
 static struct i2c_driver mp2975_driver = {
 	.driver = {
 		.name = "mp2975",
-		.of_match_table = of_match_ptr(mp2975_of_match),
+		.of_match_table = mp2975_of_match,
 	},
 	.probe = mp2975_probe,
 	.id_table = mp2975_id,
@@ -1015,4 +1119,4 @@ module_i2c_driver(mp2975_driver);
 MODULE_AUTHOR("Vadim Pasternak <vadimp@nvidia.com>");
 MODULE_DESCRIPTION("PMBus driver for MPS MP2975 device");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

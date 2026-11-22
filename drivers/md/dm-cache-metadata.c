@@ -49,7 +49,7 @@ enum superblock_flag_bits {
 enum mapping_bits {
 	/*
 	 * A valid mapping.  Because we're using an array we clear this
-	 * flag for an non existant mapping.
+	 * flag for an non existent mapping.
 	 */
 	M_VALID = 1,
 
@@ -170,7 +170,7 @@ struct dm_cache_metadata {
  */
 #define SUPERBLOCK_CSUM_XOR 9031977
 
-static void sb_prepare_for_write(struct dm_block_validator *v,
+static void sb_prepare_for_write(const struct dm_block_validator *v,
 				 struct dm_block *b,
 				 size_t sb_block_size)
 {
@@ -195,7 +195,7 @@ static int check_metadata_version(struct cache_disk_superblock *disk_super)
 	return 0;
 }
 
-static int sb_check(struct dm_block_validator *v,
+static int sb_check(const struct dm_block_validator *v,
 		    struct dm_block *b,
 		    size_t sb_block_size)
 {
@@ -228,7 +228,7 @@ static int sb_check(struct dm_block_validator *v,
 	return check_metadata_version(disk_super);
 }
 
-static struct dm_block_validator sb_validator = {
+static const struct dm_block_validator sb_validator = {
 	.name = "superblock",
 	.prepare_for_write = sb_prepare_for_write,
 	.check = sb_check
@@ -760,12 +760,13 @@ static struct dm_cache_metadata *metadata_open(struct block_device *bdev,
 	int r;
 	struct dm_cache_metadata *cmd;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = kzalloc_obj(*cmd);
 	if (!cmd) {
 		DMERR("could not allocate metadata struct");
 		return ERR_PTR(-ENOMEM);
 	}
 
+	INIT_LIST_HEAD(&cmd->list);
 	cmd->version = metadata_version;
 	refcount_set(&cmd->ref_count, 1);
 	init_rwsem(&cmd->root_lock);
@@ -1023,6 +1024,12 @@ static bool cmd_write_lock(struct dm_cache_metadata *cmd)
 			return;			\
 	} while (0)
 
+#define WRITE_LOCK_OR_GOTO(cmd, label)		\
+	do {					\
+		if (!cmd_write_lock((cmd)))	\
+			goto label;		\
+	} while (0)
+
 #define WRITE_UNLOCK(cmd) \
 	up_write(&(cmd)->root_lock)
 
@@ -1218,15 +1225,6 @@ int dm_cache_load_discards(struct dm_cache_metadata *cmd,
 	return r;
 }
 
-int dm_cache_size(struct dm_cache_metadata *cmd, dm_cblock_t *result)
-{
-	READ_LOCK(cmd);
-	*result = cmd->cache_blocks;
-	READ_UNLOCK(cmd);
-
-	return 0;
-}
-
 static int __remove(struct dm_cache_metadata *cmd, dm_cblock_t cblock)
 {
 	int r;
@@ -1281,15 +1279,6 @@ int dm_cache_insert_mapping(struct dm_cache_metadata *cmd,
 
 	return r;
 }
-
-struct thunk {
-	load_mapping_fn fn;
-	void *context;
-
-	struct dm_cache_metadata *cmd;
-	bool respect_dirty_flags;
-	bool hints_valid;
-};
 
 static bool policy_unchanged(struct dm_cache_metadata *cmd,
 			     struct dm_cache_policy *policy)
@@ -1444,7 +1433,8 @@ static int __load_mappings(struct dm_cache_metadata *cmd,
 					   from_cblock(cmd->cache_blocks),
 					   &cmd->dirty_cursor);
 		if (r) {
-			dm_array_cursor_end(&cmd->hint_cursor);
+			if (hints_valid)
+				dm_array_cursor_end(&cmd->hint_cursor);
 			dm_array_cursor_end(&cmd->mapping_cursor);
 			return r;
 		}
@@ -1514,30 +1504,6 @@ int dm_cache_load_mappings(struct dm_cache_metadata *cmd,
 	READ_UNLOCK(cmd);
 
 	return r;
-}
-
-static int __dump_mapping(void *context, uint64_t cblock, void *leaf)
-{
-	__le64 value;
-	dm_oblock_t oblock;
-	unsigned int flags;
-
-	memcpy(&value, leaf, sizeof(value));
-	unpack_value(value, &oblock, &flags);
-
-	return 0;
-}
-
-static int __dump_mappings(struct dm_cache_metadata *cmd)
-{
-	return dm_array_walk(&cmd->info, cmd->root, __dump_mapping, NULL);
-}
-
-void dm_cache_dump(struct dm_cache_metadata *cmd)
-{
-	READ_LOCK_VOID(cmd);
-	__dump_mappings(cmd);
-	READ_UNLOCK(cmd);
 }
 
 int dm_cache_changed_this_transaction(struct dm_cache_metadata *cmd)
@@ -1756,17 +1722,6 @@ int dm_cache_write_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *
 	return r;
 }
 
-int dm_cache_metadata_all_clean(struct dm_cache_metadata *cmd, bool *result)
-{
-	int r;
-
-	READ_LOCK(cmd);
-	r = blocks_are_unmapped_or_clean(cmd, 0, cmd->cache_blocks, result);
-	READ_UNLOCK(cmd);
-
-	return r;
-}
-
 void dm_cache_metadata_set_read_only(struct dm_cache_metadata *cmd)
 {
 	WRITE_LOCK_VOID(cmd);
@@ -1833,11 +1788,8 @@ int dm_cache_metadata_abort(struct dm_cache_metadata *cmd)
 	new_bm = dm_block_manager_create(cmd->bdev, DM_CACHE_METADATA_BLOCK_SIZE << SECTOR_SHIFT,
 					 CACHE_MAX_CONCURRENT_LOCKS);
 
-	WRITE_LOCK(cmd);
-	if (cmd->fail_io) {
-		WRITE_UNLOCK(cmd);
-		goto out;
-	}
+	/* cmd_write_lock() already checks fail_io with cmd->root_lock held */
+	WRITE_LOCK_OR_GOTO(cmd, out);
 
 	__destroy_persistent_data_objects(cmd, false);
 	old_bm = cmd->bm;
@@ -1865,4 +1817,13 @@ out:
 		dm_block_manager_destroy(new_bm);
 
 	return r;
+}
+
+int dm_cache_metadata_clean_when_opened(struct dm_cache_metadata *cmd, bool *result)
+{
+	READ_LOCK(cmd);
+	*result = cmd->clean_when_opened;
+	READ_UNLOCK(cmd);
+
+	return 0;
 }

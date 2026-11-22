@@ -40,7 +40,7 @@ static int saitek_probe(struct hid_device *hdev,
 	struct saitek_sc *ssc;
 	int ret;
 
-	ssc = devm_kzalloc(&hdev->dev, sizeof(*ssc), GFP_KERNEL);
+	ssc = devm_kzalloc_obj(&hdev->dev, *ssc);
 	if (ssc == NULL) {
 		hid_err(hdev, "can't alloc saitek descriptor\n");
 		return -ENOMEM;
@@ -66,7 +66,7 @@ static int saitek_probe(struct hid_device *hdev,
 	return 0;
 }
 
-static __u8 *saitek_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+static const __u8 *saitek_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		unsigned int *rsize)
 {
 	struct saitek_sc *ssc = hid_get_drvdata(hdev);
@@ -204,4 +204,5 @@ static struct hid_driver saitek_driver = {
 };
 module_hid_driver(saitek_driver);
 
+MODULE_DESCRIPTION("HID driver for Saitek devices.");
 MODULE_LICENSE("GPL");

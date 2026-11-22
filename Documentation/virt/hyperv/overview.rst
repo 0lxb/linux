@@ -40,7 +40,7 @@ Linux guests communicate with Hyper-V in four different ways:
   arm64, these synthetic registers must be accessed using explicit
   hypercalls.
 
-* VMbus: VMbus is a higher-level software construct that is built on
+* VMBus: VMBus is a higher-level software construct that is built on
   the other 3 mechanisms.  It is a message passing interface between
   the Hyper-V host and the Linux guest.  It uses memory that is shared
   between Hyper-V and the guest, along with various signaling
@@ -54,8 +54,8 @@ x86/x64 architecture only.
 
 .. _Hyper-V Top Level Functional Spec (TLFS): https://docs.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/tlfs
 
-VMbus is not documented.  This documentation provides a high-level
-overview of VMbus and how it works, but the details can be discerned
+VMBus is not documented.  This documentation provides a high-level
+overview of VMBus and how it works, but the details can be discerned
 only from the code.
 
 Sharing Memory
@@ -74,7 +74,7 @@ follows:
   physical address space.  How Hyper-V is told about the GPA or list
   of GPAs varies.  In some cases, a single GPA is written to a
   synthetic register.  In other cases, a GPA or list of GPAs is sent
-  in a VMbus message.
+  in a VMBus message.
 
 * Hyper-V translates the GPAs into "real" physical memory addresses,
   and creates a virtual mapping that it can use to access the memory.
@@ -114,11 +114,13 @@ a shared page or remove an overlay page after the new kernel is
 using the page for a different purpose, corrupting the new kernel.
 Hyper-V does not provide a single "set everything" operation to
 guest VMs, so Linux code must individually revoke all sharing before
-doing kexec.   See hv_kexec_handler() and hv_crash_handler().  But
-the crash/panic path still has holes in cleanup because some shared
-pages are set using per-CPU synthetic registers and there's no
-mechanism to revoke the shared pages for CPUs other than the CPU
-running the panic path.
+doing kexec.  For a normal kexec reboot, the VMBus driver calls
+hv_kexec_handler() from its syscore shutdown callback, after device
+shutdown and before the architecture-specific machine shutdown.  The
+crash/panic path uses hv_crash_handler(), but still has holes in
+cleanup because some shared pages are set using per-CPU synthetic
+registers and there is no mechanism to revoke the shared pages for
+CPUs other than the CPU running the panic path.
 
 CPU Management
 --------------
@@ -132,11 +134,11 @@ Starting in Windows Server 2022 Hyper-V, the ACPI tables reflect
 only the CPUs actually present in the VM, so Linux does not report
 any hot-add CPUs.
 
-A Linux guest CPU may be taken offline using the normal Linux
-mechanisms, provided no VMbus channel interrupts are assigned to
-the CPU.  See the section on VMbus Interrupts for more details
-on how VMbus channel interrupts can be re-assigned to permit
-taking a CPU offline.
+A Linux guest CPU may be taken offline, and subsequently brought
+back online, using the normal Linux mechanisms. See the "VMBus
+Interrupts" section of Documentation/virt/hyperv/vmbus.rst
+documentation for how VMBus channel interrupts are automatically
+re-assigned if necessary when taking a CPU offline.
 
 32-bit and 64-bit
 -----------------
@@ -157,9 +159,9 @@ when accessing data shared with Hyper-V.
 Versioning
 ----------
 Current Linux kernels operate correctly with older versions of
-Hyper-V back to Windows Server 2012 Hyper-V. Support for running
-on the original Hyper-V release in Windows Server 2008/2008 R2
-has been removed.
+Hyper-V back to Windows Server 2016 Hyper-V and Windows 10. Support for
+running on Windows Server 2012/2012 R2, Windows Server 2008/2008 R2,
+and Windows 8.1 and earlier has been removed.
 
 A Linux guest on Hyper-V outputs in dmesg the version of Hyper-V
 it is running on.  This version is in the form of a Windows build
@@ -169,14 +171,14 @@ and functionality. Hyper-V indicates feature/function availability
 via flags in synthetic MSRs that Hyper-V provides to the guest,
 and the guest code tests these flags.
 
-VMbus has its own protocol version that is negotiated during the
-initial VMbus connection from the guest to Hyper-V. This version
+VMBus has its own protocol version that is negotiated during the
+initial VMBus connection from the guest to Hyper-V. This version
 number is also output to dmesg during boot.  This version number
 is checked in a few places in the code to determine if specific
 functionality is present.
 
-Furthermore, each synthetic device on VMbus also has a protocol
-version that is separate from the VMbus protocol version. Device
+Furthermore, each synthetic device on VMBus also has a protocol
+version that is separate from the VMBus protocol version. Device
 drivers for these synthetic devices typically negotiate the device
 protocol version, and may test that protocol version to determine
 if specific device functionality is present.

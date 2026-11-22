@@ -13,6 +13,7 @@
 #define QM_DFX_COMMON_LEN		0xC3
 #define QM_DFX_REGS_LEN			4UL
 #define QM_DBG_TMP_BUF_LEN		22
+#define QM_XQC_ADDR_MASK		GENMASK(31, 0)
 #define CURRENT_FUN_MASK		GENMASK(5, 0)
 #define CURRENT_Q_MASK			GENMASK(31, 16)
 #define QM_SQE_ADDR_MASK		GENMASK(7, 0)
@@ -44,8 +45,8 @@ struct qm_dfx_item {
 
 struct qm_cmd_dump_item {
 	const char *cmd;
-	char *info_name;
-	int (*dump_fn)(struct hisi_qm *qm, char *cmd, char *info_name);
+	const char *info_name;
+	int (*dump_fn)(struct hisi_qm *qm, char *cmd, const char *info_name);
 };
 
 static struct qm_dfx_item qm_dfx_files[] = {
@@ -150,7 +151,7 @@ static ssize_t qm_cmd_read(struct file *filp, char __user *buffer,
 }
 
 static void dump_show(struct hisi_qm *qm, void *info,
-		     unsigned int info_size, char *info_name)
+		     unsigned int info_size, const char *info_name)
 {
 	struct device *dev = &qm->pdev->dev;
 	u8 *info_curr = info;
@@ -164,10 +165,9 @@ static void dump_show(struct hisi_qm *qm, void *info,
 	}
 }
 
-static int qm_sqc_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_sqc_dump(struct hisi_qm *qm, char *s, const char *name)
 {
 	struct device *dev = &qm->pdev->dev;
-	struct qm_sqc *sqc_curr;
 	struct qm_sqc sqc;
 	u32 qp_id;
 	int ret;
@@ -183,6 +183,8 @@ static int qm_sqc_dump(struct hisi_qm *qm, char *s, char *name)
 
 	ret = qm_set_and_get_xqc(qm, QM_MB_CMD_SQC, &sqc, qp_id, 1);
 	if (!ret) {
+		sqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+		sqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
 		dump_show(qm, &sqc, sizeof(struct qm_sqc), name);
 
 		return 0;
@@ -190,19 +192,19 @@ static int qm_sqc_dump(struct hisi_qm *qm, char *s, char *name)
 
 	down_read(&qm->qps_lock);
 	if (qm->sqc) {
-		sqc_curr = qm->sqc + qp_id;
-
-		dump_show(qm, sqc_curr, sizeof(*sqc_curr), "SOFT SQC");
+		memcpy(&sqc, qm->sqc + qp_id, sizeof(struct qm_sqc));
+		sqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+		sqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
+		dump_show(qm, &sqc, sizeof(struct qm_sqc), "SOFT SQC");
 	}
 	up_read(&qm->qps_lock);
 
 	return 0;
 }
 
-static int qm_cqc_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_cqc_dump(struct hisi_qm *qm, char *s, const char *name)
 {
 	struct device *dev = &qm->pdev->dev;
-	struct qm_cqc *cqc_curr;
 	struct qm_cqc cqc;
 	u32 qp_id;
 	int ret;
@@ -218,6 +220,8 @@ static int qm_cqc_dump(struct hisi_qm *qm, char *s, char *name)
 
 	ret = qm_set_and_get_xqc(qm, QM_MB_CMD_CQC, &cqc, qp_id, 1);
 	if (!ret) {
+		cqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+		cqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
 		dump_show(qm, &cqc, sizeof(struct qm_cqc), name);
 
 		return 0;
@@ -225,16 +229,17 @@ static int qm_cqc_dump(struct hisi_qm *qm, char *s, char *name)
 
 	down_read(&qm->qps_lock);
 	if (qm->cqc) {
-		cqc_curr = qm->cqc + qp_id;
-
-		dump_show(qm, cqc_curr, sizeof(*cqc_curr), "SOFT CQC");
+		memcpy(&cqc, qm->cqc + qp_id, sizeof(struct qm_cqc));
+		cqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+		cqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
+		dump_show(qm, &cqc, sizeof(struct qm_cqc), "SOFT CQC");
 	}
 	up_read(&qm->qps_lock);
 
 	return 0;
 }
 
-static int qm_eqc_aeqc_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_eqc_aeqc_dump(struct hisi_qm *qm, char *s, const char *name)
 {
 	struct device *dev = &qm->pdev->dev;
 	struct qm_aeqc aeqc;
@@ -263,6 +268,10 @@ static int qm_eqc_aeqc_dump(struct hisi_qm *qm, char *s, char *name)
 	if (ret)
 		return ret;
 
+	aeqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+	aeqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
+	eqc.base_h = cpu_to_le32(QM_XQC_ADDR_MASK);
+	eqc.base_l = cpu_to_le32(QM_XQC_ADDR_MASK);
 	dump_show(qm, xeqc, size, name);
 
 	return ret;
@@ -296,7 +305,7 @@ static int q_dump_param_parse(struct hisi_qm *qm, char *s,
 
 	ret = kstrtou32(presult, 0, e_id);
 	if (ret || *e_id >= q_depth) {
-		dev_err(dev, "Please input sqe num (0-%u)", q_depth - 1);
+		dev_err(dev, "Please input sqe num (0-%d)", q_depth - 1);
 		return -EINVAL;
 	}
 
@@ -308,36 +317,35 @@ static int q_dump_param_parse(struct hisi_qm *qm, char *s,
 	return 0;
 }
 
-static int qm_sq_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_sq_dump(struct hisi_qm *qm, char *s, const char *name)
 {
-	u16 sq_depth = qm->qp_array->cq_depth;
-	void *sqe, *sqe_curr;
+	u16 sq_depth = qm->qp_array->sq_depth;
 	struct hisi_qp *qp;
 	u32 qp_id, sqe_id;
+	void *sqe;
 	int ret;
 
 	ret = q_dump_param_parse(qm, s, &sqe_id, &qp_id, sq_depth);
 	if (ret)
 		return ret;
 
-	sqe = kzalloc(qm->sqe_size * sq_depth, GFP_KERNEL);
+	sqe = kzalloc(qm->sqe_size, GFP_KERNEL);
 	if (!sqe)
 		return -ENOMEM;
 
 	qp = &qm->qp_array[qp_id];
-	memcpy(sqe, qp->sqe, qm->sqe_size * sq_depth);
-	sqe_curr = sqe + (u32)(sqe_id * qm->sqe_size);
-	memset(sqe_curr + qm->debug.sqe_mask_offset, QM_SQE_ADDR_MASK,
+	memcpy(sqe, qp->sqe + sqe_id * qm->sqe_size, qm->sqe_size);
+	memset(sqe + qm->debug.sqe_mask_offset, QM_SQE_ADDR_MASK,
 	       qm->debug.sqe_mask_len);
 
-	dump_show(qm, sqe_curr, qm->sqe_size, name);
+	dump_show(qm, sqe, qm->sqe_size, name);
 
 	kfree(sqe);
 
 	return 0;
 }
 
-static int qm_cq_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_cq_dump(struct hisi_qm *qm, char *s, const char *name)
 {
 	struct qm_cqe *cqe_curr;
 	struct hisi_qp *qp;
@@ -355,7 +363,7 @@ static int qm_cq_dump(struct hisi_qm *qm, char *s, char *name)
 	return 0;
 }
 
-static int qm_eq_aeq_dump(struct hisi_qm *qm, char *s, char *name)
+static int qm_eq_aeq_dump(struct hisi_qm *qm, char *s, const char *name)
 {
 	struct device *dev = &qm->pdev->dev;
 	u16 xeq_depth;
@@ -380,7 +388,7 @@ static int qm_eq_aeq_dump(struct hisi_qm *qm, char *s, char *name)
 	}
 
 	if (xeqe_id >= xeq_depth) {
-		dev_err(dev, "Please input eqe or aeqe num (0-%u)", xeq_depth - 1);
+		dev_err(dev, "Please input eqe or aeqe num (0-%d)", xeq_depth - 1);
 		return -EINVAL;
 	}
 
@@ -809,8 +817,14 @@ static void dfx_regs_uninit(struct hisi_qm *qm,
 {
 	int i;
 
+	if (!dregs)
+		return;
+
 	/* Setting the pointer is NULL to prevent double free */
 	for (i = 0; i < reg_len; i++) {
+		if (!dregs[i].regs)
+			continue;
+
 		kfree(dregs[i].regs);
 		dregs[i].regs = NULL;
 	}
@@ -824,7 +838,7 @@ static struct dfx_diff_registers *dfx_regs_init(struct hisi_qm *qm,
 	u32 j, base_offset;
 	int i;
 
-	diff_regs = kcalloc(reg_len, sizeof(*diff_regs), GFP_KERNEL);
+	diff_regs = kzalloc_objs(*diff_regs, reg_len);
 	if (!diff_regs)
 		return ERR_PTR(-ENOMEM);
 
@@ -860,14 +874,22 @@ alloc_error:
 static int qm_diff_regs_init(struct hisi_qm *qm,
 		struct dfx_diff_registers *dregs, u32 reg_len)
 {
+	int ret;
+
 	qm->debug.qm_diff_regs = dfx_regs_init(qm, qm_diff_regs, ARRAY_SIZE(qm_diff_regs));
-	if (IS_ERR(qm->debug.qm_diff_regs))
-		return PTR_ERR(qm->debug.qm_diff_regs);
+	if (IS_ERR(qm->debug.qm_diff_regs)) {
+		ret = PTR_ERR(qm->debug.qm_diff_regs);
+		qm->debug.qm_diff_regs = NULL;
+		return ret;
+	}
 
 	qm->debug.acc_diff_regs = dfx_regs_init(qm, dregs, reg_len);
 	if (IS_ERR(qm->debug.acc_diff_regs)) {
 		dfx_regs_uninit(qm, qm->debug.qm_diff_regs, ARRAY_SIZE(qm_diff_regs));
-		return PTR_ERR(qm->debug.acc_diff_regs);
+		ret = PTR_ERR(qm->debug.acc_diff_regs);
+		qm->debug.acc_diff_regs = NULL;
+		qm->debug.qm_diff_regs = NULL;
+		return ret;
 	}
 
 	return 0;
@@ -893,7 +915,7 @@ static int qm_last_regs_init(struct hisi_qm *qm)
 	if (qm->fun_type == QM_HW_VF)
 		return 0;
 
-	debug->qm_last_words = kcalloc(dfx_regs_num, sizeof(unsigned int), GFP_KERNEL);
+	debug->qm_last_words = kzalloc_objs(unsigned int, dfx_regs_num);
 	if (!debug->qm_last_words)
 		return -ENOMEM;
 
@@ -908,7 +930,9 @@ static int qm_last_regs_init(struct hisi_qm *qm)
 static void qm_diff_regs_uninit(struct hisi_qm *qm, u32 reg_len)
 {
 	dfx_regs_uninit(qm, qm->debug.acc_diff_regs, reg_len);
+	qm->debug.acc_diff_regs = NULL;
 	dfx_regs_uninit(qm, qm->debug.qm_diff_regs, ARRAY_SIZE(qm_diff_regs));
+	qm->debug.qm_diff_regs = NULL;
 }
 
 /**
@@ -1016,6 +1040,57 @@ void hisi_qm_show_last_dfx_regs(struct hisi_qm *qm)
 	}
 }
 
+static int qm_usage_percent(struct hisi_qm *qm, int chan_num)
+{
+	u32 val, used_bw, total_bw;
+
+	val = readl(qm->io_base + QM_CHANNEL_USAGE_OFFSET +
+				chan_num * QM_CHANNEL_ADDR_INTRVL);
+	used_bw = lower_16_bits(val);
+	total_bw = upper_16_bits(val);
+	if (!total_bw)
+		return -EIO;
+
+	if (total_bw <= used_bw)
+		return QM_MAX_DEV_USAGE;
+
+	return (used_bw * QM_DEV_USAGE_RATE) / total_bw;
+}
+
+static int qm_usage_show(struct seq_file *s, void *unused)
+{
+	struct hisi_qm *qm = s->private;
+	bool dev_is_active = true;
+	int i, ret;
+
+	/* If device is in suspended, usage is 0. */
+	ret = hisi_qm_get_dfx_access(qm);
+	if (ret == -EAGAIN) {
+		dev_is_active = false;
+	} else if (ret) {
+		dev_err(&qm->pdev->dev, "failed to get dfx access for usage_show!\n");
+		return ret;
+	}
+
+	ret = 0;
+	for (i = 0; i < qm->channel_data.channel_num; i++) {
+		if (dev_is_active) {
+			ret = qm_usage_percent(qm, i);
+			if (ret < 0) {
+				hisi_qm_put_dfx_access(qm);
+				return ret;
+			}
+		}
+		seq_printf(s, "%s: %d\n", qm->channel_data.channel_name[i], ret);
+	}
+
+	if (dev_is_active)
+		hisi_qm_put_dfx_access(qm);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(qm_usage);
+
 static int qm_diff_regs_show(struct seq_file *s, void *unused)
 {
 	struct hisi_qm *qm = s->private;
@@ -1075,12 +1150,12 @@ static void qm_create_debugfs_file(struct hisi_qm *qm, struct dentry *dir,
 {
 	struct debugfs_file *file = qm->debug.files + index;
 
-	debugfs_create_file(qm_debug_file_name[index], 0600, dir, file,
-			    &qm_debug_fops);
-
 	file->index = index;
 	mutex_init(&file->lock);
 	file->debug = &qm->debug;
+
+	debugfs_create_file(qm_debug_file_name[index], 0600, dir, file,
+			    &qm_debug_fops);
 }
 
 static int qm_debugfs_atomic64_set(void *data, u64 val)
@@ -1134,6 +1209,9 @@ void hisi_qm_debug_init(struct hisi_qm *qm)
 	if (qm_regs)
 		debugfs_create_file("diff_regs", 0444, qm->debug.qm_d,
 					qm, &qm_diff_regs_fops);
+
+	if (qm->ver >= QM_HW_V5)
+		debugfs_create_file("dev_usage", 0444, qm->debug.debug_root, qm, &qm_usage_fops);
 
 	debugfs_create_file("regs", 0444, qm->debug.qm_d, qm, &qm_regs_fops);
 

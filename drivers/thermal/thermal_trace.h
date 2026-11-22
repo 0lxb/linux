@@ -9,6 +9,8 @@
 #include <linux/thermal.h>
 #include <linux/tracepoint.h>
 
+#include "thermal_core.h"
+
 TRACE_DEFINE_ENUM(THERMAL_TRIP_CRITICAL);
 TRACE_DEFINE_ENUM(THERMAL_TRIP_HOT);
 TRACE_DEFINE_ENUM(THERMAL_TRIP_PASSIVE);
@@ -35,7 +37,7 @@ TRACE_EVENT(thermal_temperature,
 	),
 
 	TP_fast_assign(
-		__assign_str(thermal_zone, tz->type);
+		__assign_str(thermal_zone);
 		__entry->id = tz->id;
 		__entry->temp_prev = tz->last_temperature;
 		__entry->temp = tz->temperature;
@@ -58,7 +60,7 @@ TRACE_EVENT(cdev_update,
 	),
 
 	TP_fast_assign(
-		__assign_str(type, cdev->type);
+		__assign_str(type);
 		__entry->target = target;
 	),
 
@@ -80,7 +82,7 @@ TRACE_EVENT(thermal_zone_trip,
 	),
 
 	TP_fast_assign(
-		__assign_str(thermal_zone, tz->type);
+		__assign_str(thermal_zone);
 		__entry->id = tz->id;
 		__entry->trip = trip;
 		__entry->trip_type = trip_type;
@@ -117,7 +119,7 @@ TRACE_EVENT(thermal_power_cpu_limit,
 	TP_ARGS(cpus, freq, cdev_state, power),
 
 	TP_STRUCT__entry(
-		__bitmask(cpumask, num_possible_cpus())
+		__bitmask(cpumask, nr_cpumask_bits)
 		__field(unsigned int,  freq      )
 		__field(unsigned long, cdev_state)
 		__field(u32,           power     )
@@ -125,7 +127,7 @@ TRACE_EVENT(thermal_power_cpu_limit,
 
 	TP_fast_assign(
 		__assign_bitmask(cpumask, cpumask_bits(cpus),
-				num_possible_cpus());
+				nr_cpumask_bits);
 		__entry->freq = freq;
 		__entry->cdev_state = cdev_state;
 		__entry->power = power;
@@ -154,7 +156,7 @@ TRACE_EVENT(thermal_power_devfreq_get_power,
 	),
 
 	TP_fast_assign(
-		__assign_str(type, cdev->type);
+		__assign_str(type);
 		__entry->freq = freq;
 		__entry->busy_time = status->busy_time;
 		__entry->total_time = status->total_time;
@@ -182,7 +184,7 @@ TRACE_EVENT(thermal_power_devfreq_limit,
 	),
 
 	TP_fast_assign(
-		__assign_str(type, cdev->type);
+		__assign_str(type);
 		__entry->freq = freq;
 		__entry->cdev_state = cdev_state;
 		__entry->power = power;

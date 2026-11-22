@@ -31,6 +31,7 @@ struct r8169_led_classdev {
 	struct led_classdev led;
 	struct net_device *ndev;
 	int index;
+	char name[LED_MAX_NAME_SIZE];
 };
 
 #define lcdev_to_r8169_ldev(lcdev) container_of(lcdev, struct r8169_led_classdev, led)
@@ -131,13 +132,12 @@ static void rtl8168_setup_ldev(struct r8169_led_classdev *ldev,
 {
 	struct rtl8169_private *tp = netdev_priv(ndev);
 	struct led_classdev *led_cdev = &ldev->led;
-	char led_name[LED_MAX_NAME_SIZE];
 
 	ldev->ndev = ndev;
 	ldev->index = index;
 
-	r8169_get_led_name(tp, index, led_name, LED_MAX_NAME_SIZE);
-	led_cdev->name = led_name;
+	r8169_get_led_name(tp, index, ldev->name, sizeof(ldev->name));
+	led_cdev->name = ldev->name;
 	led_cdev->hw_control_trigger = "netdev";
 	led_cdev->flags |= LED_RETAIN_AT_SHUTDOWN;
 	led_cdev->hw_control_is_supported = rtl8168_led_hw_control_is_supported;
@@ -146,22 +146,22 @@ static void rtl8168_setup_ldev(struct r8169_led_classdev *ldev,
 	led_cdev->hw_control_get_device = r8169_led_hw_control_get_device;
 
 	/* ignore errors */
-	devm_led_classdev_register(&ndev->dev, led_cdev);
+	led_classdev_register(&ndev->dev, led_cdev);
 }
 
-void rtl8168_init_leds(struct net_device *ndev)
+struct r8169_led_classdev *rtl8168_init_leds(struct net_device *ndev)
 {
-	/* bind resource mgmt to netdev */
-	struct device *dev = &ndev->dev;
 	struct r8169_led_classdev *leds;
 	int i;
 
-	leds = devm_kcalloc(dev, RTL8168_NUM_LEDS, sizeof(*leds), GFP_KERNEL);
+	leds = kzalloc_objs(*leds, RTL8168_NUM_LEDS + 1);
 	if (!leds)
-		return;
+		return NULL;
 
 	for (i = 0; i < RTL8168_NUM_LEDS; i++)
 		rtl8168_setup_ldev(leds + i, ndev, i);
+
+	return leds;
 }
 
 static int rtl8125_led_hw_control_is_supported(struct led_classdev *led_cdev,
@@ -230,13 +230,12 @@ static void rtl8125_setup_led_ldev(struct r8169_led_classdev *ldev,
 {
 	struct rtl8169_private *tp = netdev_priv(ndev);
 	struct led_classdev *led_cdev = &ldev->led;
-	char led_name[LED_MAX_NAME_SIZE];
 
 	ldev->ndev = ndev;
 	ldev->index = index;
 
-	r8169_get_led_name(tp, index, led_name, LED_MAX_NAME_SIZE);
-	led_cdev->name = led_name;
+	r8169_get_led_name(tp, index, ldev->name, sizeof(ldev->name));
+	led_cdev->name = ldev->name;
 	led_cdev->hw_control_trigger = "netdev";
 	led_cdev->flags |= LED_RETAIN_AT_SHUTDOWN;
 	led_cdev->hw_control_is_supported = rtl8125_led_hw_control_is_supported;
@@ -245,20 +244,31 @@ static void rtl8125_setup_led_ldev(struct r8169_led_classdev *ldev,
 	led_cdev->hw_control_get_device = r8169_led_hw_control_get_device;
 
 	/* ignore errors */
-	devm_led_classdev_register(&ndev->dev, led_cdev);
+	led_classdev_register(&ndev->dev, led_cdev);
 }
 
-void rtl8125_init_leds(struct net_device *ndev)
+struct r8169_led_classdev *rtl8125_init_leds(struct net_device *ndev)
 {
-	/* bind resource mgmt to netdev */
-	struct device *dev = &ndev->dev;
 	struct r8169_led_classdev *leds;
 	int i;
 
-	leds = devm_kcalloc(dev, RTL8125_NUM_LEDS, sizeof(*leds), GFP_KERNEL);
+	leds = kzalloc_objs(*leds, RTL8125_NUM_LEDS + 1);
 	if (!leds)
-		return;
+		return NULL;
 
 	for (i = 0; i < RTL8125_NUM_LEDS; i++)
 		rtl8125_setup_led_ldev(leds + i, ndev, i);
+
+	return leds;
+}
+
+void r8169_remove_leds(struct r8169_led_classdev *leds)
+{
+	if (!leds)
+		return;
+
+	for (struct r8169_led_classdev *l = leds; l->ndev; l++)
+		led_classdev_unregister(&l->led);
+
+	kfree(leds);
 }

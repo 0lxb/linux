@@ -151,6 +151,27 @@
 #define SO_PASSPIDFD		76
 #define SO_PEERPIDFD		77
 
+#define SO_DEVMEM_LINEAR	78
+#define SCM_DEVMEM_LINEAR	SO_DEVMEM_LINEAR
+#define SO_DEVMEM_DMABUF	79
+#define SCM_DEVMEM_DMABUF	SO_DEVMEM_DMABUF
+#define SO_DEVMEM_DONTNEED	80
+
+#define SCM_TS_OPT_ID		81
+
+#define SO_RCVPRIORITY		82
+
+#define SO_PASSRIGHTS		83
+
+#define SO_INQ			84
+#define SCM_INQ			SO_INQ
+
+#define SO_RIGHTS_NOTRUNC      85
+
+#define SO_PASSPIDFD_THREAD    86
+
+#define SO_PEERPIDFD_THREAD    87
+
 #if !defined(__KERNEL__)
 
 #if __BITS_PER_LONG == 64

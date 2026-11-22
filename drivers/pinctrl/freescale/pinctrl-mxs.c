@@ -92,7 +92,7 @@ static int mxs_dt_node_to_map(struct pinctrl_dev *pctldev,
 	if (!purecfg && config)
 		new_num = 2;
 
-	new_map = kcalloc(new_num, sizeof(*new_map), GFP_KERNEL);
+	new_map = kzalloc_objs(*new_map, new_num);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -373,8 +373,7 @@ static int mxs_pinctrl_parse_group(struct platform_device *pdev,
 		return -EINVAL;
 	g->npins = length / sizeof(u32);
 
-	g->pins = devm_kcalloc(&pdev->dev, g->npins, sizeof(*g->pins),
-			       GFP_KERNEL);
+	g->pins = devm_kzalloc_objs(&pdev->dev, *g->pins, g->npins);
 	if (!g->pins)
 		return -ENOMEM;
 
@@ -413,8 +412,8 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	int ret;
 	u32 val;
 
-	child = of_get_next_child(np, NULL);
-	if (!child) {
+	val = of_get_child_count(np);
+	if (val == 0) {
 		dev_err(&pdev->dev, "no group is defined\n");
 		return -ENOENT;
 	}
@@ -434,16 +433,12 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 		}
 	}
 
-	soc->functions = devm_kcalloc(&pdev->dev,
-				      soc->nfunctions,
-				      sizeof(*soc->functions),
-				      GFP_KERNEL);
+	soc->functions = devm_kzalloc_objs(&pdev->dev, *soc->functions,
+					   soc->nfunctions);
 	if (!soc->functions)
 		return -ENOMEM;
 
-	soc->groups = devm_kcalloc(&pdev->dev,
-				   soc->ngroups, sizeof(*soc->groups),
-				   GFP_KERNEL);
+	soc->groups = devm_kzalloc_objs(&pdev->dev, *soc->groups, soc->ngroups);
 	if (!soc->groups)
 		return -ENOMEM;
 
@@ -490,38 +485,30 @@ static int mxs_pinctrl_probe_dt(struct platform_device *pdev,
 	/* Get groups for each function */
 	idxf = 0;
 	fn = fnull;
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		if (is_mxs_gpio(child))
 			continue;
 		if (of_property_read_u32(child, "reg", &val)) {
 			ret = mxs_pinctrl_parse_group(pdev, child,
 						      idxg++, NULL);
-			if (ret) {
-				of_node_put(child);
+			if (ret)
 				return ret;
-			}
 			continue;
 		}
 
 		if (strcmp(fn, child->name)) {
 			f = &soc->functions[idxf++];
-			f->groups = devm_kcalloc(&pdev->dev,
-						 f->ngroups,
-						 sizeof(*f->groups),
-						 GFP_KERNEL);
-			if (!f->groups) {
-				of_node_put(child);
+			f->groups = devm_kzalloc_objs(&pdev->dev, *f->groups,
+						      f->ngroups);
+			if (!f->groups)
 				return -ENOMEM;
-			}
 			fn = child->name;
 			i = 0;
 		}
 		ret = mxs_pinctrl_parse_group(pdev, child, idxg++,
 					      &f->groups[i++]);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return ret;
-		}
 	}
 
 	return 0;
@@ -534,7 +521,7 @@ int mxs_pinctrl_probe(struct platform_device *pdev,
 	struct mxs_pinctrl_data *d;
 	int ret;
 
-	d = devm_kzalloc(&pdev->dev, sizeof(*d), GFP_KERNEL);
+	d = devm_kzalloc_obj(&pdev->dev, *d);
 	if (!d)
 		return -ENOMEM;
 

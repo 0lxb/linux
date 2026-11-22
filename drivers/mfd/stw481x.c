@@ -179,7 +179,7 @@ static int stw481x_probe(struct i2c_client *client)
 	int ret;
 	int i;
 
-	stw481x = devm_kzalloc(&client->dev, sizeof(*stw481x), GFP_KERNEL);
+	stw481x = devm_kzalloc_obj(&client->dev, *stw481x);
 	if (!stw481x)
 		return -ENOMEM;
 
@@ -222,8 +222,8 @@ static int stw481x_probe(struct i2c_client *client)
  * the structure of the I2C core.
  */
 static const struct i2c_device_id stw481x_id[] = {
-	{ "stw481x", 0 },
-	{ },
+	{ "stw481x" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, stw481x_id);
 

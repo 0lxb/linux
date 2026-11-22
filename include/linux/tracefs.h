@@ -30,7 +30,7 @@ struct eventfs_file;
  * @data: data to pass to the created file ops
  * @fops: the file operations of the created file
  *
- * The evetnfs files are dynamically created. The struct eventfs_entry array
+ * The eventfs files are dynamically created. The struct eventfs_entry array
  * is passed to eventfs_create_dir() or eventfs_create_events_dir() that will
  * be used to create the files within those directories. When a lookup
  * or access to a file within the directory is made, the struct eventfs_entry
@@ -62,6 +62,8 @@ struct eventfs_file;
 typedef int (*eventfs_callback)(const char *name, umode_t *mode, void **data,
 				const struct file_operations **fops);
 
+typedef void (*eventfs_release)(const char *name, void *data);
+
 /**
  * struct eventfs_entry - dynamically created eventfs file call back handler
  * @name:	Then name of the dynamic file in an eventfs directory
@@ -72,6 +74,7 @@ typedef int (*eventfs_callback)(const char *name, umode_t *mode, void **data,
 struct eventfs_entry {
 	const char			*name;
 	eventfs_callback		callback;
+	eventfs_release			release;
 };
 
 struct eventfs_inode;

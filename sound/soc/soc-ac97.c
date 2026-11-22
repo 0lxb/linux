@@ -69,7 +69,7 @@ static int snd_soc_ac97_gpio_direction_in(struct gpio_chip *chip,
 {
 	struct snd_soc_component *component = gpio_to_component(chip);
 
-	dev_dbg(component->dev, "set gpio %d to output\n", offset);
+	dev_dbg(component->dev, "set gpio %d to input\n", offset);
 	return snd_soc_component_update_bits(component, AC97_GPIO_CFG,
 				   1 << offset, 1 << offset);
 }
@@ -87,8 +87,8 @@ static int snd_soc_ac97_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(ret & (1 << offset));
 }
 
-static void snd_soc_ac97_gpio_set(struct gpio_chip *chip, unsigned int offset,
-				  int value)
+static int snd_soc_ac97_gpio_set(struct gpio_chip *chip, unsigned int offset,
+				 int value)
 {
 	struct snd_ac97_gpio_priv *gpio_priv = gpiochip_get_data(chip);
 	struct snd_soc_component *component = gpio_to_component(chip);
@@ -98,15 +98,22 @@ static void snd_soc_ac97_gpio_set(struct gpio_chip *chip, unsigned int offset,
 	snd_soc_component_write(component, AC97_GPIO_STATUS,
 				gpio_priv->gpios_set);
 	dev_dbg(component->dev, "set gpio %d to %d\n", offset, !!value);
+
+	return 0;
 }
 
 static int snd_soc_ac97_gpio_direction_out(struct gpio_chip *chip,
 				     unsigned offset, int value)
 {
 	struct snd_soc_component *component = gpio_to_component(chip);
+	int ret;
 
 	dev_dbg(component->dev, "set gpio %d to output\n", offset);
-	snd_soc_ac97_gpio_set(chip, offset, value);
+
+	ret = snd_soc_ac97_gpio_set(chip, offset, value);
+	if (ret)
+		return ret;
+
 	return snd_soc_component_update_bits(component, AC97_GPIO_CFG,
 					     1 << offset, 0);
 }
@@ -128,7 +135,7 @@ static int snd_soc_ac97_init_gpio(struct snd_ac97 *ac97,
 	struct snd_ac97_gpio_priv *gpio_priv;
 	int ret;
 
-	gpio_priv = devm_kzalloc(component->dev, sizeof(*gpio_priv), GFP_KERNEL);
+	gpio_priv = devm_kzalloc_obj(component->dev, *gpio_priv);
 	if (!gpio_priv)
 		return -ENOMEM;
 	ac97->gpio_priv = gpio_priv;
@@ -168,13 +175,13 @@ static void snd_soc_ac97_free_gpio(struct snd_ac97 *ac97)
  * it. The caller is responsible to either call device_add(&ac97->dev) to
  * register the device, or to call put_device(&ac97->dev) to free the device.
  *
- * Returns: A snd_ac97 device or a PTR_ERR in case of an error.
+ * Returns: A snd_ac97 device or an ERR_PTR in case of an error.
  */
 struct snd_ac97 *snd_soc_alloc_ac97_component(struct snd_soc_component *component)
 {
 	struct snd_ac97 *ac97;
 
-	ac97 = kzalloc(sizeof(struct snd_ac97), GFP_KERNEL);
+	ac97 = kzalloc_obj(struct snd_ac97);
 	if (ac97 == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -207,7 +214,7 @@ EXPORT_SYMBOL(snd_soc_alloc_ac97_component);
  * the device and check if it matches the expected ID. If it doesn't match an
  * error will be returned and device will not be registered.
  *
- * Returns: A PTR_ERR() on failure or a valid snd_ac97 struct on success.
+ * Returns: An ERR_PTR on failure or a valid snd_ac97 struct on success.
  */
 struct snd_ac97 *snd_soc_new_ac97_component(struct snd_soc_component *component,
 	unsigned int id, unsigned int id_mask)
@@ -234,10 +241,12 @@ struct snd_ac97 *snd_soc_new_ac97_component(struct snd_soc_component *component,
 
 	ret = snd_soc_ac97_init_gpio(ac97, component);
 	if (ret)
-		goto err_put_device;
+		goto err_del_device;
 
 	return ac97;
 
+err_del_device:
+	device_del(&ac97->dev);
 err_put_device:
 	put_device(&ac97->dev);
 	return ERR_PTR(ret);

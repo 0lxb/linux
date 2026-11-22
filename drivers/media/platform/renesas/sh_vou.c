@@ -360,8 +360,6 @@ static const struct vb2_ops sh_vou_qops = {
 	.buf_queue		= sh_vou_buf_queue,
 	.start_streaming	= sh_vou_start_streaming,
 	.stop_streaming		= sh_vou_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* Video IOCTLs */
@@ -716,7 +714,7 @@ static int sh_vou_set_fmt_vid_out(struct sh_vou_device *vou_dev,
 	mbfmt->width = geo.output.width;
 	mbfmt->height = geo.output.height;
 	ret = v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, pad,
-					 set_fmt, NULL, &format);
+					 set_fmt, NULL, NULL, &format);
 	/* Must be implemented, so, don't check for -ENOIOCTLCMD */
 	if (ret < 0)
 		return ret;
@@ -976,11 +974,11 @@ static int sh_vou_s_selection(struct file *file, void *fh,
 	 * final encoder configuration.
 	 */
 	v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, pad,
-				   set_selection, NULL, &sd_sel);
+				   set_selection, NULL, NULL, &sd_sel);
 	format.format.width = geo.output.width;
 	format.format.height = geo.output.height;
 	ret = v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, pad,
-					 set_fmt, NULL, &format);
+					 set_fmt, NULL, NULL, &format);
 	/* Must be implemented, so, don't check for -ENOIOCTLCMD */
 	if (ret < 0)
 		return ret;
@@ -1236,7 +1234,7 @@ static int sh_vou_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	vou_dev = devm_kzalloc(&pdev->dev, sizeof(*vou_dev), GFP_KERNEL);
+	vou_dev = devm_kzalloc_obj(&pdev->dev, *vou_dev);
 	if (!vou_dev)
 		return -ENOMEM;
 
@@ -1359,7 +1357,7 @@ static void sh_vou_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver sh_vou = {
-	.remove_new = sh_vou_remove,
+	.remove = sh_vou_remove,
 	.driver  = {
 		.name	= "sh-vou",
 	},

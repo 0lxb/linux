@@ -15,7 +15,6 @@
 #include <linux/of.h>
 #include <linux/export.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 
@@ -85,9 +84,9 @@ static int sam9x5_wm8731_driver_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	card = devm_kzalloc(&pdev->dev, sizeof(*card), GFP_KERNEL);
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
-	dai = devm_kzalloc(&pdev->dev, sizeof(*dai), GFP_KERNEL);
+	card = devm_kzalloc_obj(&pdev->dev, *card);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
+	dai = devm_kzalloc_obj(&pdev->dev, *dai);
 	comp = devm_kzalloc(&pdev->dev, 3 * sizeof(*comp), GFP_KERNEL);
 	if (!dai || !card || !priv || !comp) {
 		ret = -ENOMEM;
@@ -196,7 +195,7 @@ static struct platform_driver sam9x5_wm8731_driver = {
 		.of_match_table = of_match_ptr(sam9x5_wm8731_of_match),
 	},
 	.probe = sam9x5_wm8731_driver_probe,
-	.remove_new = sam9x5_wm8731_driver_remove,
+	.remove = sam9x5_wm8731_driver_remove,
 };
 module_platform_driver(sam9x5_wm8731_driver);
 

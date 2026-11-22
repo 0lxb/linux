@@ -25,17 +25,6 @@ struct int3403_sensor {
 	struct int34x_thermal_zone *int340x_zone;
 };
 
-struct int3403_performance_state {
-	u64 performance;
-	u64 power;
-	u64 latency;
-	u64 linear;
-	u64 control;
-	u64 raw_performace;
-	char *raw_unit;
-	int reserved;
-};
-
 struct int3403_cdev {
 	struct thermal_cooling_device *cdev;
 	unsigned long max_state;
@@ -84,7 +73,7 @@ static int int3403_sensor_add(struct int3403_priv *priv)
 	int result = 0;
 	struct int3403_sensor *obj;
 
-	obj = devm_kzalloc(&priv->pdev->dev, sizeof(*obj), GFP_KERNEL);
+	obj = devm_kzalloc_obj(&priv->pdev->dev, *obj);
 	if (!obj)
 		return -ENOMEM;
 
@@ -171,7 +160,7 @@ static int int3403_cdev_add(struct int3403_priv *priv)
 	struct acpi_buffer buf = { ACPI_ALLOCATE_BUFFER, NULL };
 	union acpi_object *p;
 
-	obj = devm_kzalloc(&priv->pdev->dev, sizeof(*obj), GFP_KERNEL);
+	obj = devm_kzalloc_obj(&priv->pdev->dev, *obj);
 	if (!obj)
 		return -ENOMEM;
 
@@ -215,8 +204,7 @@ static int int3403_add(struct platform_device *pdev)
 	unsigned long long tmp;
 	acpi_status status;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(struct int3403_priv),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, struct int3403_priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -228,8 +216,7 @@ static int int3403_add(struct platform_device *pdev)
 	}
 
 
-	status = acpi_evaluate_integer(priv->adev->handle, "_TMP",
-				       NULL, &tmp);
+	status = acpi_evaluate_integer_exclusive(priv->adev->handle, "_TMP", NULL, &tmp);
 	if (ACPI_FAILURE(status)) {
 		status = acpi_evaluate_integer(priv->adev->handle, "PTYP",
 				       NULL, &priv->type);
@@ -284,14 +271,18 @@ static const struct acpi_device_id int3403_device_ids[] = {
 	{"INTC1043", 0},
 	{"INTC1046", 0},
 	{"INTC1062", 0},
+	{"INTC1069", 0},
 	{"INTC10A1", 0},
+	{"INTC10D5", 0},
+	{"INTC10FD", 0},
+	{"INTC10F4", 0},
 	{"", 0},
 };
 MODULE_DEVICE_TABLE(acpi, int3403_device_ids);
 
 static struct platform_driver int3403_driver = {
 	.probe = int3403_add,
-	.remove_new = int3403_remove,
+	.remove = int3403_remove,
 	.driver = {
 		.name = "int3403 thermal",
 		.acpi_match_table = int3403_device_ids,

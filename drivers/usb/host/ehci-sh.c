@@ -103,8 +103,7 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(struct ehci_sh_priv),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, struct ehci_sh_priv);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto fail_request_resource;
@@ -119,8 +118,12 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->iclk))
 		priv->iclk = NULL;
 
-	clk_enable(priv->fclk);
-	clk_enable(priv->iclk);
+	ret = clk_enable(priv->fclk);
+	if (ret)
+		goto fail_request_resource;
+	ret = clk_enable(priv->iclk);
+	if (ret)
+		goto fail_iclk;
 
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret != 0) {
@@ -136,6 +139,7 @@ static int ehci_hcd_sh_probe(struct platform_device *pdev)
 
 fail_add_hcd:
 	clk_disable(priv->iclk);
+fail_iclk:
 	clk_disable(priv->fclk);
 
 fail_request_resource:
@@ -169,7 +173,7 @@ static void ehci_hcd_sh_shutdown(struct platform_device *pdev)
 
 static struct platform_driver ehci_hcd_sh_driver = {
 	.probe		= ehci_hcd_sh_probe,
-	.remove_new	= ehci_hcd_sh_remove,
+	.remove		= ehci_hcd_sh_remove,
 	.shutdown	= ehci_hcd_sh_shutdown,
 	.driver		= {
 		.name	= "sh_ehci",

@@ -61,7 +61,9 @@ static atomic_t pmcraid_adapter_count = ATOMIC_INIT(0);
  * pmcraid_minor - minor number(s) to use
  */
 static unsigned int pmcraid_major;
-static struct class *pmcraid_class;
+static const struct class pmcraid_class = {
+	.name = PMCRAID_DEVFILE,
+};
 static DECLARE_BITMAP(pmcraid_minor, PMCRAID_MAX_ADAPTERS);
 
 /*
@@ -111,7 +113,7 @@ static struct pmcraid_chip_details pmcraid_chip_cfg[] = {
 /*
  * PCI device ids supported by pmcraid driver
  */
-static struct pci_device_id pmcraid_pci_table[] = {
+static const struct pci_device_id pmcraid_pci_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_PMC, PCI_DEVICE_ID_PMC_MAXRAID),
 	  0, 0, (kernel_ulong_t)&pmcraid_chip_cfg[0]
 	},
@@ -123,7 +125,7 @@ MODULE_DEVICE_TABLE(pci, pmcraid_pci_table);
 
 
 /**
- * pmcraid_slave_alloc - Prepare for commands to a device
+ * pmcraid_sdev_init - Prepare for commands to a device
  * @scsi_dev: scsi device struct
  *
  * This function is called by mid-layer prior to sending any command to the new
@@ -134,7 +136,7 @@ MODULE_DEVICE_TABLE(pci, pmcraid_pci_table);
  * Return value:
  *	  0 on success / -ENXIO if device does not exist
  */
-static int pmcraid_slave_alloc(struct scsi_device *scsi_dev)
+static int pmcraid_sdev_init(struct scsi_device *scsi_dev)
 {
 	struct pmcraid_resource_entry *temp, *res = NULL;
 	struct pmcraid_instance *pinstance;
@@ -195,8 +197,9 @@ static int pmcraid_slave_alloc(struct scsi_device *scsi_dev)
 }
 
 /**
- * pmcraid_slave_configure - Configures a SCSI device
+ * pmcraid_sdev_configure - Configures a SCSI device
  * @scsi_dev: scsi device struct
+ * @lim: queue limits
  *
  * This function is executed by SCSI mid layer just after a device is first
  * scanned (i.e. it has responded to an INQUIRY). For VSET resources, the
@@ -207,7 +210,8 @@ static int pmcraid_slave_alloc(struct scsi_device *scsi_dev)
  * Return value:
  *	  0 on success
  */
-static int pmcraid_slave_configure(struct scsi_device *scsi_dev)
+static int pmcraid_sdev_configure(struct scsi_device *scsi_dev,
+				  struct queue_limits *lim)
 {
 	struct pmcraid_resource_entry *res = scsi_dev->hostdata;
 
@@ -231,8 +235,7 @@ static int pmcraid_slave_configure(struct scsi_device *scsi_dev)
 		scsi_dev->allow_restart = 1;
 		blk_queue_rq_timeout(scsi_dev->request_queue,
 				     PMCRAID_VSET_IO_TIMEOUT);
-		blk_queue_max_hw_sectors(scsi_dev->request_queue,
-				      PMCRAID_VSET_MAX_SECTORS);
+		lim->max_hw_sectors = PMCRAID_VSET_MAX_SECTORS;
 	}
 
 	/*
@@ -245,17 +248,17 @@ static int pmcraid_slave_configure(struct scsi_device *scsi_dev)
 }
 
 /**
- * pmcraid_slave_destroy - Unconfigure a SCSI device before removing it
+ * pmcraid_sdev_destroy - Unconfigure a SCSI device before removing it
  *
  * @scsi_dev: scsi device struct
  *
  * This is called by mid-layer before removing a device. Pointer assignments
- * done in pmcraid_slave_alloc will be reset to NULL here.
+ * done in pmcraid_sdev_init will be reset to NULL here.
  *
  * Return value
  *   none
  */
-static void pmcraid_slave_destroy(struct scsi_device *scsi_dev)
+static void pmcraid_sdev_destroy(struct scsi_device *scsi_dev)
 {
 	struct pmcraid_resource_entry *res;
 
@@ -492,12 +495,12 @@ static void pmcraid_clr_trans_op(
 	}
 
 	if (pinstance->reset_cmd != NULL) {
-		del_timer(&pinstance->reset_cmd->timer);
+		timer_delete(&pinstance->reset_cmd->timer);
 		spin_lock_irqsave(
-			pinstance->host->host_lock, lock_flags);
+			&pinstance->host->host_lock, lock_flags);
 		pinstance->reset_cmd->cmd_done(pinstance->reset_cmd);
 		spin_unlock_irqrestore(
-			pinstance->host->host_lock, lock_flags);
+			&pinstance->host->host_lock, lock_flags);
 	}
 }
 
@@ -541,7 +544,7 @@ static void pmcraid_ioa_reset(struct pmcraid_cmd *);
  */
 static void pmcraid_bist_done(struct timer_list *t)
 {
-	struct pmcraid_cmd *cmd = from_timer(cmd, t, timer);
+	struct pmcraid_cmd *cmd = timer_container_of(cmd, t, timer);
 	struct pmcraid_instance *pinstance = cmd->drv_inst;
 	unsigned long lock_flags;
 	int rc;
@@ -559,9 +562,9 @@ static void pmcraid_bist_done(struct timer_list *t)
 	} else {
 		cmd->time_left = 0;
 		pmcraid_info("BIST is complete, proceeding with reset\n");
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 		pmcraid_ioa_reset(cmd);
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	}
 }
 
@@ -598,7 +601,7 @@ static void pmcraid_start_bist(struct pmcraid_cmd *cmd)
  */
 static void pmcraid_reset_alert_done(struct timer_list *t)
 {
-	struct pmcraid_cmd *cmd = from_timer(cmd, t, timer);
+	struct pmcraid_cmd *cmd = timer_container_of(cmd, t, timer);
 	struct pmcraid_instance *pinstance = cmd->drv_inst;
 	u32 status = ioread32(pinstance->ioa_status);
 	unsigned long lock_flags;
@@ -610,9 +613,9 @@ static void pmcraid_reset_alert_done(struct timer_list *t)
 	if (((status & INTRS_CRITICAL_OP_IN_PROGRESS) == 0) ||
 	    cmd->time_left <= 0) {
 		pmcraid_info("critical op is reset proceeding with reset\n");
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 		pmcraid_ioa_reset(cmd);
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	} else {
 		pmcraid_info("critical op is not yet reset waiting again\n");
 		/* restart timer if some more time is available to wait */
@@ -682,7 +685,7 @@ static void pmcraid_reset_alert(struct pmcraid_cmd *cmd)
  */
 static void pmcraid_timeout_handler(struct timer_list *t)
 {
-	struct pmcraid_cmd *cmd = from_timer(cmd, t, timer);
+	struct pmcraid_cmd *cmd = timer_container_of(cmd, t, timer);
 	struct pmcraid_instance *pinstance = cmd->drv_inst;
 	unsigned long lock_flags;
 
@@ -696,7 +699,7 @@ static void pmcraid_timeout_handler(struct timer_list *t)
 	 * reset is in progress. Otherwise fail this command and get a free
 	 * command block to restart the reset sequence.
 	 */
-	spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 	if (!pinstance->ioa_reset_in_progress) {
 		pinstance->ioa_reset_attempts = 0;
 		cmd = pmcraid_get_free_cmd(pinstance);
@@ -705,7 +708,7 @@ static void pmcraid_timeout_handler(struct timer_list *t)
 		 * Some other command's timeout handler can do the reset job
 		 */
 		if (cmd == NULL) {
-			spin_unlock_irqrestore(pinstance->host->host_lock,
+			spin_unlock_irqrestore(&pinstance->host->host_lock,
 					       lock_flags);
 			pmcraid_err("no free cmnd block for timeout handler\n");
 			return;
@@ -742,7 +745,7 @@ static void pmcraid_timeout_handler(struct timer_list *t)
 	pinstance->ioa_state = IOA_STATE_IN_RESET_ALERT;
 	scsi_block_requests(pinstance->host);
 	pmcraid_reset_alert(cmd);
-	spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 }
 
 /**
@@ -918,9 +921,9 @@ static void pmcraid_ioa_shutdown_done(struct pmcraid_cmd *cmd)
 	struct pmcraid_instance *pinstance = cmd->drv_inst;
 	unsigned long lock_flags;
 
-	spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 	pmcraid_ioa_reset(cmd);
-	spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 }
 
 /**
@@ -979,10 +982,10 @@ static void pmcraid_get_fwversion_done(struct pmcraid_cmd *cmd)
 	 */
 	if (ioasc) {
 		pmcraid_err("IOA Inquiry failed with %x\n", ioasc);
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 		pinstance->ioa_state = IOA_STATE_IN_RESET_ALERT;
 		pmcraid_reset_alert(cmd);
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	} else  {
 		pmcraid_querycfg(cmd);
 	}
@@ -1593,11 +1596,11 @@ static void pmcraid_handle_config_change(struct pmcraid_instance *pinstance)
 			spin_unlock_irqrestore(&pinstance->resource_lock,
 						lock_flags);
 			pmcraid_err("too many resources attached\n");
-			spin_lock_irqsave(pinstance->host->host_lock,
+			spin_lock_irqsave(&pinstance->host->host_lock,
 					  host_lock_flags);
 			pmcraid_send_hcam(pinstance,
 					  PMCRAID_HCAM_CODE_CONFIG_CHANGE);
-			spin_unlock_irqrestore(pinstance->host->host_lock,
+			spin_unlock_irqrestore(&pinstance->host->host_lock,
 					       host_lock_flags);
 			return;
 		}
@@ -1757,9 +1760,9 @@ static void pmcraid_process_ccn(struct pmcraid_cmd *cmd)
 	} else if (ioasc) {
 		dev_info(&pinstance->pdev->dev,
 			"Host RCB (CCN) failed with IOASC: 0x%08X\n", ioasc);
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 		pmcraid_send_hcam(pinstance, PMCRAID_HCAM_CODE_CONFIG_CHANGE);
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	} else {
 		pmcraid_handle_config_change(pinstance);
 	}
@@ -1797,10 +1800,10 @@ static void pmcraid_process_ldn(struct pmcraid_cmd *cmd)
 	} else if (!ioasc) {
 		pmcraid_handle_error_log(pinstance);
 		if (fd_ioasc == PMCRAID_IOASC_NR_IOA_RESET_REQUIRED) {
-			spin_lock_irqsave(pinstance->host->host_lock,
+			spin_lock_irqsave(&pinstance->host->host_lock,
 					  lock_flags);
 			pmcraid_initiate_reset(pinstance);
-			spin_unlock_irqrestore(pinstance->host->host_lock,
+			spin_unlock_irqrestore(&pinstance->host->host_lock,
 					       lock_flags);
 			return;
 		}
@@ -1943,7 +1946,7 @@ static void pmcraid_soft_reset(struct pmcraid_cmd *cmd)
 	}
 
 	iowrite32(doorbell, pinstance->int_regs.host_ioa_interrupt_reg);
-	ioread32(pinstance->int_regs.host_ioa_interrupt_reg),
+	ioread32(pinstance->int_regs.host_ioa_interrupt_reg);
 	int_reg = ioread32(pinstance->int_regs.ioa_host_interrupt_reg);
 
 	pmcraid_info("Waiting for IOA to become operational %x:%x\n",
@@ -1996,7 +1999,7 @@ static void pmcraid_fail_outstanding_cmds(struct pmcraid_instance *pinstance)
 			cpu_to_le32(PMCRAID_DRIVER_ILID);
 
 		/* In case the command timer is still running */
-		del_timer(&cmd->timer);
+		timer_delete(&cmd->timer);
 
 		/* If this is an IO command, complete it by invoking scsi_done
 		 * function. If this is one of the internal commands other
@@ -2319,17 +2322,17 @@ static int pmcraid_reset_reload(
 	unsigned long lock_flags;
 	int reset = 1;
 
-	spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 
 	if (pinstance->ioa_reset_in_progress) {
 		pmcraid_info("reset_reload: reset is already in progress\n");
 
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 
 		wait_event(pinstance->reset_wait_q,
 			   !pinstance->ioa_reset_in_progress);
 
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 
 		if (pinstance->ioa_state == IOA_STATE_DEAD) {
 			pmcraid_info("reset_reload: IOA is dead\n");
@@ -2358,7 +2361,7 @@ static int pmcraid_reset_reload(
 	pinstance->force_ioa_reset = reset;
 	pmcraid_info("reset_reload: initiating reset\n");
 	pmcraid_ioa_reset(reset_cmd);
-	spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	pmcraid_info("reset_reload: waiting for reset to complete\n");
 	wait_event(pinstance->reset_wait_q,
 		   !pinstance->ioa_reset_in_progress);
@@ -2368,7 +2371,7 @@ static int pmcraid_reset_reload(
 	return pinstance->ioa_state != target_state;
 
 out_unlock:
-	spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	return reset;
 }
 
@@ -2716,10 +2719,10 @@ static int pmcraid_reset_device(
 	 * This will force the mid-layer to call _eh_bus/host reset, which
 	 * will then go to sleep and wait for the reset to complete
 	 */
-	spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 	if (pinstance->ioa_reset_in_progress ||
 	    pinstance->ioa_state == IOA_STATE_DEAD) {
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 		return FAILED;
 	}
 
@@ -2733,7 +2736,7 @@ static int pmcraid_reset_device(
 	cmd = pmcraid_get_free_cmd(pinstance);
 
 	if (cmd == NULL) {
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 		pmcraid_err("%s: no cmd blocks are available\n", __func__);
 		return FAILED;
 	}
@@ -2762,7 +2765,7 @@ static int pmcraid_reset_device(
 			 timeout,
 			 pmcraid_timeout_handler);
 
-	spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 
 	/* RESET_DEVICE command completes after all pending IOARCBs are
 	 * completed. Once this command is completed, pmcraind_internal_done
@@ -2957,11 +2960,11 @@ static int pmcraid_eh_abort_handler(struct scsi_cmnd *scsi_cmd)
 	 * pmcraid_eh_host_reset which will then go to sleep and wait for the
 	 * reset to complete
 	 */
-	spin_lock_irqsave(pinstance->host->host_lock, host_lock_flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, host_lock_flags);
 
 	if (pinstance->ioa_reset_in_progress ||
 	    pinstance->ioa_state == IOA_STATE_DEAD) {
-		spin_unlock_irqrestore(pinstance->host->host_lock,
+		spin_unlock_irqrestore(&pinstance->host->host_lock,
 				       host_lock_flags);
 		return rc;
 	}
@@ -2989,7 +2992,7 @@ static int pmcraid_eh_abort_handler(struct scsi_cmnd *scsi_cmd)
 	if (cmd_found)
 		cancel_cmd = pmcraid_abort_cmd(cmd);
 
-	spin_unlock_irqrestore(pinstance->host->host_lock,
+	spin_unlock_irqrestore(&pinstance->host->host_lock,
 			       host_lock_flags);
 
 	if (cancel_cmd) {
@@ -3239,14 +3242,14 @@ static int pmcraid_build_ioadl(
  *	  SCSI_MLQUEUE_DEVICE_BUSY if device is busy
  *	  SCSI_MLQUEUE_HOST_BUSY if host is busy
  */
-static int pmcraid_queuecommand_lck(struct scsi_cmnd *scsi_cmd)
+static enum scsi_qc_status pmcraid_queuecommand_lck(struct scsi_cmnd *scsi_cmd)
 {
 	struct pmcraid_instance *pinstance;
 	struct pmcraid_resource_entry *res;
 	struct pmcraid_ioarcb *ioarcb;
+	enum scsi_qc_status rc = 0;
 	struct pmcraid_cmd *cmd;
 	u32 fw_version;
-	int rc = 0;
 
 	pinstance =
 		(struct pmcraid_instance *)scsi_cmd->device->host->hostdata;
@@ -3465,7 +3468,7 @@ static long pmcraid_chr_ioctl(
 	void __user *argp = (void __user *)arg;
 	int retval = -ENOTTY;
 
-	hdr = kmalloc(sizeof(struct pmcraid_ioctl_header), GFP_KERNEL);
+	hdr = kmalloc_obj(struct pmcraid_ioctl_header);
 
 	if (!hdr) {
 		pmcraid_err("failed to allocate memory for ioctl header\n");
@@ -3665,9 +3668,9 @@ static const struct scsi_host_template pmcraid_host_template = {
 	.eh_device_reset_handler = pmcraid_eh_device_reset_handler,
 	.eh_host_reset_handler = pmcraid_eh_host_reset_handler,
 
-	.slave_alloc = pmcraid_slave_alloc,
-	.slave_configure = pmcraid_slave_configure,
-	.slave_destroy = pmcraid_slave_destroy,
+	.sdev_init = pmcraid_sdev_init,
+	.sdev_configure = pmcraid_sdev_configure,
+	.sdev_destroy = pmcraid_sdev_destroy,
 	.change_queue_depth = pmcraid_change_queue_depth,
 	.can_queue = PMCRAID_MAX_IO_CMD,
 	.this_id = -1,
@@ -3717,11 +3720,11 @@ static irqreturn_t pmcraid_isr_msix(int irq, void *dev_id)
 
 				pmcraid_err("ISR: error interrupts: %x \
 					initiating reset\n", intrs_val);
-				spin_lock_irqsave(pinstance->host->host_lock,
+				spin_lock_irqsave(&pinstance->host->host_lock,
 					lock_flags);
 				pmcraid_initiate_reset(pinstance);
 				spin_unlock_irqrestore(
-					pinstance->host->host_lock,
+					&pinstance->host->host_lock,
 					lock_flags);
 			}
 			/* If interrupt was as part of the ioa initialization,
@@ -3795,9 +3798,9 @@ static irqreturn_t pmcraid_isr(int irq, void *dev_id)
 			    intrs);
 		intrs = ioread32(
 				pinstance->int_regs.ioa_host_interrupt_clr_reg);
-		spin_lock_irqsave(pinstance->host->host_lock, lock_flags);
+		spin_lock_irqsave(&pinstance->host->host_lock, lock_flags);
 		pmcraid_initiate_reset(pinstance);
-		spin_unlock_irqrestore(pinstance->host->host_lock, lock_flags);
+		spin_unlock_irqrestore(&pinstance->host->host_lock, lock_flags);
 	} else {
 		/* If interrupt was as part of the ioa initialization,
 		 * clear. Delete the timer and wakeup the
@@ -3856,11 +3859,11 @@ static void pmcraid_worker_function(struct work_struct *workp)
 			/* host_lock must be held before calling
 			 * scsi_device_get
 			 */
-			spin_lock_irqsave(pinstance->host->host_lock,
+			spin_lock_irqsave(&pinstance->host->host_lock,
 					  host_lock_flags);
 			if (!scsi_device_get(sdev)) {
 				spin_unlock_irqrestore(
-						pinstance->host->host_lock,
+						&pinstance->host->host_lock,
 						host_lock_flags);
 				pmcraid_info("deleting %x from midlayer\n",
 					     res->cfg_entry.resource_address);
@@ -3876,7 +3879,7 @@ static void pmcraid_worker_function(struct work_struct *workp)
 				res->change_detected = 0;
 			} else {
 				spin_unlock_irqrestore(
-						pinstance->host->host_lock,
+						&pinstance->host->host_lock,
 						host_lock_flags);
 			}
 		}
@@ -3979,14 +3982,14 @@ static void pmcraid_tasklet_function(unsigned long instance)
 		list_del(&cmd->free_list);
 		spin_unlock_irqrestore(&pinstance->pending_pool_lock,
 					pending_lock_flags);
-		del_timer(&cmd->timer);
+		timer_delete(&cmd->timer);
 		atomic_dec(&pinstance->outstanding_cmds);
 
 		if (cmd->cmd_done == pmcraid_ioa_reset) {
-			spin_lock_irqsave(pinstance->host->host_lock,
+			spin_lock_irqsave(&pinstance->host->host_lock,
 					  host_lock_flags);
 			cmd->cmd_done(cmd);
-			spin_unlock_irqrestore(pinstance->host->host_lock,
+			spin_unlock_irqrestore(&pinstance->host->host_lock,
 					       host_lock_flags);
 		} else if (cmd->cmd_done != NULL) {
 			cmd->cmd_done(cmd);
@@ -4006,7 +4009,7 @@ static void pmcraid_tasklet_function(unsigned long instance)
  * This routine un-registers registered interrupt handler and
  * also frees irqs/vectors.
  *
- * Retun Value
+ * Return Value
  *	None
  */
 static
@@ -4033,7 +4036,7 @@ static int
 pmcraid_register_interrupt_handler(struct pmcraid_instance *pinstance)
 {
 	struct pci_dev *pdev = pinstance->pdev;
-	unsigned int irq_flag = PCI_IRQ_LEGACY, flag;
+	unsigned int irq_flag = PCI_IRQ_INTX, flag;
 	int num_hrrq, rc, i;
 	irq_handler_t isr;
 
@@ -4382,9 +4385,8 @@ static int pmcraid_allocate_config_buffers(struct pmcraid_instance *pinstance)
 	int i;
 
 	pinstance->res_entries =
-			kcalloc(PMCRAID_MAX_RESOURCES,
-				sizeof(struct pmcraid_resource_entry),
-				GFP_KERNEL);
+			kzalloc_objs(struct pmcraid_resource_entry,
+				     PMCRAID_MAX_RESOURCES);
 
 	if (NULL == pinstance->res_entries) {
 		pmcraid_err("failed to allocate memory for resource table\n");
@@ -4723,7 +4725,7 @@ static int pmcraid_setup_chrdev(struct pmcraid_instance *pinstance)
 	if (error)
 		pmcraid_release_minor(minor);
 	else
-		device_create(pmcraid_class, NULL, MKDEV(pmcraid_major, minor),
+		device_create(&pmcraid_class, NULL, MKDEV(pmcraid_major, minor),
 			      NULL, "%s%u", PMCRAID_DEVFILE, minor);
 	return error;
 }
@@ -4739,7 +4741,7 @@ static int pmcraid_setup_chrdev(struct pmcraid_instance *pinstance)
 static void pmcraid_release_chrdev(struct pmcraid_instance *pinstance)
 {
 	pmcraid_release_minor(MINOR(pinstance->cdev.dev));
-	device_destroy(pmcraid_class,
+	device_destroy(&pmcraid_class,
 		       MKDEV(pmcraid_major, MINOR(pinstance->cdev.dev)));
 	cdev_del(&pinstance->cdev);
 }
@@ -4878,9 +4880,9 @@ static void pmcraid_complete_ioa_reset(struct pmcraid_cmd *cmd)
 	struct pmcraid_instance *pinstance = cmd->drv_inst;
 	unsigned long flags;
 
-	spin_lock_irqsave(pinstance->host->host_lock, flags);
+	spin_lock_irqsave(&pinstance->host->host_lock, flags);
 	pmcraid_ioa_reset(cmd);
-	spin_unlock_irqrestore(pinstance->host->host_lock, flags);
+	spin_unlock_irqrestore(&pinstance->host->host_lock, flags);
 	scsi_unblock_requests(pinstance->host);
 	schedule_work(&pinstance->worker_q);
 }
@@ -5390,10 +5392,10 @@ static int __init pmcraid_init(void)
 	}
 
 	pmcraid_major = MAJOR(dev);
-	pmcraid_class = class_create(PMCRAID_DEVFILE);
 
-	if (IS_ERR(pmcraid_class)) {
-		error = PTR_ERR(pmcraid_class);
+	error = class_register(&pmcraid_class);
+
+	if (error) {
 		pmcraid_err("failed to register with sysfs, error = %x\n",
 			    error);
 		goto out_unreg_chrdev;
@@ -5402,7 +5404,7 @@ static int __init pmcraid_init(void)
 	error = pmcraid_netlink_init();
 
 	if (error) {
-		class_destroy(pmcraid_class);
+		class_unregister(&pmcraid_class);
 		goto out_unreg_chrdev;
 	}
 
@@ -5413,7 +5415,7 @@ static int __init pmcraid_init(void)
 
 	pmcraid_err("failed to register pmcraid driver, error = %x\n",
 		     error);
-	class_destroy(pmcraid_class);
+	class_unregister(&pmcraid_class);
 	pmcraid_netlink_release();
 
 out_unreg_chrdev:
@@ -5432,7 +5434,7 @@ static void __exit pmcraid_exit(void)
 	unregister_chrdev_region(MKDEV(pmcraid_major, 0),
 				 PMCRAID_MAX_ADAPTERS);
 	pci_unregister_driver(&pmcraid_driver);
-	class_destroy(pmcraid_class);
+	class_unregister(&pmcraid_class);
 }
 
 module_init(pmcraid_init);

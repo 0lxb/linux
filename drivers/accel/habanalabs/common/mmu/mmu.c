@@ -6,6 +6,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/pci.h>
 
 #include "../habanalabs.h"
 
@@ -262,7 +263,7 @@ int hl_mmu_unmap_page(struct hl_ctx *ctx, u64 virt_addr, u32 page_size, bool flu
 		mmu_funcs->flush(ctx);
 
 	if (trace_habanalabs_mmu_unmap_enabled() && !rc)
-		trace_habanalabs_mmu_unmap(hdev->dev, virt_addr, 0, page_size, flush_pte);
+		trace_habanalabs_mmu_unmap(&hdev->pdev->dev, virt_addr, 0, page_size, flush_pte);
 
 	return rc;
 }
@@ -349,7 +350,7 @@ int hl_mmu_map_page(struct hl_ctx *ctx, u64 virt_addr, u64 phys_addr, u32 page_s
 	if (flush_pte)
 		mmu_funcs->flush(ctx);
 
-	trace_habanalabs_mmu_map(hdev->dev, virt_addr, phys_addr, page_size, flush_pte);
+	trace_habanalabs_mmu_map(&hdev->pdev->dev, virt_addr, phys_addr, page_size, flush_pte);
 
 	return 0;
 
@@ -599,6 +600,7 @@ int hl_mmu_if_set_funcs(struct hl_device *hdev)
 	case ASIC_GAUDI2:
 	case ASIC_GAUDI2B:
 	case ASIC_GAUDI2C:
+	case ASIC_GAUDI2D:
 		hl_mmu_v2_set_funcs(hdev, &hdev->mmu_func[MMU_DR_PGT]);
 		if (prop->pmmu.host_resident)
 			hl_mmu_v2_hr_set_funcs(hdev, &hdev->mmu_func[MMU_HR_PGT]);
@@ -644,7 +646,8 @@ int hl_mmu_invalidate_cache(struct hl_device *hdev, bool is_hard, u32 flags)
 	rc = hdev->asic_funcs->mmu_invalidate_cache(hdev, is_hard, flags);
 	if (rc)
 		dev_err_ratelimited(hdev->dev,
-				"%s cache invalidation failed, rc=%d\n",
+				"%s: %s cache invalidation failed, rc=%d\n",
+				dev_name(&hdev->pdev->dev),
 				flags == VM_TYPE_USERPTR ? "PMMU" : "HMMU", rc);
 
 	return rc;
@@ -659,8 +662,9 @@ int hl_mmu_invalidate_cache_range(struct hl_device *hdev, bool is_hard,
 								asid, va, size);
 	if (rc)
 		dev_err_ratelimited(hdev->dev,
-				"%s cache range invalidation failed: va=%#llx, size=%llu, rc=%d",
-				flags == VM_TYPE_USERPTR ? "PMMU" : "HMMU", va, size, rc);
+			"%s: %s cache range invalidation failed: va=%#llx, size=%llu, rc=%d",
+			dev_name(&hdev->pdev->dev), flags == VM_TYPE_USERPTR ? "PMMU" : "HMMU",
+			va, size, rc);
 
 	return rc;
 }
@@ -693,7 +697,7 @@ int hl_mmu_prefetch_cache_range(struct hl_ctx *ctx, u32 flags, u32 asid, u64 va,
 {
 	struct hl_prefetch_work *handle_prefetch_work;
 
-	handle_prefetch_work = kmalloc(sizeof(*handle_prefetch_work), GFP_KERNEL);
+	handle_prefetch_work = kmalloc_obj(*handle_prefetch_work);
 	if (!handle_prefetch_work)
 		return -ENOMEM;
 
@@ -839,7 +843,7 @@ int hl_mmu_hr_init(struct hl_device *hdev, struct hl_mmu_hr_priv *hr_priv, u32 h
 		return -ENOMEM;
 	}
 
-	hr_priv->mmu_asid_hop0 = kvcalloc(prop->max_asid, sizeof(struct pgt_info), GFP_KERNEL);
+	hr_priv->mmu_asid_hop0 = kvzalloc_objs(struct pgt_info, prop->max_asid);
 	if (ZERO_OR_NULL_PTR(hr_priv->mmu_asid_hop0)) {
 		dev_err(hdev->dev, "Failed to allocate hr-mmu hop0 table\n");
 		rc = -ENOMEM;
@@ -1067,7 +1071,7 @@ struct pgt_info *hl_mmu_hr_alloc_hop(struct hl_ctx *ctx, struct hl_mmu_hr_priv *
 	void *virt_addr;
 	int i, retry = 1;
 
-	pgt_info = kmalloc(sizeof(*pgt_info), GFP_KERNEL);
+	pgt_info = kmalloc_obj(*pgt_info);
 	if (!pgt_info)
 		return NULL;
 
@@ -1321,7 +1325,7 @@ u64 hl_mmu_dr_alloc_hop(struct hl_ctx *ctx)
 	struct pgt_info *pgt_info;
 	u64 phys_addr, shadow_addr;
 
-	pgt_info = kmalloc(sizeof(*pgt_info), GFP_KERNEL);
+	pgt_info = kmalloc_obj(*pgt_info);
 	if (!pgt_info)
 		return ULLONG_MAX;
 

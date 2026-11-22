@@ -784,8 +784,7 @@ int jffs2_build_xattr_subsystem(struct jffs2_sb_info *c)
 
 	BUG_ON(!(c->flags & JFFS2_SB_FLAG_BUILDING));
 
-	xref_tmphash = kcalloc(XREF_TMPHASH_SIZE,
-			       sizeof(struct jffs2_xattr_ref *), GFP_KERNEL);
+	xref_tmphash = kzalloc_objs(struct jffs2_xattr_ref *, XREF_TMPHASH_SIZE);
 	if (!xref_tmphash)
 		return -ENOMEM;
 
@@ -1110,6 +1109,9 @@ int do_jffs2_setxattr(struct inode *inode, int xprefix, const char *xname,
 		return rc;
 
 	request = PAD(sizeof(struct jffs2_raw_xattr) + strlen(xname) + 1 + size);
+	if (request > c->sector_size - c->cleanmarker_size)
+		return -ERANGE;
+
 	rc = jffs2_reserve_space(c, request, &length,
 				 ALLOC_NORMAL, JFFS2_SUMMARY_XATTR_SIZE);
 	if (rc) {

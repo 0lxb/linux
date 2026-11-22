@@ -9,6 +9,10 @@
 #include <linux/component.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
+#include <linux/timer.h>
+
+#include <drm/drm_print.h>
 
 #include "vc4_drv.h"
 #include "vc4_regs.h"
@@ -120,46 +124,25 @@ static int vc4_v3d_debugfs_ident(struct seq_file *m, void *unused)
 	return 0;
 }
 
-/*
- * Wraps pm_runtime_get_sync() in a refcount, so that we can reliably
- * get the pm_runtime refcount to 0 in vc4_reset().
- */
 int
 vc4_v3d_pm_get(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
 		return -ENODEV;
 
-	mutex_lock(&vc4->power_lock);
-	if (vc4->power_refcount++ == 0) {
-		int ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
-
-		if (ret < 0) {
-			vc4->power_refcount--;
-			mutex_unlock(&vc4->power_lock);
-			return ret;
-		}
-	}
-	mutex_unlock(&vc4->power_lock);
-
-	return 0;
+	return pm_runtime_resume_and_get(&vc4->v3d->pdev->dev);
 }
 
 void
 vc4_v3d_pm_put(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
 		return;
 
-	mutex_lock(&vc4->power_lock);
-	if (--vc4->power_refcount == 0) {
-		pm_runtime_mark_last_busy(&vc4->v3d->pdev->dev);
-		pm_runtime_put_autosuspend(&vc4->v3d->pdev->dev);
-	}
-	mutex_unlock(&vc4->power_lock);
+	pm_runtime_put_autosuspend(&vc4->v3d->pdev->dev);
 }
 
-static void vc4_v3d_init_hw(struct drm_device *dev)
+void vc4_v3d_init_hw(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 
@@ -170,46 +153,42 @@ static void vc4_v3d_init_hw(struct drm_device *dev)
 	V3D_WRITE(V3D_VPMBASE, 0);
 }
 
-int vc4_v3d_get_bin_slot(struct vc4_dev *vc4)
+static int bin_slot_try_alloc(struct vc4_dev *vc4)
 {
-	struct drm_device *dev = &vc4->base;
-	unsigned long irqflags;
 	int slot;
-	uint64_t seqno = 0;
-	struct vc4_exec_info *exec;
 
-	if (WARN_ON_ONCE(vc4->is_vc5))
-		return -ENODEV;
+	guard(spinlock_irqsave)(&vc4->job_lock);
 
-try_again:
-	spin_lock_irqsave(&vc4->job_lock, irqflags);
 	slot = ffs(~vc4->bin_alloc_used);
 	if (slot != 0) {
 		/* Switch from ffs() bit index to a 0-based index. */
 		slot--;
 		vc4->bin_alloc_used |= BIT(slot);
-		spin_unlock_irqrestore(&vc4->job_lock, irqflags);
-		return slot;
+	} else {
+		slot = -ENOMEM;
 	}
 
-	/* Couldn't find an open slot.  Wait for render to complete
-	 * and try again.
-	 */
-	exec = vc4_last_render_job(vc4);
-	if (exec)
-		seqno = exec->seqno;
-	spin_unlock_irqrestore(&vc4->job_lock, irqflags);
+	return slot;
+}
 
-	if (seqno) {
-		int ret = vc4_wait_for_seqno(dev, seqno, ~0ull, true);
+int vc4_v3d_get_bin_slot(struct vc4_dev *vc4, long timeout)
+{
+	int slot;
+	long ret;
 
-		if (ret == 0)
-			goto try_again;
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+		return -ENODEV;
 
+	/* If the pool is full, wait for a job to release its slots. */
+	ret = wait_event_interruptible_timeout(vc4->job_wait_queue,
+					       (slot = bin_slot_try_alloc(vc4)) >= 0,
+					       timeout);
+	if (ret < 0)
 		return ret;
-	}
+	if (ret == 0)
+		return -ENOMEM;
 
-	return -ENOMEM;
+	return slot;
 }
 
 /*
@@ -323,10 +302,14 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 
 int vc4_v3d_bin_bo_get(struct vc4_dev *vc4, bool *used)
 {
-	int ret = 0;
+	int ret;
 
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
 		return -ENODEV;
+
+	ret = vc4_v3d_pm_get(vc4);
+	if (ret)
+		return ret;
 
 	mutex_lock(&vc4->bin_bo_lock);
 
@@ -343,6 +326,7 @@ int vc4_v3d_bin_bo_get(struct vc4_dev *vc4, bool *used)
 
 complete:
 	mutex_unlock(&vc4->bin_bo_lock);
+	vc4_v3d_pm_put(vc4);
 
 	return ret;
 }
@@ -360,7 +344,7 @@ static void bin_bo_release(struct kref *ref)
 
 void vc4_v3d_bin_bo_put(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
 		return;
 
 	mutex_lock(&vc4->bin_bo_lock);
@@ -423,7 +407,7 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 	struct vc4_v3d *v3d = NULL;
 	int ret;
 
-	v3d = devm_kzalloc(&pdev->dev, sizeof(*v3d), GFP_KERNEL);
+	v3d = devm_kzalloc_obj(&pdev->dev, *v3d);
 	if (!v3d)
 		return -ENOMEM;
 
@@ -441,26 +425,35 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 	vc4->v3d = v3d;
 	v3d->vc4 = vc4;
 
-	v3d->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(v3d->clk)) {
-		int ret = PTR_ERR(v3d->clk);
+	/*
+	 * In headless setups where HVS is absent, use V3D as the fallback
+	 * DMA controller for buffer allocations.
+	 */
+	if (drm_dev_dma_dev(drm) == drm->dev)
+		drm_dev_set_dma_dev(drm, dev);
 
-		if (ret == -ENOENT) {
-			/* bcm2835 didn't have a clock reference in the DT. */
-			ret = 0;
-			v3d->clk = NULL;
-		} else {
-			if (ret != -EPROBE_DEFER)
-				dev_err(dev, "Failed to get V3D clock: %d\n",
-					ret);
-			return ret;
-		}
-	}
+	v3d->clk = devm_clk_get_optional(dev, NULL);
+	if (IS_ERR(v3d->clk))
+		return dev_err_probe(dev, PTR_ERR(v3d->clk), "Failed to get V3D clock\n");
+
+	v3d->reset = devm_reset_control_get_optional_exclusive(dev, NULL);
+	if (IS_ERR(v3d->reset))
+		return dev_err_probe(dev, PTR_ERR(v3d->reset),
+				     "Failed to get reset control\n");
+
+	if (!v3d->reset)
+		drm_warn(drm, "No V3D reset line in the device tree");
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0)
 		return ret;
 	vc4->irq = ret;
+
+	ret = vc4_irq_install(drm, vc4->irq);
+	if (ret) {
+		drm_err(drm, "Failed to install IRQ handler\n");
+		return ret;
+	}
 
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
@@ -471,8 +464,8 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 		return ret;
 
 	if (V3D_READ(V3D_IDENT0) != V3D_EXPECTED_IDENT0) {
-		DRM_ERROR("V3D_IDENT0 read 0x%08x instead of 0x%08x\n",
-			  V3D_READ(V3D_IDENT0), V3D_EXPECTED_IDENT0);
+		drm_err(drm, "V3D_IDENT0 read 0x%08x instead of 0x%08x\n",
+			V3D_READ(V3D_IDENT0), V3D_EXPECTED_IDENT0);
 		ret = -EINVAL;
 		goto err_put_runtime_pm;
 	}
@@ -483,14 +476,9 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 	V3D_WRITE(V3D_BPOA, 0);
 	V3D_WRITE(V3D_BPOS, 0);
 
-	ret = vc4_irq_install(drm, vc4->irq);
-	if (ret) {
-		DRM_ERROR("Failed to install IRQ handler\n");
-		goto err_put_runtime_pm;
-	}
-
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_set_autosuspend_delay(dev, 40); /* a little over 2 frames. */
+	pm_runtime_put_autosuspend(dev);
 
 	return 0;
 
@@ -503,10 +491,17 @@ err_put_runtime_pm:
 static void vc4_v3d_unbind(struct device *dev, struct device *master,
 			   void *data)
 {
-	struct drm_device *drm = dev_get_drvdata(master);
+	struct drm_device *drm = data;
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
 
+	/* A straggler vc4_reset() re-enables the interrupt. */
+	timer_shutdown_sync(&vc4->hangcheck.timer);
+	cancel_work_sync(&vc4->hangcheck.reset_work);
+
 	vc4_irq_uninstall(drm);
+
+	/* Flush rather than cancel, so queued completions release their jobs. */
+	flush_work(&vc4->job_done_work);
 
 	/* Disable the binner's overflow memory address, so the next
 	 * driver probe (if any) doesn't try to reuse our old
@@ -540,13 +535,12 @@ static void vc4_v3d_dev_remove(struct platform_device *pdev)
 const struct of_device_id vc4_v3d_dt_match[] = {
 	{ .compatible = "brcm,bcm2835-v3d" },
 	{ .compatible = "brcm,cygnus-v3d" },
-	{ .compatible = "brcm,vc4-v3d" },
 	{}
 };
 
 struct platform_driver vc4_v3d_driver = {
 	.probe = vc4_v3d_dev_probe,
-	.remove_new = vc4_v3d_dev_remove,
+	.remove = vc4_v3d_dev_remove,
 	.driver = {
 		.name = "vc4_v3d",
 		.of_match_table = vc4_v3d_dt_match,

@@ -177,7 +177,7 @@ static int d7s_probe(struct platform_device *op)
 	if (d7s_device)
 		goto out;
 
-	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
+	p = devm_kzalloc_obj(&op->dev, *p);
 	err = -ENOMEM;
 	if (!p)
 		goto out;
@@ -261,7 +261,7 @@ static struct platform_driver d7s_driver = {
 		.of_match_table = d7s_match,
 	},
 	.probe		= d7s_probe,
-	.remove_new	= d7s_remove,
+	.remove		= d7s_remove,
 };
 
 module_platform_driver(d7s_driver);

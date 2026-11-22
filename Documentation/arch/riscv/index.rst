@@ -13,12 +13,8 @@ RISC-V architecture
     patch-acceptance
     uabi
     vector
+    cmodx
+    zicfilp
+    zicfiss
 
     features
-
-.. only::  subproject and html
-
-   Indices
-   =======
-
-   * :ref:`genindex`

@@ -5,8 +5,8 @@
 #include <time.h>
 #include <errno.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 #include "bpf_misc.h"
-#include "bpf_tcp_helpers.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -61,6 +61,35 @@ long BPF_PROG2(test_bad_ret, int, a)
 	if (timer) {
 		bpf_timer_init(timer, &timer_map, CLOCK_BOOTTIME);
 		bpf_timer_set_callback(timer, timer_cb_ret_bad);
+		bpf_timer_start(timer, 1000, 0);
+	}
+
+	return 0;
+}
+
+/*
+ * A real loop inside an async callback must still be rejected: both entries
+ * into the callback have the same async_entry_cnt, so telling entries apart
+ * does not apply here.
+ */
+static int timer_cb_infinite_loop(void *map, int *key, struct elem *val)
+{
+	for (;;) {}
+
+	return 0;
+}
+
+SEC("fentry/bpf_fentry_test1")
+__failure __msg("infinite loop detected")
+long BPF_PROG2(test_infinite_loop_cb, int, a)
+{
+	struct bpf_timer *timer;
+	int key = 0;
+
+	timer = bpf_map_lookup_elem(&timer_map, &key);
+	if (timer) {
+		bpf_timer_init(timer, &timer_map, CLOCK_BOOTTIME);
+		bpf_timer_set_callback(timer, timer_cb_infinite_loop);
 		bpf_timer_start(timer, 1000, 0);
 	}
 

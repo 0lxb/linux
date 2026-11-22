@@ -43,6 +43,7 @@
 #define __DAL_OPP_H__
 
 #include "hw_shared.h"
+#include "../custom_float.h"
 #include "dc_hw_types.h"
 #include "transform.h"
 #include "mpc.h"
@@ -142,19 +143,6 @@ enum channel_name {
 	CHANNEL_NAME_BLUE
 };
 
-struct custom_float_format {
-	uint32_t mantissa_bits;
-	uint32_t exponenta_bits;
-	bool sign;
-};
-
-struct custom_float_value {
-	uint32_t mantissa;
-	uint32_t exponenta;
-	uint32_t value;
-	bool negative;
-};
-
 struct hw_x_point {
 	uint32_t custom_float_x;
 	struct fixed31_32 x;
@@ -205,9 +193,24 @@ struct gamma_coefficients {
 	struct fixed31_32 user_brightness;
 };
 
+/**
+ * struct pwl_float_data - Fixed point RGB color
+ */
 struct pwl_float_data {
+	/**
+	 * @r: Component Red.
+	 */
 	struct fixed31_32 r;
+
+	/**
+	 * @g: Component Green.
+	 */
+
 	struct fixed31_32 g;
+
+	/**
+	 * @b: Component Blue.
+	 */
 	struct fixed31_32 b;
 };
 
@@ -282,6 +285,16 @@ struct oppbuf_params {
 	uint32_t num_segment_padded_pixels;
 };
 
+struct dcn_opp_reg_state {
+	uint32_t dpg_control;
+	uint32_t fmt_control;
+	uint32_t oppbuf_control;
+	uint32_t opp_pipe_control;
+	uint32_t opp_pipe_crc_control;
+	uint32_t opp_abm_control;
+	uint32_t dscrm_dsc_forward_config;
+};
+
 struct opp_funcs {
 
 
@@ -327,15 +340,19 @@ struct opp_funcs {
 			const struct tg_color *solid_color,
 			int width,
 			int height,
-			int offset);
+			int offset,
+			bool disable_dyn_exp_for_test_pattern);
 
 	void (*opp_program_dpg_dimensions)(
 				struct output_pixel_processor *opp,
-				int width,
-				int height);
+				uint32_t width,
+				uint32_t height);
 
 	bool (*dpg_is_blanked)(
 			struct output_pixel_processor *opp);
+
+	bool (*dpg_is_pending)(struct output_pixel_processor *opp);
+
 
 	void (*opp_dpg_set_blank_color)(
 			struct output_pixel_processor *opp,
@@ -343,8 +360,16 @@ struct opp_funcs {
 
 	void (*opp_program_left_edge_extra_pixel)(
 			struct output_pixel_processor *opp,
-			bool count);
+			enum dc_pixel_encoding pixel_encoding,
+			bool is_primary);
 
+	uint32_t (*opp_get_left_edge_extra_pixel_count)(
+			struct output_pixel_processor *opp,
+			enum dc_pixel_encoding pixel_encoding,
+			bool is_primary);
+
+	void (*opp_read_reg_state)(
+			struct output_pixel_processor *opp, struct dcn_opp_reg_state *opp_reg_state);
 };
 
 #endif

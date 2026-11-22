@@ -561,7 +561,7 @@ static int mbox_get_get_trl(struct isst_id *id, int level, int avx_level, int *t
 	if (ret)
 		return ret;
 
-	debug_printf("cpu:%d CONFIG_TDP_GET_TURBO_LIMIT req:%x resp:%x\n", id->cpu,
+	debug_printf("cpu:%d CONFIG_TDP_GET_TURBO_LIMIT_RATIOS req:%x resp:%x\n", id->cpu,
 		     req, resp);
 
 	trl[4] = resp & GENMASK(7, 0);
@@ -746,6 +746,7 @@ static int mbox_set_pbf_fact_status(struct isst_id *id, int pbf, int enable)
 static int _get_fact_bucket_info(struct isst_id *id, int level,
 			      struct isst_fact_bucket_info *bucket_info)
 {
+	int trl_max_levels = isst_get_trl_max_levels();
 	unsigned int resp;
 	int i, k, ret;
 
@@ -769,7 +770,7 @@ static int _get_fact_bucket_info(struct isst_id *id, int level,
 		}
 	}
 
-	for (k = 0; k < 3; ++k) {
+	for (k = 0; k < trl_max_levels; ++k) {
 		for (i = 0; i < 2; ++i) {
 			int j;
 

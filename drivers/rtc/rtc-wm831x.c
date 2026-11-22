@@ -405,7 +405,7 @@ static int wm831x_rtc_probe(struct platform_device *pdev)
 	int alm_irq = wm831x_irq(wm831x, platform_get_irq_byname(pdev, "ALM"));
 	int ret = 0;
 
-	wm831x_rtc = devm_kzalloc(&pdev->dev, sizeof(*wm831x_rtc), GFP_KERNEL);
+	wm831x_rtc = devm_kzalloc_obj(&pdev->dev, *wm831x_rtc);
 	if (wm831x_rtc == NULL)
 		return -ENOMEM;
 
@@ -420,7 +420,7 @@ static int wm831x_rtc_probe(struct platform_device *pdev)
 	if (ret & WM831X_RTC_ALM_ENA)
 		wm831x_rtc->alarm_enabled = 1;
 
-	device_init_wakeup(&pdev->dev, 1);
+	device_init_wakeup(&pdev->dev, true);
 
 	wm831x_rtc->rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(wm831x_rtc->rtc))

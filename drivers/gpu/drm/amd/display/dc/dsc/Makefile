@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: MIT
-#
-# Makefile for the 'dsc' sub-component of DAL.
+# Copyright © 2019-2024 Advanced Micro Devices, Inc. All rights reserved.
 
 ifdef CONFIG_DRM_AMD_DC_FP
 
@@ -22,8 +21,21 @@ DSC_DCN35 = dcn35_dsc.o
 
 AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn35/,$(DSC_DCN35))
 
+###############################################################################
+# DCN401
+###############################################################################
 
+DSC_DCN401 += dcn401_dsc.o
 
+AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn401/,$(DSC_DCN401))
+
+###############################################################################
+# DCN60
+###############################################################################
+
+DSC_DCN60 += dcn60_dsc.o
+
+AMD_DISPLAY_FILES += $(addprefix $(AMDDALPATH)/dc/dsc/dcn60/,$(DSC_DCN60))
 endif
 
 DSC = dc_dsc.o rc_calc.o rc_calc_dpi.o

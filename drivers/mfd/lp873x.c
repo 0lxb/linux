@@ -7,7 +7,6 @@
 
 #include <linux/interrupt.h>
 #include <linux/mfd/core.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
 
@@ -30,7 +29,7 @@ static int lp873x_probe(struct i2c_client *client)
 	int ret;
 	unsigned int otpid;
 
-	lp873 = devm_kzalloc(&client->dev, sizeof(*lp873), GFP_KERNEL);
+	lp873 = devm_kzalloc_obj(&client->dev, *lp873);
 	if (!lp873)
 		return -ENOMEM;
 
@@ -68,8 +67,8 @@ static const struct of_device_id of_lp873x_match_table[] = {
 MODULE_DEVICE_TABLE(of, of_lp873x_match_table);
 
 static const struct i2c_device_id lp873x_id_table[] = {
-	{ "lp873x", 0 },
-	{ },
+	{ "lp873x" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lp873x_id_table);
 

@@ -193,7 +193,7 @@ static int max8907_i2c_probe(struct i2c_client *i2c)
 		pm_off = of_property_read_bool(i2c->dev.of_node,
 					"maxim,system-power-controller");
 
-	max8907 = devm_kzalloc(&i2c->dev, sizeof(struct max8907), GFP_KERNEL);
+	max8907 = devm_kzalloc_obj(&i2c->dev, struct max8907);
 	if (!max8907) {
 		ret = -ENOMEM;
 		goto err_alloc_drvdata;
@@ -300,7 +300,7 @@ MODULE_DEVICE_TABLE(of, max8907_of_match);
 #endif
 
 static const struct i2c_device_id max8907_i2c_id[] = {
-	{"max8907", 0},
+	{ "max8907" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, max8907_i2c_id);

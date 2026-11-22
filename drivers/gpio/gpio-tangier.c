@@ -90,7 +90,7 @@ static int tng_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(readl(gplr) & BIT(shift));
 }
 
-static void tng_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static int tng_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct tng_gpio *priv = gpiochip_get_data(chip);
 	void __iomem *reg;
@@ -101,6 +101,8 @@ static void tng_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 	guard(raw_spinlock_irqsave)(&priv->lock);
 
 	writel(BIT(shift), reg);
+
+	return 0;
 }
 
 static int tng_gpio_direction_input(struct gpio_chip *chip, unsigned int offset)
@@ -195,7 +197,8 @@ static int tng_gpio_set_config(struct gpio_chip *chip, unsigned int offset,
 
 static void tng_irq_ack(struct irq_data *d)
 {
-	struct tng_gpio *priv = irq_data_get_irq_chip_data(d);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct tng_gpio *priv = gpiochip_get_data(gc);
 	irq_hw_number_t gpio = irqd_to_hwirq(d);
 	void __iomem *gisr;
 	u8 shift;
@@ -227,7 +230,8 @@ static void tng_irq_unmask_mask(struct tng_gpio *priv, u32 gpio, bool unmask)
 
 static void tng_irq_mask(struct irq_data *d)
 {
-	struct tng_gpio *priv = irq_data_get_irq_chip_data(d);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct tng_gpio *priv = gpiochip_get_data(gc);
 	irq_hw_number_t gpio = irqd_to_hwirq(d);
 
 	tng_irq_unmask_mask(priv, gpio, false);
@@ -236,7 +240,8 @@ static void tng_irq_mask(struct irq_data *d)
 
 static void tng_irq_unmask(struct irq_data *d)
 {
-	struct tng_gpio *priv = irq_data_get_irq_chip_data(d);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct tng_gpio *priv = gpiochip_get_data(gc);
 	irq_hw_number_t gpio = irqd_to_hwirq(d);
 
 	gpiochip_enable_irq(&priv->chip, gpio);
@@ -414,7 +419,7 @@ int devm_tng_gpio_probe(struct device *dev, struct tng_gpio *gpio)
 	struct gpio_irq_chip *girq;
 	int ret;
 
-	gpio->ctx = devm_kcalloc(dev, nctx, sizeof(*gpio->ctx), GFP_KERNEL);
+	gpio->ctx = devm_kzalloc_objs(dev, *gpio->ctx, nctx);
 	if (!gpio->ctx)
 		return -ENOMEM;
 
@@ -440,8 +445,8 @@ int devm_tng_gpio_probe(struct device *dev, struct tng_gpio *gpio)
 	girq->init_hw = tng_irq_init_hw;
 	girq->parent_handler = tng_irq_handler;
 	girq->num_parents = 1;
-	girq->parents = devm_kcalloc(dev, girq->num_parents,
-				     sizeof(*girq->parents), GFP_KERNEL);
+	girq->parents = devm_kzalloc_objs(dev, *girq->parents,
+					  girq->num_parents);
 	if (!girq->parents)
 		return -ENOMEM;
 
@@ -456,7 +461,7 @@ int devm_tng_gpio_probe(struct device *dev, struct tng_gpio *gpio)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(devm_tng_gpio_probe, GPIO_TANGIER);
+EXPORT_SYMBOL_NS_GPL(devm_tng_gpio_probe, "GPIO_TANGIER");
 
 static int tng_gpio_suspend(struct device *dev)
 {

@@ -16,6 +16,8 @@ description: |
   DAC for headphone output, two integrated Class D amplifiers for
   loudspeakers, and two ADCs for wired headset microphone input or
   stereo line input. PDM inputs are provided for digital microphones.
+  CS42L43B variant adds dedicated PDM interface, SoundWire Clock Gearing
+  support and more decimators to ISRCs.
 
 allOf:
   - $ref: dai-common.yaml#
@@ -24,6 +26,8 @@ properties:
   compatible:
     enum:
       - cirrus,cs42l43
+      - cirrus,cs42l43b
+      - cirrus,cs42l44
 
   reg:
     maxItems: 1
@@ -185,11 +189,12 @@ properties:
 
       gpio-ranges:
         items:
-          - description: A phandle to the CODEC pinctrl node
-            minimum: 0
-          - const: 0
-          - const: 0
-          - const: 3
+          - items:
+              - description: A phandle to the CODEC pinctrl node
+                minimum: 0
+              - const: 0
+              - const: 0
+              - const: 3
 
     patternProperties:
       "-state$":

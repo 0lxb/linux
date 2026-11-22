@@ -24,10 +24,16 @@
 #define CTA_FILTER_FLAG(ctattr) CTA_FILTER_F_ ## ctattr
 
 /* nf_queue.c */
-void nf_queue_nf_hook_drop(struct net *net);
+void nf_queue_nf_hook_drop(struct net *net, const struct nf_hook_ops *ops);
 
 /* nf_log.c */
 int __init netfilter_log_init(void);
+
+#ifdef CONFIG_LWTUNNEL
+/* nf_hooks_lwtunnel.c */
+int __init netfilter_lwtunnel_init(void);
+void netfilter_lwtunnel_fini(void);
+#endif
 
 /* core.c */
 void nf_hook_entries_delete_raw(struct nf_hook_entries __rcu **pp,

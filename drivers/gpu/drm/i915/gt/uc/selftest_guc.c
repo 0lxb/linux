@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /*
- * Copyright �� 2021 Intel Corporation
+ * Copyright © 2021 Intel Corporation
  */
 
 #include "gt/intel_gt_print.h"
@@ -144,7 +144,7 @@ err:
 static int intel_guc_steal_guc_ids(void *arg)
 {
 	struct intel_gt *gt = arg;
-	struct intel_guc *guc = &gt->uc.guc;
+	struct intel_guc *guc = gt_to_guc(gt);
 	int ret, sv, context_index = 0;
 	intel_wakeref_t wakeref;
 	struct intel_engine_cs *engine;
@@ -153,7 +153,7 @@ static int intel_guc_steal_guc_ids(void *arg)
 	struct i915_request *spin_rq = NULL, *rq, *last = NULL;
 	int number_guc_id_stolen = guc->number_guc_id_stolen;
 
-	ce = kcalloc(GUC_MAX_CONTEXT_ID, sizeof(*ce), GFP_KERNEL);
+	ce = kzalloc_objs(*ce, GUC_MAX_CONTEXT_ID);
 	if (!ce) {
 		guc_err(guc, "Context array allocation failed\n");
 		return -ENOMEM;

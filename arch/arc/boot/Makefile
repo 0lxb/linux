@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
-# uImage build relies on mkimage being availble on your host for ARC target
+# uImage build relies on mkimage being available on your host for ARC target
 # You will need to build u-boot for ARC, rename mkimage to arc-elf32-mkimage
-# and make sure it's reacable from your PATH
+# and make sure it's reachable from your PATH
 
 OBJCOPYFLAGS= -O binary -R .note -R .note.gnu.build-id -R .comment -S
 
@@ -23,7 +23,7 @@ $(obj)/vmlinux.bin: vmlinux FORCE
 	$(call if_changed,objcopy)
 
 $(obj)/vmlinux.bin.gz: $(obj)/vmlinux.bin FORCE
-	$(call if_changed,gzip)
+	+$(call if_changed,gzip)
 
 $(obj)/vmlinux.bin.lzma: $(obj)/vmlinux.bin FORCE
 	$(call if_changed,lzma)

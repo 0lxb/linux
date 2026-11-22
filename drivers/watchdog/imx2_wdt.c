@@ -29,6 +29,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 #define DRIVER_NAME "imx2-wdt"
@@ -79,12 +80,12 @@ struct imx2_wdt_device {
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+				__stringify(WATCHDOG_NOWAYOUT) ")");
 
 static unsigned timeout;
 module_param(timeout, uint, 0);
 MODULE_PARM_DESC(timeout, "Watchdog timeout in seconds (default="
-				__MODULE_STRING(IMX2_WDT_DEFAULT_TIME) ")");
+				__stringify(IMX2_WDT_DEFAULT_TIME) ")");
 
 static const struct watchdog_info imx2_wdt_info = {
 	.identity = "imx2+ watchdog",
@@ -273,7 +274,7 @@ static int __init imx2_wdt_probe(struct platform_device *pdev)
 	int ret;
 	u32 val;
 
-	wdev = devm_kzalloc(dev, sizeof(*wdev), GFP_KERNEL);
+	wdev = devm_kzalloc_obj(dev, *wdev);
 	if (!wdev)
 		return -ENOMEM;
 
@@ -379,7 +380,7 @@ static void imx2_wdt_shutdown(struct platform_device *pdev)
 }
 
 /* Disable watchdog if it is active or non-active but still running */
-static int __maybe_unused imx2_wdt_suspend(struct device *dev)
+static int imx2_wdt_suspend(struct device *dev)
 {
 	struct watchdog_device *wdog = dev_get_drvdata(dev);
 	struct imx2_wdt_device *wdev = watchdog_get_drvdata(wdog);
@@ -404,7 +405,7 @@ static int __maybe_unused imx2_wdt_suspend(struct device *dev)
 }
 
 /* Enable watchdog and configure it if necessary */
-static int __maybe_unused imx2_wdt_resume(struct device *dev)
+static int imx2_wdt_resume(struct device *dev)
 {
 	struct watchdog_device *wdog = dev_get_drvdata(dev);
 	struct imx2_wdt_device *wdev = watchdog_get_drvdata(wdog);
@@ -435,8 +436,8 @@ static int __maybe_unused imx2_wdt_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(imx2_wdt_pm_ops, imx2_wdt_suspend,
-			 imx2_wdt_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(imx2_wdt_pm_ops, imx2_wdt_suspend,
+				imx2_wdt_resume);
 
 static struct imx2_wdt_data imx_wdt = {
 	.wdw_supported = true,
@@ -476,7 +477,7 @@ static struct platform_driver imx2_wdt_driver = {
 	.shutdown	= imx2_wdt_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.pm     = &imx2_wdt_pm_ops,
+		.pm     = pm_sleep_ptr(&imx2_wdt_pm_ops),
 		.of_match_table = imx2_wdt_dt_ids,
 	},
 };

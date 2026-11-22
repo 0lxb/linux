@@ -5,7 +5,7 @@
  *
  *  Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>
  *  Copyright (c) 2005-2008 Stefano Brivio <stefano.brivio@polimi.it>
- *  Copyright (c) 2005, 2006 Michael Buesch <m@bues.ch>
+ *  Copyright (c) 2005, 2006 Michael Buesch
  *  Copyright (c) 2005 Danny van Dyk <kugelfang@gentoo.org>
  *  Copyright (c) 2005 Andreas Jaggi <andreas.jaggi@waterwave.ch>
  *  Copyright (c) 2007 Larry Finger <Larry.Finger@lwfinger.net>
@@ -27,7 +27,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
 #include <net/dst.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "b43legacy.h"
 #include "main.h"
@@ -2662,7 +2662,7 @@ static void b43legacy_set_retry_limits(struct b43legacy_wldev *dev,
 	b43legacy_shm_write16(dev, B43legacy_SHM_WIRELESS, 0x0007, long_retry);
 }
 
-static int b43legacy_op_dev_config(struct ieee80211_hw *hw,
+static int b43legacy_op_dev_config(struct ieee80211_hw *hw, int radio_idx,
 				   u32 changed)
 {
 	struct b43legacy_wl *wl = hw_to_b43legacy_wl(hw);
@@ -3207,7 +3207,8 @@ static void b43legacy_wireless_core_exit(struct b43legacy_wldev *dev)
 	ssb_bus_may_powerdown(dev->dev->bus);
 }
 
-static void prepare_phy_data_for_init(struct b43legacy_wldev *dev)
+static noinline_for_stack void
+prepare_phy_data_for_init(struct b43legacy_wldev *dev)
 {
 	struct b43legacy_phy *phy = &dev->phy;
 	int i;
@@ -3269,9 +3270,8 @@ static int b43legacy_wireless_core_init(struct b43legacy_wldev *dev)
 
 	if ((phy->type == B43legacy_PHYTYPE_B) ||
 	    (phy->type == B43legacy_PHYTYPE_G)) {
-		phy->_lo_pairs = kcalloc(B43legacy_LO_COUNT,
-					 sizeof(struct b43legacy_lopair),
-					 GFP_KERNEL);
+		phy->_lo_pairs = kzalloc_objs(struct b43legacy_lopair,
+					      B43legacy_LO_COUNT);
 		if (!phy->_lo_pairs)
 			return -ENOMEM;
 	}
@@ -3485,7 +3485,7 @@ out_mutex_unlock:
 	return err;
 }
 
-static void b43legacy_op_stop(struct ieee80211_hw *hw)
+static void b43legacy_op_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct b43legacy_wl *wl = hw_to_b43legacy_wl(hw);
 	struct b43legacy_wldev *dev = wl->current_dev;
@@ -3739,7 +3739,7 @@ static int b43legacy_one_core_attach(struct ssb_device *dev,
 	struct b43legacy_wldev *wldev;
 	int err = -ENOMEM;
 
-	wldev = kzalloc(sizeof(*wldev), GFP_KERNEL);
+	wldev = kzalloc_obj(*wldev);
 	if (!wldev)
 		goto out;
 

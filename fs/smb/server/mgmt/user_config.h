@@ -18,6 +18,8 @@ struct ksmbd_user {
 
 	size_t			passkey_sz;
 	char			*passkey;
+	int			ngroups;
+	gid_t			*sgid;
 };
 
 static inline bool user_guest(struct ksmbd_user *user)
@@ -60,8 +62,14 @@ static inline unsigned int user_gid(struct ksmbd_user *user)
 }
 
 struct ksmbd_user *ksmbd_login_user(const char *account);
-struct ksmbd_user *ksmbd_alloc_user(struct ksmbd_login_response *resp);
+struct ksmbd_user *ksmbd_alloc_user(struct ksmbd_login_response *resp,
+		struct ksmbd_login_response_ext *resp_ext);
 void ksmbd_free_user(struct ksmbd_user *user);
-int ksmbd_anonymous_user(struct ksmbd_user *user);
+bool ksmbd_anonymous_user(struct ksmbd_user *user);
 bool ksmbd_compare_user(struct ksmbd_user *u1, struct ksmbd_user *u2);
+
+static inline bool ksmbd_user_authenticated(struct ksmbd_user *user)
+{
+	return user && !user_guest(user) && !ksmbd_anonymous_user(user);
+}
 #endif /* __USER_CONFIG_MANAGEMENT_H__ */

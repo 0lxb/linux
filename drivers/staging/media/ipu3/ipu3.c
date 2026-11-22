@@ -13,6 +13,7 @@
 #include <linux/pm_runtime.h>
 
 #include "ipu3.h"
+#include "ipu3-css-fw.h"
 #include "ipu3-dmamap.h"
 #include "ipu3-mmu.h"
 
@@ -150,7 +151,7 @@ static int imgu_dummybufs_init(struct imgu_device *imgu, unsigned int pipe)
 
 /* May be called from atomic context */
 static struct imgu_css_buffer *imgu_dummybufs_get(struct imgu_device *imgu,
-						   int queue, unsigned int pipe)
+						  int queue, unsigned int pipe)
 {
 	unsigned int i;
 	struct imgu_media_pipe *imgu_pipe = &imgu->imgu_pipe[pipe];
@@ -529,8 +530,7 @@ static irqreturn_t imgu_isr_threaded(int irq, void *imgu_ptr)
 		if (IS_ERR(b)) {
 			if (PTR_ERR(b) != -EBUSY)	/* All done */
 				dev_err(&imgu->pci_dev->dev,
-					"failed to dequeue buffers (%ld)\n",
-					PTR_ERR(b));
+					"failed to dequeue buffers (%pe)\n", b);
 			break;
 		}
 
@@ -622,7 +622,7 @@ static int imgu_pci_probe(struct pci_dev *pci_dev,
 	void __iomem *const *iomap;
 	int r;
 
-	imgu = devm_kzalloc(&pci_dev->dev, sizeof(*imgu), GFP_KERNEL);
+	imgu = devm_kzalloc_obj(&pci_dev->dev, *imgu);
 	if (!imgu)
 		return -ENOMEM;
 
@@ -853,10 +853,13 @@ static struct pci_driver imgu_pci_driver = {
 
 module_pci_driver(imgu_pci_driver);
 
-MODULE_AUTHOR("Tuukka Toivonen <tuukka.toivonen@intel.com>");
+MODULE_AUTHOR("Tuukka Toivonen");
 MODULE_AUTHOR("Tianshu Qiu <tian.shu.qiu@intel.com>");
-MODULE_AUTHOR("Jian Xu Zheng <jian.xu.zheng@intel.com>");
-MODULE_AUTHOR("Yuning Pu <yuning.pu@intel.com>");
+MODULE_AUTHOR("Jian Xu Zheng");
+MODULE_AUTHOR("Yuning Pu");
 MODULE_AUTHOR("Yong Zhi <yong.zhi@intel.com>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Intel ipu3_imgu PCI driver");
+MODULE_FIRMWARE(IMGU_FW_NAME);
+MODULE_FIRMWARE(IMGU_FW_NAME_20161208);
+MODULE_FIRMWARE(IMGU_FW_NAME_IPU_20161208);

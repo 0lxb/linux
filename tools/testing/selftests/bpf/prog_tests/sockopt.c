@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <linux/tcp.h>
 #include <test_progs.h>
 #include <io_uring/mini_liburing.h>
 #include "cgroup_helpers.h"
@@ -24,6 +25,7 @@ enum sockopt_test_error {
 static struct sockopt_test {
 	const char			*descr;
 	const struct bpf_insn		insns[64];
+	enum bpf_prog_type		prog_type;
 	enum bpf_attach_type		attach_type;
 	enum bpf_attach_type		expected_attach_type;
 
@@ -281,6 +283,27 @@ static struct sockopt_test {
 
 		.error = EFAULT_GETSOCKOPT,
 		.io_uring_support = true,
+	},
+	{
+		.descr = "getsockopt: deny negative ctx->optlen in TCP_ZEROCOPY_RECEIVE",
+		.insns = {
+			/* ctx->optlen = -1 */
+			BPF_MOV64_IMM(BPF_REG_0, -1),
+			BPF_STX_MEM(BPF_W, BPF_REG_1, BPF_REG_0,
+				    offsetof(struct bpf_sockopt, optlen)),
+
+			/* return 1 */
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+		},
+		.attach_type = BPF_CGROUP_GETSOCKOPT,
+		.expected_attach_type = BPF_CGROUP_GETSOCKOPT,
+
+		.get_level = IPPROTO_TCP,
+		.get_optname = TCP_ZEROCOPY_RECEIVE,
+		.get_optlen = sizeof(struct tcp_zerocopy_receive),
+
+		.error = EFAULT_GETSOCKOPT,
 	},
 	{
 		.descr = "getsockopt: ignore >PAGE_SIZE optlen",
@@ -928,9 +951,40 @@ static struct sockopt_test {
 
 		.error = EPERM_SETSOCKOPT,
 	},
+
+	/* ==================== prog_type ====================  */
+
+	{
+		.descr = "can attach only BPF_CGROUP_SETSOCKOPT",
+		.insns = {
+			/* return 1 */
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+
+		},
+		.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
+		.attach_type = BPF_CGROUP_SETSOCKOPT,
+		.expected_attach_type = 0,
+		.error = DENY_ATTACH,
+	},
+
+	{
+		.descr = "can attach only BPF_CGROUP_GETSOCKOPT",
+		.insns = {
+			/* return 1 */
+			BPF_MOV64_IMM(BPF_REG_0, 1),
+			BPF_EXIT_INSN(),
+
+		},
+		.prog_type = BPF_PROG_TYPE_CGROUP_SKB,
+		.attach_type = BPF_CGROUP_GETSOCKOPT,
+		.expected_attach_type = 0,
+		.error = DENY_ATTACH,
+	},
 };
 
 static int load_prog(const struct bpf_insn *insns,
+		     enum bpf_prog_type prog_type,
 		     enum bpf_attach_type expected_attach_type)
 {
 	LIBBPF_OPTS(bpf_prog_load_opts, opts,
@@ -947,7 +1001,7 @@ static int load_prog(const struct bpf_insn *insns,
 	}
 	insns_cnt++;
 
-	fd = bpf_prog_load(BPF_PROG_TYPE_CGROUP_SOCKOPT, NULL, "GPL", insns, insns_cnt, &opts);
+	fd = bpf_prog_load(prog_type, NULL, "GPL", insns, insns_cnt, &opts);
 	if (verbose && fd < 0)
 		fprintf(stderr, "%s\n", bpf_log_buf);
 
@@ -1036,13 +1090,18 @@ static int call_getsockopt(bool use_io_uring, int fd, int level, int optname,
 	return getsockopt(fd, level, optname, optval, optlen);
 }
 
-static int run_test(int cgroup_fd, struct sockopt_test *test, bool use_io_uring)
+static int run_test(int cgroup_fd, struct sockopt_test *test, bool use_io_uring,
+		    bool use_link)
 {
-	int sock_fd, err, prog_fd;
+	int prog_type = BPF_PROG_TYPE_CGROUP_SOCKOPT;
+	int sock_fd, err, prog_fd, link_fd = -1;
 	void *optval = NULL;
 	int ret = 0;
 
-	prog_fd = load_prog(test->insns, test->expected_attach_type);
+	if (test->prog_type)
+		prog_type = test->prog_type;
+
+	prog_fd = load_prog(test->insns, prog_type, test->expected_attach_type);
 	if (prog_fd < 0) {
 		if (test->error == DENY_LOAD)
 			return 0;
@@ -1051,7 +1110,12 @@ static int run_test(int cgroup_fd, struct sockopt_test *test, bool use_io_uring)
 		return -1;
 	}
 
-	err = bpf_prog_attach(prog_fd, cgroup_fd, test->attach_type, 0);
+	if (use_link) {
+		err = bpf_link_create(prog_fd, cgroup_fd, test->attach_type, NULL);
+		link_fd = err;
+	} else {
+		err = bpf_prog_attach(prog_fd, cgroup_fd, test->attach_type, 0);
+	}
 	if (err < 0) {
 		if (test->error == DENY_ATTACH)
 			goto close_prog_fd;
@@ -1142,7 +1206,12 @@ free_optval:
 close_sock_fd:
 	close(sock_fd);
 detach_prog:
-	bpf_prog_detach2(prog_fd, cgroup_fd, test->attach_type);
+	if (use_link) {
+		if (link_fd >= 0)
+			close(link_fd);
+	} else {
+		bpf_prog_detach2(prog_fd, cgroup_fd, test->attach_type);
+	}
 close_prog_fd:
 	close(prog_fd);
 	return ret;
@@ -1160,10 +1229,12 @@ void test_sockopt(void)
 		if (!test__start_subtest(tests[i].descr))
 			continue;
 
-		ASSERT_OK(run_test(cgroup_fd, &tests[i], false),
+		ASSERT_OK(run_test(cgroup_fd, &tests[i], false, false),
+			  tests[i].descr);
+		ASSERT_OK(run_test(cgroup_fd, &tests[i], false, true),
 			  tests[i].descr);
 		if (tests[i].io_uring_support)
-			ASSERT_OK(run_test(cgroup_fd, &tests[i], true),
+			ASSERT_OK(run_test(cgroup_fd, &tests[i], true, false),
 				  tests[i].descr);
 	}
 

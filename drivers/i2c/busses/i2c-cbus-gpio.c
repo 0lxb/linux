@@ -212,12 +212,11 @@ static int cbus_i2c_probe(struct platform_device *pdev)
 	struct i2c_adapter *adapter;
 	struct cbus_host *chost;
 
-	adapter = devm_kzalloc(&pdev->dev, sizeof(struct i2c_adapter),
-			       GFP_KERNEL);
+	adapter = devm_kzalloc_obj(&pdev->dev, struct i2c_adapter);
 	if (!adapter)
 		return -ENOMEM;
 
-	chost = devm_kzalloc(&pdev->dev, sizeof(*chost), GFP_KERNEL);
+	chost = devm_kzalloc_obj(&pdev->dev, *chost);
 	if (!chost)
 		return -ENOMEM;
 
@@ -264,7 +263,7 @@ MODULE_DEVICE_TABLE(of, i2c_cbus_dt_ids);
 
 static struct platform_driver cbus_i2c_driver = {
 	.probe	= cbus_i2c_probe,
-	.remove_new = cbus_i2c_remove,
+	.remove = cbus_i2c_remove,
 	.driver	= {
 		.name	= "i2c-cbus-gpio",
 		.of_match_table = of_match_ptr(i2c_cbus_dt_ids),

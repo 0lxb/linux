@@ -175,14 +175,6 @@ MODULE_LICENSE("GPL");
 * mga_dev : represents one ks0127 chip.
 ****************************************************************************/
 
-struct adjust {
-	int	contrast;
-	int	bright;
-	int	hue;
-	int	ugain;
-	int	vgain;
-};
-
 struct ks0127 {
 	struct v4l2_subdev sd;
 	v4l2_std_id	norm;
@@ -659,7 +651,7 @@ static int ks0127_probe(struct i2c_client *client)
 		client->addr == (I2C_KS0127_ADDON >> 1) ? "addon" : "on-board",
 		client->addr << 1, client->adapter->name);
 
-	ks = devm_kzalloc(&client->dev, sizeof(*ks), GFP_KERNEL);
+	ks = devm_kzalloc_obj(&client->dev, *ks);
 	if (ks == NULL)
 		return -ENOMEM;
 	sd = &ks->sd;
@@ -685,9 +677,9 @@ static void ks0127_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ks0127_id[] = {
-	{ "ks0127", 0 },
-	{ "ks0127b", 0 },
-	{ "ks0122s", 0 },
+	{ .name = "ks0127" },
+	{ .name = "ks0127b" },
+	{ .name = "ks0122s" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ks0127_id);

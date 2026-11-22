@@ -52,7 +52,7 @@ static int tps65219_pb_probe(struct platform_device *pdev)
 	int push_irq;
 	int release_irq;
 
-	pwr = devm_kzalloc(dev, sizeof(*pwr), GFP_KERNEL);
+	pwr = devm_kzalloc_obj(dev, *pwr);
 	if (!pwr)
 		return -ENOMEM;
 
@@ -137,7 +137,7 @@ MODULE_DEVICE_TABLE(platform, tps65219_pwrbtn_id_table);
 
 static struct platform_driver tps65219_pb_driver = {
 	.probe = tps65219_pb_probe,
-	.remove_new = tps65219_pb_remove,
+	.remove = tps65219_pb_remove,
 	.driver = {
 		.name = "tps65219_pwrbutton",
 	},

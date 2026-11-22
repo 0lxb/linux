@@ -397,7 +397,7 @@ static struct usb_request *dwc2_hsotg_ep_alloc_request(struct usb_ep *ep,
 {
 	struct dwc2_hsotg_req *req;
 
-	req = kzalloc(sizeof(*req), flags);
+	req = kzalloc_obj(*req, flags);
 	if (!req)
 		return NULL;
 
@@ -658,7 +658,7 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
 }
 
 /**
- * get_ep_limit - get the maximum data legnth for this endpoint
+ * get_ep_limit - get the maximum data length for this endpoint
  * @hs_ep: The endpoint
  *
  * Return the maximum data that can be queued in one go on a given endpoint
@@ -885,10 +885,10 @@ static void dwc2_gadget_config_nonisoc_xfer_ddma(struct dwc2_hsotg_ep *hs_ep,
 	}
 
 	/* DMA sg buffer */
-	for_each_sg(ureq->sg, sg, ureq->num_sgs, i) {
+	for_each_sg(ureq->sg, sg, ureq->num_mapped_sgs, i) {
 		dwc2_gadget_fill_nonisoc_xfer_ddma_one(hs_ep, &desc,
 			sg_dma_address(sg) + sg->offset, sg_dma_len(sg),
-			sg_is_last(sg));
+			(i == (ureq->num_mapped_sgs - 1)));
 		desc_count += hs_ep->desc_count;
 	}
 
@@ -1415,6 +1415,10 @@ static int dwc2_hsotg_ep_queue(struct usb_ep *ep, struct usb_request *req,
 		ep->name, req, req->length, req->buf, req->no_interrupt,
 		req->zero, req->short_not_ok);
 
+	if (hs->lx_state == DWC2_L1) {
+		dwc2_wakeup_from_lpm_l1(hs, true);
+	}
+
 	/* Prevent new request submission when controller is suspended */
 	if (hs->lx_state != DWC2_L0) {
 		dev_dbg(hs->dev, "%s: submit request only in active state\n",
@@ -1776,6 +1780,7 @@ static int dwc2_hsotg_process_req_feature(struct dwc2_hsotg *hsotg,
 	struct dwc2_hsotg_ep *ep;
 	int ret;
 	bool halted;
+	u32 otgctl;
 	u32 recip;
 	u32 wValue;
 	u32 wIndex;
@@ -1804,6 +1809,36 @@ static int dwc2_hsotg_process_req_feature(struct dwc2_hsotg *hsotg,
 				return -EINVAL;
 
 			hsotg->test_mode = wIndex >> 8;
+			break;
+		case USB_DEVICE_B_HNP_ENABLE:
+			if (!hsotg->params.otg_caps.hnp_support)
+				return -ENOENT;
+			if (!set)
+				return -EINVAL;
+
+			otgctl = dwc2_readl(hsotg, GOTGCTL);
+			otgctl |= GOTGCTL_DEVHNPEN;
+			dwc2_writel(hsotg, otgctl, GOTGCTL);
+			hsotg->gadget.b_hnp_enable = 1;
+			dev_dbg(hsotg->dev, "HNP enabled\n");
+			break;
+		case USB_DEVICE_A_HNP_SUPPORT:
+			if (!hsotg->params.otg_caps.hnp_support)
+				return -ENOENT;
+			if (!set)
+				return -EINVAL;
+
+			hsotg->gadget.a_hnp_support = 1;
+			dev_dbg(hsotg->dev, "a_hnp_support set\n");
+			break;
+		case USB_DEVICE_A_ALT_HNP_SUPPORT:
+			if (!hsotg->params.otg_caps.hnp_support)
+				return -ENOENT;
+			if (!set)
+				return -EINVAL;
+
+			hsotg->gadget.a_alt_hnp_support = 1;
+			dev_dbg(hsotg->dev, "a_alt_hnp_support set\n");
 			break;
 		default:
 			return -ENOENT;
@@ -2263,6 +2298,7 @@ static void dwc2_hsotg_rx_data(struct dwc2_hsotg *hsotg, int ep_idx, int size)
 	int to_read;
 	int max_req;
 	int read_ptr;
+	u32 drain;
 
 	if (!hs_req) {
 		u32 epctl = dwc2_readl(hsotg, DOEPCTL(ep_idx));
@@ -2282,30 +2318,46 @@ static void dwc2_hsotg_rx_data(struct dwc2_hsotg *hsotg, int ep_idx, int size)
 	to_read = size;
 	read_ptr = hs_req->req.actual;
 	max_req = hs_req->req.length - read_ptr;
+	drain = 0;
 
 	dev_dbg(hsotg->dev, "%s: read %d/%d, done %d/%d\n",
 		__func__, to_read, max_req, read_ptr, hs_req->req.length);
 
 	if (to_read > max_req) {
 		/*
-		 * more data appeared than we where willing
-		 * to deal with in this request.
+		 * More data appeared than we were willing to deal with in
+		 * this request.  Keep only what fits in the request buffer
+		 * and discard the rest from the FIFO, instead of overwriting
+		 * bytes past the request buffer (a 64-byte packet into a
+		 * request with one byte left used to over-write 63 bytes past
+		 * its end).
 		 */
-
-		/* currently we don't deal this */
-		WARN_ON_ONCE(1);
+		dev_dbg(hsotg->dev, "%s: packet %d > request space %d, dropping %d\n",
+			__func__, to_read, max_req, to_read - max_req);
+		drain = DIV_ROUND_UP(to_read - max_req, 4);
+		to_read = max_req;
 	}
 
 	hs_ep->total_data += to_read;
 	hs_req->req.actual += to_read;
-	to_read = DIV_ROUND_UP(to_read, 4);
 
 	/*
-	 * note, we might over-write the buffer end by 3 bytes depending on
-	 * alignment of the data.
+	 * Copy word-at-a-time so the request buffer is exactly filled and
+	 * never over-run by the 4-byte rounding of the previous FIFO bulk
+	 * read (which could also emit up to 3 bytes past the buffer end).
 	 */
-	dwc2_readl_rep(hsotg, EPFIFO(ep_idx),
-		       hs_req->req.buf + read_ptr, to_read);
+	while (to_read > 0) {
+		u32 word = dwc2_readl(hsotg, EPFIFO(ep_idx));
+		unsigned int chunk = min_t(unsigned int, to_read, 4);
+
+		memcpy(hs_req->req.buf + read_ptr, &word, chunk);
+		read_ptr += chunk;
+		to_read -= chunk;
+	}
+
+	/* drain the discarded bytes so the next FIFO event is a fresh packet */
+	while (drain-- > 0)
+		(void)dwc2_readl(hsotg, EPFIFO(ep_idx));
 }
 
 /**
@@ -3318,6 +3370,13 @@ void dwc2_hsotg_disconnect(struct dwc2_hsotg *hsotg)
 	hsotg->connected = 0;
 	hsotg->test_mode = 0;
 
+	if (hsotg->params.otg_caps.hnp_support) {
+		hsotg->gadget.b_hnp_enable = 0;
+		hsotg->gadget.a_hnp_support = 0;
+		hsotg->gadget.a_alt_hnp_support = 0;
+		dwc2_clear_bit(hsotg, GOTGCTL, GOTGCTL_DEVHNPEN);
+	}
+
 	/* all endpoints should be shutdown */
 	for (ep = 0; ep < hsotg->num_of_eps; ep++) {
 		if (hsotg->eps_in[ep])
@@ -3412,16 +3471,28 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
 	usbcfg &= ~GUSBCFG_TOUTCAL_MASK;
 	usbcfg |= GUSBCFG_TOUTCAL(7);
 
-	/* remove the HNP/SRP and set the PHY */
+	/*
+	 * Configure HNP/SRP capability from params (same idea as
+	 * dwc2_gusbcfg_init() for host). Unconditionally clearing these
+	 * bits leaves an HNP-capable OTG gadget unable to negotiate.
+	 */
 	usbcfg &= ~(GUSBCFG_SRPCAP | GUSBCFG_HNPCAP);
-        dwc2_writel(hsotg, usbcfg, GUSBCFG);
+	if (hsotg->params.otg_caps.hnp_support &&
+	    hsotg->params.otg_caps.srp_support)
+		usbcfg |= GUSBCFG_HNPCAP;
+	if (hsotg->params.otg_caps.srp_support)
+		usbcfg |= GUSBCFG_SRPCAP;
+	dwc2_writel(hsotg, usbcfg, GUSBCFG);
 
 	dwc2_phy_init(hsotg, true);
 
 	dwc2_hsotg_init_fifo(hsotg);
 
-	if (!is_usb_reset)
+	if (!is_usb_reset) {
 		dwc2_set_bit(hsotg, DCTL, DCTL_SFTDISCON);
+		if (hsotg->params.eusb2_disc)
+			dwc2_set_bit(hsotg, GOTGCTL, GOTGCTL_EUSB2_DISC_SUPP);
+	}
 
 	dcfg |= DCFG_EPMISCNT(1);
 
@@ -3726,6 +3797,12 @@ irq_retry:
 		/* This event must be used only if controller is suspended */
 		if (hsotg->in_ppd && hsotg->lx_state == DWC2_L2)
 			dwc2_exit_partial_power_down(hsotg, 0, true);
+
+		/* Exit gadget mode clock gating. */
+		if (hsotg->params.power_down ==
+		    DWC2_POWER_DOWN_PARAM_NONE && hsotg->bus_suspended &&
+		    !hsotg->params.no_clock_gating)
+			dwc2_gadget_exit_clock_gating(hsotg, 0);
 
 		hsotg->lx_state = DWC2_L0;
 	}
@@ -4036,7 +4113,7 @@ static int dwc2_hsotg_ep_enable(struct usb_ep *ep,
 		return -EINVAL;
 	}
 
-	ep_type = desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK;
+	ep_type = usb_endpoint_type(desc);
 	mps = usb_endpoint_maxp(desc);
 	mc = usb_endpoint_maxp_mult(desc);
 
@@ -4591,6 +4668,14 @@ static int dwc2_hsotg_udc_stop(struct usb_gadget *gadget)
 	if (!hsotg)
 		return -ENODEV;
 
+	/* Exit clock gating when driver is stopped. */
+	if (hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
+	    hsotg->bus_suspended && !hsotg->params.no_clock_gating) {
+		spin_lock_irqsave(&hsotg->lock, flags);
+		dwc2_gadget_exit_clock_gating(hsotg, 0);
+		spin_unlock_irqrestore(&hsotg->lock, flags);
+	}
+
 	/* all endpoints should be shutdown */
 	for (ep = 1; ep < hsotg->num_of_eps; ep++) {
 		if (hsotg->eps_in[ep])
@@ -4602,6 +4687,7 @@ static int dwc2_hsotg_udc_stop(struct usb_gadget *gadget)
 	spin_lock_irqsave(&hsotg->lock, flags);
 
 	hsotg->driver = NULL;
+	hsotg->gadget.dev.of_node = NULL;
 	hsotg->gadget.speed = USB_SPEED_UNKNOWN;
 	hsotg->enabled = 0;
 
@@ -4658,6 +4744,7 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 {
 	struct dwc2_hsotg *hsotg = to_hsotg(gadget);
 	unsigned long flags;
+	int ret = 0;
 
 	dev_dbg(hsotg->dev, "%s: is_on: %d op_state: %d\n", __func__, is_on,
 		hsotg->op_state);
@@ -4669,6 +4756,13 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 	}
 
 	spin_lock_irqsave(&hsotg->lock, flags);
+	if (hsotg->in_ppd) {
+		ret = dwc2_exit_partial_power_down(hsotg, 0, true);
+		if (ret) {
+			dev_err(hsotg->dev, "exit partial_power_down failed\n");
+			goto exit;
+		}
+	}
 	if (is_on) {
 		hsotg->enabled = 1;
 		dwc2_hsotg_core_init_disconnected(hsotg, false);
@@ -4682,9 +4776,10 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
 	}
 
 	hsotg->gadget.speed = USB_SPEED_UNKNOWN;
+exit:
 	spin_unlock_irqrestore(&hsotg->lock, flags);
 
-	return 0;
+	return ret;
 }
 
 static int dwc2_hsotg_vbus_session(struct usb_gadget *gadget, int is_active)
@@ -4869,9 +4964,7 @@ static int dwc2_hsotg_hw_cfg(struct dwc2_hsotg *hsotg)
 	/* Add ep0 */
 	hsotg->num_of_eps++;
 
-	hsotg->eps_in[0] = devm_kzalloc(hsotg->dev,
-					sizeof(struct dwc2_hsotg_ep),
-					GFP_KERNEL);
+	hsotg->eps_in[0] = devm_kzalloc_obj(hsotg->dev, struct dwc2_hsotg_ep);
 	if (!hsotg->eps_in[0])
 		return -ENOMEM;
 	/* Same dwc2_hsotg_ep is used in both directions for ep0 */
@@ -4882,15 +4975,15 @@ static int dwc2_hsotg_hw_cfg(struct dwc2_hsotg *hsotg)
 		ep_type = cfg & 3;
 		/* Direction in or both */
 		if (!(ep_type & 2)) {
-			hsotg->eps_in[i] = devm_kzalloc(hsotg->dev,
-				sizeof(struct dwc2_hsotg_ep), GFP_KERNEL);
+			hsotg->eps_in[i] = devm_kzalloc_obj(hsotg->dev,
+							    struct dwc2_hsotg_ep);
 			if (!hsotg->eps_in[i])
 				return -ENOMEM;
 		}
 		/* Direction out or both */
 		if (!(ep_type & 1)) {
-			hsotg->eps_out[i] = devm_kzalloc(hsotg->dev,
-				sizeof(struct dwc2_hsotg_ep), GFP_KERNEL);
+			hsotg->eps_out[i] = devm_kzalloc_obj(hsotg->dev,
+							     struct dwc2_hsotg_ep);
 			if (!hsotg->eps_out[i])
 				return -ENOMEM;
 		}
@@ -5022,10 +5115,8 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
 
 	ret = devm_request_irq(hsotg->dev, hsotg->irq, dwc2_hsotg_irq,
 			       IRQF_SHARED, dev_name(hsotg->dev), hsotg);
-	if (ret < 0) {
-		dev_err(dev, "cannot claim IRQ for gadget\n");
+	if (ret < 0)
 		return ret;
-	}
 
 	/* hsotg->num_of_eps holds number of EPs other than ep0 */
 
@@ -5190,11 +5281,11 @@ int dwc2_backup_device_registers(struct dwc2_hsotg *hsotg)
  * if controller power were disabled.
  *
  * @hsotg: Programming view of the DWC_otg controller
- * @remote_wakeup: Indicates whether resume is initiated by Device or Host.
+ * @flags: Defines which registers should be restored.
  *
  * Return: 0 if successful, negative error code otherwise
  */
-int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg, int remote_wakeup)
+int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg, unsigned int flags)
 {
 	struct dwc2_dregs_backup *dr;
 	int i;
@@ -5210,7 +5301,10 @@ int dwc2_restore_device_registers(struct dwc2_hsotg *hsotg, int remote_wakeup)
 	}
 	dr->valid = false;
 
-	if (!remote_wakeup)
+	if (flags & DWC2_RESTORE_DCFG)
+		dwc2_writel(hsotg, dr->dcfg, DCFG);
+
+	if (flags & DWC2_RESTORE_DCTL)
 		dwc2_writel(hsotg, dr->dctl, DCTL);
 
 	dwc2_writel(hsotg, dr->daintmsk, DAINTMSK);
@@ -5296,6 +5390,49 @@ void dwc2_gadget_program_ref_clk(struct dwc2_hsotg *hsotg)
 	dev_dbg(hsotg->dev, "GREFCLK=0x%08x\n", dwc2_readl(hsotg, GREFCLK));
 }
 
+int dwc2_gadget_backup_critical_registers(struct dwc2_hsotg *hsotg)
+{
+	int ret;
+
+	/* Backup all registers */
+	ret = dwc2_backup_global_registers(hsotg);
+	if (ret) {
+		dev_err(hsotg->dev, "%s: failed to backup global registers\n",
+			__func__);
+		return ret;
+	}
+
+	ret = dwc2_backup_device_registers(hsotg);
+	if (ret) {
+		dev_err(hsotg->dev, "%s: failed to backup device registers\n",
+			__func__);
+		return ret;
+	}
+
+	return 0;
+}
+
+int dwc2_gadget_restore_critical_registers(struct dwc2_hsotg *hsotg,
+					   unsigned int flags)
+{
+	int ret;
+
+	ret = dwc2_restore_global_registers(hsotg);
+	if (ret) {
+		dev_err(hsotg->dev, "%s: failed to restore registers\n",
+			__func__);
+		return ret;
+	}
+	ret = dwc2_restore_device_registers(hsotg, flags);
+	if (ret) {
+		dev_err(hsotg->dev, "%s: failed to restore device registers\n",
+			__func__);
+		return ret;
+	}
+
+	return 0;
+}
+
 /**
  * dwc2_gadget_enter_hibernation() - Put controller in Hibernation.
  *
@@ -5306,28 +5443,51 @@ void dwc2_gadget_program_ref_clk(struct dwc2_hsotg *hsotg)
 int dwc2_gadget_enter_hibernation(struct dwc2_hsotg *hsotg)
 {
 	u32 gpwrdn;
+	u32 gusbcfg;
+	u32 pcgcctl;
 	int ret = 0;
 
 	/* Change to L2(suspend) state */
 	hsotg->lx_state = DWC2_L2;
 	dev_dbg(hsotg->dev, "Start of hibernation completed\n");
-	ret = dwc2_backup_global_registers(hsotg);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to backup global registers\n",
-			__func__);
+	ret = dwc2_gadget_backup_critical_registers(hsotg);
+	if (ret)
 		return ret;
-	}
-	ret = dwc2_backup_device_registers(hsotg);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to backup device registers\n",
-			__func__);
-		return ret;
-	}
 
 	gpwrdn = GPWRDN_PWRDNRSTN;
-	gpwrdn |= GPWRDN_PMUACTV;
-	dwc2_writel(hsotg, gpwrdn, GPWRDN);
 	udelay(10);
+	gusbcfg = dwc2_readl(hsotg, GUSBCFG);
+	if (gusbcfg & GUSBCFG_ULPI_UTMI_SEL) {
+		/* ULPI interface */
+		gpwrdn |= GPWRDN_ULPI_LATCH_EN_DURING_HIB_ENTRY;
+		dwc2_writel(hsotg, gpwrdn, GPWRDN);
+		udelay(10);
+
+		/* Suspend the Phy Clock */
+		pcgcctl = dwc2_readl(hsotg, PCGCTL);
+		pcgcctl |= PCGCTL_STOPPCLK;
+		dwc2_writel(hsotg, pcgcctl, PCGCTL);
+		udelay(10);
+
+		gpwrdn = dwc2_readl(hsotg, GPWRDN);
+		gpwrdn |= GPWRDN_PMUACTV;
+		dwc2_writel(hsotg, gpwrdn, GPWRDN);
+		udelay(10);
+	} else {
+		/* UTMI+ Interface */
+		dwc2_writel(hsotg, gpwrdn, GPWRDN);
+		udelay(10);
+
+		gpwrdn = dwc2_readl(hsotg, GPWRDN);
+		gpwrdn |= GPWRDN_PMUACTV;
+		dwc2_writel(hsotg, gpwrdn, GPWRDN);
+		udelay(10);
+
+		pcgcctl = dwc2_readl(hsotg, PCGCTL);
+		pcgcctl |= PCGCTL_STOPPCLK;
+		dwc2_writel(hsotg, pcgcctl, PCGCTL);
+		udelay(10);
+	}
 
 	/* Set flag to indicate that we are in hibernation */
 	hsotg->hibernated = 1;
@@ -5383,6 +5543,7 @@ int dwc2_gadget_exit_hibernation(struct dwc2_hsotg *hsotg,
 	u32 gpwrdn;
 	u32 dctl;
 	int ret = 0;
+	unsigned int flags = 0;
 	struct dwc2_gregs_backup *gr;
 	struct dwc2_dregs_backup *dr;
 
@@ -5400,7 +5561,7 @@ int dwc2_gadget_exit_hibernation(struct dwc2_hsotg *hsotg,
 	dwc2_hib_restore_common(hsotg, rem_wakeup, 0);
 
 	if (!reset) {
-		/* Clear all pending interupts */
+		/* Clear all pending interrupts */
 		dwc2_writel(hsotg, 0xffffffff, GINTSTS);
 	}
 
@@ -5425,6 +5586,11 @@ int dwc2_gadget_exit_hibernation(struct dwc2_hsotg *hsotg,
 	if (reset)
 		dwc2_clear_bit(hsotg, DCFG, DCFG_DEVADDR_MASK);
 
+	/* Reset ULPI latch */
+	gpwrdn = dwc2_readl(hsotg, GPWRDN);
+	gpwrdn &= ~GPWRDN_ULPI_LATCH_EN_DURING_HIB_ENTRY;
+	dwc2_writel(hsotg, gpwrdn, GPWRDN);
+
 	/* De-assert Wakeup Logic */
 	gpwrdn = dwc2_readl(hsotg, GPWRDN);
 	gpwrdn &= ~GPWRDN_PMUACTV;
@@ -5440,27 +5606,17 @@ int dwc2_gadget_exit_hibernation(struct dwc2_hsotg *hsotg,
 		dctl = dwc2_readl(hsotg, DCTL);
 		dctl |= DCTL_PWRONPRGDONE;
 		dwc2_writel(hsotg, dctl, DCTL);
+		flags |= DWC2_RESTORE_DCTL;
 	}
 	/* Wait for interrupts which must be cleared */
 	mdelay(2);
-	/* Clear all pending interupts */
+	/* Clear all pending interrupts */
 	dwc2_writel(hsotg, 0xffffffff, GINTSTS);
 
 	/* Restore global registers */
-	ret = dwc2_restore_global_registers(hsotg);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to restore registers\n",
-			__func__);
+	ret = dwc2_gadget_restore_critical_registers(hsotg, flags);
+	if (ret)
 		return ret;
-	}
-
-	/* Restore device registers */
-	ret = dwc2_restore_device_registers(hsotg, rem_wakeup);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to restore device registers\n",
-			__func__);
-		return ret;
-	}
 
 	if (rem_wakeup) {
 		mdelay(10);
@@ -5494,19 +5650,9 @@ int dwc2_gadget_enter_partial_power_down(struct dwc2_hsotg *hsotg)
 	dev_dbg(hsotg->dev, "Entering device partial power down started.\n");
 
 	/* Backup all registers */
-	ret = dwc2_backup_global_registers(hsotg);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to backup global registers\n",
-			__func__);
+	ret = dwc2_gadget_backup_critical_registers(hsotg);
+	if (ret)
 		return ret;
-	}
-
-	ret = dwc2_backup_device_registers(hsotg);
-	if (ret) {
-		dev_err(hsotg->dev, "%s: failed to backup device registers\n",
-			__func__);
-		return ret;
-	}
 
 	/*
 	 * Clear any pending interrupts since dwc2 will not be able to
@@ -5553,10 +5699,7 @@ int dwc2_gadget_exit_partial_power_down(struct dwc2_hsotg *hsotg,
 {
 	u32 pcgcctl;
 	u32 dctl;
-	struct dwc2_dregs_backup *dr;
 	int ret = 0;
-
-	dr = &hsotg->dr_backup;
 
 	dev_dbg(hsotg->dev, "Exiting device partial Power Down started.\n");
 
@@ -5574,21 +5717,10 @@ int dwc2_gadget_exit_partial_power_down(struct dwc2_hsotg *hsotg,
 
 	udelay(100);
 	if (restore) {
-		ret = dwc2_restore_global_registers(hsotg);
-		if (ret) {
-			dev_err(hsotg->dev, "%s: failed to restore registers\n",
-				__func__);
+		ret = dwc2_gadget_restore_critical_registers(hsotg, DWC2_RESTORE_DCTL |
+							     DWC2_RESTORE_DCFG);
+		if (ret)
 			return ret;
-		}
-		/* Restore DCFG */
-		dwc2_writel(hsotg, dr->dcfg, DCFG);
-
-		ret = dwc2_restore_device_registers(hsotg, 0);
-		if (ret) {
-			dev_err(hsotg->dev, "%s: failed to restore device registers\n",
-				__func__);
-			return ret;
-		}
 	}
 
 	/* Set the Power-On Programming done bit */

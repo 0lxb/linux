@@ -156,7 +156,7 @@ static int mchp_otpc_read(void *priv, unsigned int off, void *val,
 	/*
 	 * We reach this point with off being multiple of stride = 4 to
 	 * be able to cross the subsystem. Inside the driver we use continuous
-	 * unsigned integer numbers for packet id, thus devide off by 4
+	 * unsigned integer numbers for packet id, thus divide off by 4
 	 * before passing it to mchp_otpc_id_to_packet().
 	 */
 	packet = mchp_otpc_id_to_packet(otpc, off / 4);
@@ -209,7 +209,7 @@ static int mchp_otpc_init_packets_list(struct mchp_otpc *otpc, u32 *size)
 		if (!payload_size)
 			break;
 
-		packet = devm_kzalloc(otpc->dev, sizeof(*packet), GFP_KERNEL);
+		packet = devm_kzalloc_obj(otpc->dev, *packet);
 		if (!packet)
 			return -ENOMEM;
 
@@ -247,7 +247,7 @@ static int mchp_otpc_probe(struct platform_device *pdev)
 	u32 size;
 	int ret;
 
-	otpc = devm_kzalloc(&pdev->dev, sizeof(*otpc), GFP_KERNEL);
+	otpc = devm_kzalloc_obj(&pdev->dev, *otpc);
 	if (!otpc)
 		return -ENOMEM;
 

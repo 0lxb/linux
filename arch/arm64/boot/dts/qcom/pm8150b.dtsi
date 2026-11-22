@@ -12,7 +12,6 @@
 	thermal-zones {
 		pm8150b-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <0>;
 
 			thermal-sensors = <&pm8150b_temp>;
 
@@ -96,7 +95,6 @@
 					  "msg-tx-discarded",
 					  "msg-rx-discarded",
 					  "fr-swap";
-			vdd-vbus-supply = <&pm8150b_vbus>;
 		};
 
 		pm8150b_temp: temp-alarm@2400 {

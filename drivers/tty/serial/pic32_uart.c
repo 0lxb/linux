@@ -8,11 +8,11 @@
  *   Sorin-Andrei Pistirica <andrei.pistirica@microchip.com>
  */
 
+#include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/of_gpio.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -22,8 +22,7 @@
 #include <linux/tty_flip.h>
 #include <linux/serial_core.h>
 #include <linux/delay.h>
-
-#include <asm/mach-pic32/pic32.h>
+#include <linux/platform_data/pic32.h>
 
 /* UART name and device definitions */
 #define PIC32_DEV_NAME		"pic32-uart"
@@ -342,7 +341,7 @@ static void pic32_uart_do_rx(struct uart_port *port)
 static void pic32_uart_do_tx(struct uart_port *port)
 {
 	struct pic32_sport *sport = to_pic32_sport(port);
-	struct circ_buf *xmit = &port->state->xmit;
+	struct tty_port *tport = &port->state->port;
 	unsigned int max_count = PIC32_UART_TX_FIFO_DEPTH;
 
 	if (port->x_char) {
@@ -357,7 +356,7 @@ static void pic32_uart_do_tx(struct uart_port *port)
 		return;
 	}
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		goto txq_empty;
 
 	/* keep stuffing chars into uart tx buffer
@@ -371,21 +370,20 @@ static void pic32_uart_do_tx(struct uart_port *port)
 	 */
 	while (!(PIC32_UART_STA_UTXBF &
 		pic32_uart_readl(sport, PIC32_UART_STA))) {
-		unsigned int c = xmit->buf[xmit->tail];
+		unsigned char c;
 
+		if (!uart_fifo_get(port, &c))
+			break;
 		pic32_uart_writel(sport, PIC32_UART_TX, c);
 
-		uart_xmit_advance(port, 1);
-		if (uart_circ_empty(xmit))
-			break;
 		if (--max_count == 0)
 			break;
 	}
 
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		goto txq_empty;
 
 	return;
@@ -879,7 +877,7 @@ static int pic32_uart_probe(struct platform_device *pdev)
 	if (!res_mem)
 		return -EINVAL;
 
-	sport = devm_kzalloc(&pdev->dev, sizeof(*sport), GFP_KERNEL);
+	sport = devm_kzalloc_obj(&pdev->dev, *sport);
 	if (!sport)
 		return -ENOMEM;
 
@@ -957,7 +955,7 @@ MODULE_DEVICE_TABLE(of, pic32_serial_dt_ids);
 
 static struct platform_driver pic32_uart_platform_driver = {
 	.probe		= pic32_uart_probe,
-	.remove_new	= pic32_uart_remove,
+	.remove		= pic32_uart_remove,
 	.driver		= {
 		.name	= PIC32_DEV_NAME,
 		.of_match_table	= of_match_ptr(pic32_serial_dt_ids),

@@ -30,12 +30,20 @@
 #include <linux/hid.h>
 #include <linux/input.h>
 #include <linux/leds.h>
+#include <linux/unaligned.h>
 #include <linux/workqueue.h>
 
 #include "hid-ids.h"
 
 /* Userspace expects F20 for mic-mute KEY_MICMUTE does not work */
 #define LENOVO_KEY_MICMUTE KEY_F20
+
+/* HID raw events for ThinkPad X12 Tabs*/
+#define TP_X12_RAW_HOTKEY_FN_F4		0x00020003
+#define TP_X12_RAW_HOTKEY_FN_F8		0x38001003
+#define TP_X12_RAW_HOTKEY_FN_F10	0x00000803
+#define TP_X12_RAW_HOTKEY_FN_F12	0x00000403
+#define TP_X12_RAW_HOTKEY_FN_SPACE	0x18001003
 
 struct lenovo_drvdata {
 	u8 led_report[3]; /* Must be first for proper alignment */
@@ -70,6 +78,14 @@ struct lenovo_drvdata {
 
 #define TP10UBKBD_LED_OFF		1
 #define TP10UBKBD_LED_ON		2
+
+/* Function to report raw_events as key events*/
+static inline void report_key_event(struct input_dev *input, int keycode)
+{
+	input_report_key(input, keycode, 1);
+	input_report_key(input, keycode, 0);
+	input_sync(input);
+}
 
 static int lenovo_led_set_tp10ubkbd(struct hid_device *hdev, u8 led_code,
 				    enum led_brightness value)
@@ -133,7 +149,15 @@ static const __u8 lenovo_tpIIbtkbd_need_fixup_collection[] = {
 	0x81, 0x01,		/*   Input (Const,Array,Abs,No Wrap,Linear,Preferred State,No Null Position) */
 };
 
-static __u8 *lenovo_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+static const __u8 lenovo_yoga7x_kbd_need_fixup_collection[] = {
+	0x15, 0x00,	// Logical Minimum (0)
+	0x25, 0x65,	// Logical Maximum (101)
+	0x05, 0x07,	// Usage Page (Keyboard)
+	0x19, 0x00,	// Usage Minimum (0)
+	0x29, 0xDD,	// Usage Maximum (221)
+};
+
+static const __u8 *lenovo_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		unsigned int *rsize)
 {
 	switch (hdev->product) {
@@ -160,6 +184,13 @@ static __u8 *lenovo_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 			rdesc[256] = 0x01; /* report count = 0x01 */
 			rdesc[258] = 0x00; /* input = 0x00 */
 			rdesc[260] = 0x01; /* report count (2) = 0x01 */
+		}
+		break;
+	case I2C_DEVICE_ID_ITE_LENOVO_YOGA_SLIM_7X_KEYBOARD:
+		if (*rsize == 176 &&
+		    memcmp(&rdesc[52], lenovo_yoga7x_kbd_need_fixup_collection,
+			  sizeof(lenovo_yoga7x_kbd_need_fixup_collection)) == 0) {
+			rdesc[55] = rdesc[61]; // logical maximum = usage maximum
 		}
 		break;
 	}
@@ -445,6 +476,16 @@ static int lenovo_input_mapping_x1_tab_kbd(struct hid_device *hdev,
 	return 0;
 }
 
+static int lenovo_input_mapping_yoga7x_g11_kbd(struct hid_device *hdev,
+		struct hid_input *hi, struct hid_field *field,
+		struct hid_usage *usage, unsigned long **bit, int *max)
+{
+	if (field->application == HID_GD_WIRELESS_RADIO_CTLS)
+		return -1;
+
+	return 0;
+}
+
 static int lenovo_input_mapping(struct hid_device *hdev,
 		struct hid_input *hi, struct hid_field *field,
 		struct hid_usage *usage, unsigned long **bit, int *max)
@@ -472,8 +513,15 @@ static int lenovo_input_mapping(struct hid_device *hdev,
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 		return lenovo_input_mapping_tp10_ultrabook_kbd(hdev, hi, field,
 							       usage, bit, max);
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		return lenovo_input_mapping_x1_tab_kbd(hdev, hi, field, usage, bit, max);
+	case I2C_DEVICE_ID_ITE_LENOVO_YOGA_SLIM_7X_G11_KEYBOARD:
+		return lenovo_input_mapping_yoga7x_g11_kbd(hdev, hi, field, usage, bit, max);
 	default:
 		return 0;
 	}
@@ -528,11 +576,14 @@ static void lenovo_features_set_cptkbd(struct hid_device *hdev)
 
 	/*
 	 * Tell the keyboard a driver understands it, and turn F7, F9, F11 into
-	 * regular keys
+	 * regular keys (Compact only)
 	 */
-	ret = lenovo_send_cmd_cptkbd(hdev, 0x01, 0x03);
-	if (ret)
-		hid_warn(hdev, "Failed to switch F7/9/11 mode: %d\n", ret);
+	if (hdev->product == USB_DEVICE_ID_LENOVO_CUSBKBD ||
+	    hdev->product == USB_DEVICE_ID_LENOVO_CBTKBD) {
+		ret = lenovo_send_cmd_cptkbd(hdev, 0x01, 0x03);
+		if (ret)
+			hid_warn(hdev, "Failed to switch F7/9/11 mode: %d\n", ret);
+	}
 
 	/* Switch middle button to native mode */
 	ret = lenovo_send_cmd_cptkbd(hdev, 0x09, 0x01);
@@ -555,7 +606,7 @@ static ssize_t attr_fn_lock_show(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data->fn_lock);
+	return sysfs_emit(buf, "%u\n", data->fn_lock);
 }
 
 static ssize_t attr_fn_lock_store(struct device *dev,
@@ -581,8 +632,13 @@ static ssize_t attr_fn_lock_store(struct device *dev,
 	case USB_DEVICE_ID_LENOVO_TPIIBTKBD:
 		lenovo_features_set_cptkbd(hdev);
 		break;
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		ret = lenovo_led_set_tp10ubkbd(hdev, TP10UBKBD_FN_LOCK_LED, value);
 		if (ret)
 			return ret;
@@ -599,8 +655,7 @@ static ssize_t attr_sensitivity_show_cptkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *cptkbd_data = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-		cptkbd_data->sensitivity);
+	return sysfs_emit(buf, "%u\n", cptkbd_data->sensitivity);
 }
 
 static ssize_t attr_sensitivity_store_cptkbd(struct device *dev,
@@ -628,8 +683,8 @@ static ssize_t attr_middleclick_workaround_show_cptkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *cptkbd_data = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-		cptkbd_data->middleclick_workaround_cptkbd);
+	return sysfs_emit(buf, "%u\n",
+			  cptkbd_data->middleclick_workaround_cptkbd);
 }
 
 static ssize_t attr_middleclick_workaround_store_cptkbd(struct device *dev,
@@ -679,6 +734,57 @@ static const struct attribute_group lenovo_attr_group_cptkbd = {
 	.attrs = lenovo_attributes_cptkbd,
 };
 
+/* Function to handle Lenovo Thinkpad TAB X12's HID raw inputs for fn keys*/
+static int lenovo_raw_event_TP_X12_tab(struct hid_device *hdev, u32 raw_data)
+{
+	struct hid_input *hidinput;
+	struct input_dev *input = NULL;
+
+	/* Iterate through all associated input devices */
+	list_for_each_entry(hidinput, &hdev->inputs, list) {
+		input = hidinput->input;
+		if (!input)
+			continue;
+
+		switch (raw_data) {
+			/* fn-F20 being used here for MIC mute*/
+		case TP_X12_RAW_HOTKEY_FN_F4:
+			report_key_event(input, LENOVO_KEY_MICMUTE);
+			return 1;
+		/* Power-mode or Airplane mode will be called based on the device*/
+		case TP_X12_RAW_HOTKEY_FN_F8:
+			/*
+			 * TP X12 TAB uses Fn-F8 calls Airplanemode
+			 * Whereas TP X12 TAB2 uses Fn-F8 for toggling
+			 * Power modes
+			 */
+			if (hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB) {
+				report_key_event(input, KEY_RFKILL);
+				return 1;
+			}
+			report_key_event(input, KEY_PERFORMANCE);
+			return 1;
+		case TP_X12_RAW_HOTKEY_FN_F10:
+			/* TAB1 has PICKUP Phone and TAB2 use Snipping tool*/
+			(hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB) ?
+			report_key_event(input, KEY_PICKUP_PHONE) :
+			report_key_event(input, KEY_SELECTIVE_SCREENSHOT);
+			return 1;
+		case TP_X12_RAW_HOTKEY_FN_F12:
+			/* BookMarks/STAR key*/
+			report_key_event(input, KEY_BOOKMARKS);
+			return 1;
+		case TP_X12_RAW_HOTKEY_FN_SPACE:
+			/* Keyboard LED backlight toggle*/
+			report_key_event(input, KEY_KBDILLUMTOGGLE);
+			return 1;
+		default:
+			break;
+		}
+	}
+	return 0;
+}
+
 static int lenovo_raw_event(struct hid_device *hdev,
 			struct hid_report *report, u8 *data, int size)
 {
@@ -695,6 +801,16 @@ static int lenovo_raw_event(struct hid_device *hdev,
 		data[1] = 0x00;
 		data[2] = 0x01;
 	}
+
+	/*
+	 * Lenovo TP X12 Tab KBD's Fn+XX is HID raw data defined. Report ID is 0x03
+	 * e.g.: Raw data received for MIC mute is 0x00020003.
+	 */
+	if (unlikely((hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB ||
+		      hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB2 ||
+		      hdev->product == USB_DEVICE_ID_LENOVO_X13_TAB) &&
+		      size >= 4 && report->id == 0x03))
+		return lenovo_raw_event_TP_X12_tab(hdev, get_unaligned_le32(data));
 
 	return 0;
 }
@@ -775,8 +891,13 @@ static int lenovo_event(struct hid_device *hdev, struct hid_field *field,
 	case USB_DEVICE_ID_LENOVO_TPIIUSBKBD:
 	case USB_DEVICE_ID_LENOVO_TPIIBTKBD:
 		return lenovo_event_cptkbd(hdev, field, usage, value);
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		return lenovo_event_tp10ubkbd(hdev, field, usage, value);
 	default:
 		return 0;
@@ -809,7 +930,7 @@ static ssize_t attr_press_to_select_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data_pointer->press_to_select);
+	return sysfs_emit(buf, "%u\n", data_pointer->press_to_select);
 }
 
 static ssize_t attr_press_to_select_store_tpkbd(struct device *dev,
@@ -839,7 +960,7 @@ static ssize_t attr_dragging_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data_pointer->dragging);
+	return sysfs_emit(buf, "%u\n", data_pointer->dragging);
 }
 
 static ssize_t attr_dragging_store_tpkbd(struct device *dev,
@@ -869,7 +990,7 @@ static ssize_t attr_release_to_select_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data_pointer->release_to_select);
+	return sysfs_emit(buf, "%u\n", data_pointer->release_to_select);
 }
 
 static ssize_t attr_release_to_select_store_tpkbd(struct device *dev,
@@ -899,7 +1020,7 @@ static ssize_t attr_select_right_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data_pointer->select_right);
+	return sysfs_emit(buf, "%u\n", data_pointer->select_right);
 }
 
 static ssize_t attr_select_right_store_tpkbd(struct device *dev,
@@ -929,8 +1050,7 @@ static ssize_t attr_sensitivity_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-		data_pointer->sensitivity);
+	return sysfs_emit(buf, "%u\n", data_pointer->sensitivity);
 }
 
 static ssize_t attr_sensitivity_store_tpkbd(struct device *dev,
@@ -958,8 +1078,7 @@ static ssize_t attr_press_speed_show_tpkbd(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct lenovo_drvdata *data_pointer = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n",
-		data_pointer->press_speed);
+	return sysfs_emit(buf, "%u\n", data_pointer->press_speed);
 }
 
 static ssize_t attr_press_speed_store_tpkbd(struct device *dev,
@@ -1057,8 +1176,13 @@ static int lenovo_led_brightness_set(struct led_classdev *led_cdev,
 	case USB_DEVICE_ID_LENOVO_TPKBD:
 		lenovo_led_set_tpkbd(hdev);
 		break;
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		ret = lenovo_led_set_tp10ubkbd(hdev, tp10ubkbd_led[led_nr], value);
 		break;
 	}
@@ -1133,9 +1257,7 @@ static int lenovo_probe_tpkbd(struct hid_device *hdev)
 	if (ret)
 		hid_warn(hdev, "Could not create sysfs group: %d\n", ret);
 
-	data_pointer = devm_kzalloc(&hdev->dev,
-				    sizeof(struct lenovo_drvdata),
-				    GFP_KERNEL);
+	data_pointer = devm_kzalloc_obj(&hdev->dev, struct lenovo_drvdata);
 	if (data_pointer == NULL) {
 		hid_err(hdev, "Could not allocate memory for driver data\n");
 		ret = -ENOMEM;
@@ -1173,9 +1295,7 @@ static int lenovo_probe_cptkbd(struct hid_device *hdev)
 		return 0;
 	}
 
-	cptkbd_data = devm_kzalloc(&hdev->dev,
-					sizeof(*cptkbd_data),
-					GFP_KERNEL);
+	cptkbd_data = devm_kzalloc_obj(&hdev->dev, *cptkbd_data);
 	if (cptkbd_data == NULL) {
 		hid_err(hdev, "can't alloc keyboard descriptor\n");
 		return -ENOMEM;
@@ -1227,7 +1347,7 @@ static int lenovo_probe_tp10ubkbd(struct hid_device *hdev)
 	if (!found)
 		return 0;
 
-	data = devm_kzalloc(&hdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&hdev->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -1242,8 +1362,16 @@ static int lenovo_probe_tp10ubkbd(struct hid_device *hdev)
 	 * We cannot read the state, only set it, so we force it to on here
 	 * (which should be a no-op) to make sure that our state matches the
 	 * keyboard's FN-lock state. This is the same as what Windows does.
+	 *
+	 * For X12 TAB and TAB2, the default windows behaviour Fn-lock Off.
+	 * Adding additional check to ensure the behaviour in case of
+	 * Thinkpad X12 Tabs.
 	 */
-	data->fn_lock = true;
+
+	data->fn_lock = !(hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB ||
+			hdev->product == USB_DEVICE_ID_LENOVO_X12_TAB2 ||
+			hdev->product == USB_DEVICE_ID_LENOVO_X13_TAB);
+
 	lenovo_led_set_tp10ubkbd(hdev, TP10UBKBD_FN_LOCK_LED, data->fn_lock);
 
 	ret = sysfs_create_group(&hdev->dev.kobj, &lenovo_attr_group_tp10ubkbd);
@@ -1287,8 +1415,13 @@ static int lenovo_probe(struct hid_device *hdev,
 	case USB_DEVICE_ID_LENOVO_TPIIBTKBD:
 		ret = lenovo_probe_cptkbd(hdev);
 		break;
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		ret = lenovo_probe_tp10ubkbd(hdev);
 		break;
 	default:
@@ -1305,7 +1438,6 @@ err:
 	return ret;
 }
 
-#ifdef CONFIG_PM
 static int lenovo_reset_resume(struct hid_device *hdev)
 {
 	switch (hdev->product) {
@@ -1321,7 +1453,6 @@ static int lenovo_reset_resume(struct hid_device *hdev)
 
 	return 0;
 }
-#endif
 
 static void lenovo_remove_tpkbd(struct hid_device *hdev)
 {
@@ -1373,8 +1504,13 @@ static void lenovo_remove(struct hid_device *hdev)
 	case USB_DEVICE_ID_LENOVO_TPIIBTKBD:
 		lenovo_remove_cptkbd(hdev);
 		break;
+	case USB_DEVICE_ID_LENOVO_X12_TAB:
+	case USB_DEVICE_ID_LENOVO_X12_TAB2:
+	case USB_DEVICE_ID_LENOVO_X13_TAB:
 	case USB_DEVICE_ID_LENOVO_TP10UBKBD:
 	case USB_DEVICE_ID_LENOVO_X1_TAB:
+	case USB_DEVICE_ID_LENOVO_X1_TAB2:
+	case USB_DEVICE_ID_LENOVO_X1_TAB3:
 		lenovo_remove_tp10ubkbd(hdev);
 		break;
 	}
@@ -1397,6 +1533,10 @@ static int lenovo_input_configured(struct hid_device *hdev,
 				__set_bit(INPUT_PROP_POINTING_STICK,
 						hi->input->propbit);
 			}
+			break;
+		case USB_DEVICE_ID_LENOVO_X12_TAB2:
+		case USB_DEVICE_ID_LENOVO_X13_TAB:
+			input_set_capability(hi->input, EV_KEY, KEY_PERFORMANCE);
 			break;
 	}
 
@@ -1424,6 +1564,20 @@ static const struct hid_device_id lenovo_devices[] = {
 	 */
 	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
 		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X1_TAB) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X1_TAB2) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X1_TAB3) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X12_TAB) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X12_TAB2) },
+	{ HID_DEVICE(BUS_USB, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_LENOVO, USB_DEVICE_ID_LENOVO_X13_TAB) },
+	{ HID_DEVICE(BUS_I2C, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_ITE, I2C_DEVICE_ID_ITE_LENOVO_YOGA_SLIM_7X_KEYBOARD) },
+	{ HID_DEVICE(BUS_I2C, HID_GROUP_GENERIC,
+		     USB_VENDOR_ID_ITE, I2C_DEVICE_ID_ITE_LENOVO_YOGA_SLIM_7X_G11_KEYBOARD) },
 	{ }
 };
 
@@ -1439,10 +1593,9 @@ static struct hid_driver lenovo_driver = {
 	.raw_event = lenovo_raw_event,
 	.event = lenovo_event,
 	.report_fixup = lenovo_report_fixup,
-#ifdef CONFIG_PM
-	.reset_resume = lenovo_reset_resume,
-#endif
+	.reset_resume = pm_ptr(lenovo_reset_resume),
 };
 module_hid_driver(lenovo_driver);
 
+MODULE_DESCRIPTION("HID driver for IBM/Lenovo");
 MODULE_LICENSE("GPL");

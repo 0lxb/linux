@@ -300,8 +300,7 @@ static int imx8mm_tmu_probe(struct platform_device *pdev)
 
 	data = of_device_get_match_data(&pdev->dev);
 
-	tmu = devm_kzalloc(&pdev->dev, struct_size(tmu, sensors,
-			   data->num_sensors), GFP_KERNEL);
+	tmu = devm_kzalloc_flex(&pdev->dev, *tmu, sensors, data->num_sensors);
 	if (!tmu)
 		return -ENOMEM;
 
@@ -399,7 +398,7 @@ static struct platform_driver imx8mm_tmu = {
 		.of_match_table = imx8mm_tmu_table,
 	},
 	.probe = imx8mm_tmu_probe,
-	.remove_new = imx8mm_tmu_remove,
+	.remove = imx8mm_tmu_remove,
 };
 module_platform_driver(imx8mm_tmu);
 

@@ -5,6 +5,7 @@
  * Author: Gene Chen <gene_chen@richtek.com>
  */
 
+#include <linux/cleanup.h>
 #include <linux/crc8.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
@@ -404,7 +405,6 @@ static int mt6360_regmap_read(void *context, const void *reg, size_t reg_size,
 	u8 reg_addr = *(u8 *)(reg + 1);
 	struct i2c_client *i2c;
 	bool crc_needed = false;
-	u8 *buf;
 	int buf_len = MT6360_ALLOC_READ_SIZE(val_size);
 	int read_size = val_size;
 	u8 crc;
@@ -423,7 +423,7 @@ static int mt6360_regmap_read(void *context, const void *reg, size_t reg_size,
 		read_size += MT6360_CRC_CRC8_SIZE;
 	}
 
-	buf = kzalloc(buf_len, GFP_KERNEL);
+	u8 *buf __free(kfree) = kzalloc(buf_len, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -433,24 +433,19 @@ static int mt6360_regmap_read(void *context, const void *reg, size_t reg_size,
 	ret = i2c_smbus_read_i2c_block_data(i2c, reg_addr, read_size,
 					    buf + MT6360_CRC_PREDATA_OFFSET);
 	if (ret < 0)
-		goto out;
-	else if (ret != read_size) {
-		ret = -EIO;
-		goto out;
-	}
+		return ret;
+	else if (ret != read_size)
+		return -EIO;
 
 	if (crc_needed) {
 		crc = crc8(ddata->crc8_tbl, buf, val_size + MT6360_CRC_PREDATA_OFFSET, 0);
-		if (crc != buf[val_size + MT6360_CRC_PREDATA_OFFSET]) {
-			ret = -EIO;
-			goto out;
-		}
+		if (crc != buf[val_size + MT6360_CRC_PREDATA_OFFSET])
+			return -EIO;
 	}
 
 	memcpy(val, buf + MT6360_CRC_PREDATA_OFFSET, val_size);
-out:
-	kfree(buf);
-	return (ret < 0) ? ret : 0;
+
+	return 0;
 }
 
 static int mt6360_regmap_write(void *context, const void *val, size_t val_size)
@@ -536,7 +531,7 @@ static int mt6360_probe(struct i2c_client *client)
 	struct mt6360_ddata *ddata;
 	int i, ret;
 
-	ddata = devm_kzalloc(&client->dev, sizeof(*ddata), GFP_KERNEL);
+	ddata = devm_kzalloc_obj(&client->dev, *ddata);
 	if (!ddata)
 		return -ENOMEM;
 
@@ -588,7 +583,7 @@ static int mt6360_probe(struct i2c_client *client)
 	return 0;
 }
 
-static int __maybe_unused mt6360_suspend(struct device *dev)
+static int mt6360_suspend(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
 
@@ -598,7 +593,7 @@ static int __maybe_unused mt6360_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused mt6360_resume(struct device *dev)
+static int mt6360_resume(struct device *dev)
 {
 
 	struct i2c_client *i2c = to_i2c_client(dev);
@@ -609,7 +604,7 @@ static int __maybe_unused mt6360_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(mt6360_pm_ops, mt6360_suspend, mt6360_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(mt6360_pm_ops, mt6360_suspend, mt6360_resume);
 
 static const struct of_device_id __maybe_unused mt6360_of_id[] = {
 	{ .compatible = "mediatek,mt6360", },
@@ -620,7 +615,7 @@ MODULE_DEVICE_TABLE(of, mt6360_of_id);
 static struct i2c_driver mt6360_driver = {
 	.driver = {
 		.name = "mt6360",
-		.pm = &mt6360_pm_ops,
+		.pm = pm_sleep_ptr(&mt6360_pm_ops),
 		.of_match_table = of_match_ptr(mt6360_of_id),
 	},
 	.probe = mt6360_probe,

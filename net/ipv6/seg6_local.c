@@ -24,6 +24,7 @@
 #include <net/addrconf.h>
 #include <net/ip6_route.h>
 #include <net/dst_cache.h>
+#include <net/dst_metadata.h>
 #include <net/ip_tunnels.h>
 #ifdef CONFIG_IPV6_SEG6_HMAC
 #include <net/seg6_hmac.h>
@@ -149,9 +150,7 @@ struct seg6_end_dt_info {
 	int vrf_ifindex;
 	int vrf_table;
 
-	/* tunneled packet family (IPv4 or IPv6).
-	 * Protocol and header length are inferred from family.
-	 */
+	/* tunneled packet family (IPv4 or IPv6) */
 	u16 family;
 };
 
@@ -213,6 +212,21 @@ static struct seg6_local_lwt *seg6_local_lwtunnel(struct lwtunnel_state *lwt)
 	return (struct seg6_local_lwt *)lwt->data;
 }
 
+static bool seg6_local_skb_has_lwtstate(struct sk_buff *skb)
+{
+	struct dst_entry *dst;
+
+	if (unlikely(!skb_valid_dst(skb)))
+		return false;
+
+	dst = skb_dst(skb);
+	if (unlikely(!dst->lwtstate ||
+		     dst->lwtstate->type != LWTUNNEL_ENCAP_SEG6_LOCAL))
+		return false;
+
+	return true;
+}
+
 static struct ipv6_sr_hdr *get_and_validate_srh(struct sk_buff *skb)
 {
 	struct ipv6_sr_hdr *srh;
@@ -222,7 +236,7 @@ static struct ipv6_sr_hdr *get_and_validate_srh(struct sk_buff *skb)
 		return NULL;
 
 #ifdef CONFIG_IPV6_SEG6_HMAC
-	if (!seg6_hmac_validate_skb(skb))
+	if (!seg6_hmac_validate_skb(skb, srh))
 		return NULL;
 #endif
 
@@ -239,7 +253,7 @@ static bool decap_and_validate(struct sk_buff *skb, int proto)
 		return false;
 
 #ifdef CONFIG_IPV6_SEG6_HMAC
-	if (srh && !seg6_hmac_validate_skb(skb))
+	if (srh && !seg6_hmac_validate_skb(skb, srh))
 		return false;
 #endif
 
@@ -256,21 +270,70 @@ static bool decap_and_validate(struct sk_buff *skb, int proto)
 	if (iptunnel_pull_offloads(skb))
 		return false;
 
+	if (proto == IPPROTO_IPIP) {
+		bool l3slave = ipv6_l3mdev_skb(IP6CB(skb)->flags);
+		int iif = IP6CB(skb)->iif;
+
+		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+		IPCB(skb)->iif = iif;
+		if (l3slave)
+			IPCB(skb)->flags |= IPSKB_L3SLAVE;
+	} else if (proto == IPPROTO_IPV6) {
+		bool l3slave = ipv6_l3mdev_skb(IP6CB(skb)->flags);
+		int iif = IP6CB(skb)->iif;
+
+		memset(IP6CB(skb), 0, sizeof(*IP6CB(skb)));
+		IP6CB(skb)->iif = iif;
+		IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
+		if (l3slave)
+			IP6CB(skb)->flags |= IP6SKB_L3SLAVE;
+	}
+
 	return true;
 }
 
-static void advance_nextseg(struct ipv6_sr_hdr *srh, struct in6_addr *daddr)
+/* advance the SRH to the next segment and set the IPv6 DA accordingly.
+ * skb pointers may change: after this call, the caller must evaluate again
+ * any pointer into the packet data.
+ *
+ * This function returns:
+ *  - the SRH on success;
+ *  - NULL when the skb cannot be made writable. In this case, the function
+ *    sets the drop reason to SKB_DROP_REASON_NOMEM.
+ */
+static struct ipv6_sr_hdr *advance_nextseg(struct sk_buff *skb,
+					   struct ipv6_sr_hdr *srh,
+					   enum skb_drop_reason *reason)
 {
 	struct in6_addr *addr;
+	int srhoff;
+	int wlen;
+
+	srhoff = (unsigned char *)srh - skb->data;
+	/* we write only the Segment Left field and the IPv6 DA. The segment
+	 * list is only read, and seg6_get_srh() already pulled it into the
+	 * linear area.
+	 */
+	wlen = srhoff + sizeof(*srh);
+
+	if (unlikely(skb_ensure_writable(skb, wlen))) {
+		*reason = SKB_DROP_REASON_NOMEM;
+		return NULL;
+	}
+
+	/* skb_ensure_writable() may change skb pointers; evaluate srh again */
+	srh = (struct ipv6_sr_hdr *)(skb->data + srhoff);
 
 	srh->segments_left--;
 	addr = srh->segments + srh->segments_left;
-	*daddr = *addr;
+	ipv6_hdr(skb)->daddr = *addr;
+
+	return srh;
 }
 
 static int
 seg6_lookup_any_nexthop(struct sk_buff *skb, struct in6_addr *nhaddr,
-			u32 tbl_id, bool local_delivery)
+			u32 tbl_id, bool local_delivery, int oif)
 {
 	struct net *net = dev_net(skb->dev);
 	struct ipv6hdr *hdr = ipv6_hdr(skb);
@@ -282,6 +345,7 @@ seg6_lookup_any_nexthop(struct sk_buff *skb, struct in6_addr *nhaddr,
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.flowi6_iif = skb->dev->ifindex;
+	fl6.flowi6_oif = oif;
 	fl6.daddr = nhaddr ? *nhaddr : hdr->daddr;
 	fl6.saddr = hdr->saddr;
 	fl6.flowlabel = ip6_flowinfo(hdr);
@@ -291,17 +355,19 @@ seg6_lookup_any_nexthop(struct sk_buff *skb, struct in6_addr *nhaddr,
 	if (nhaddr)
 		fl6.flowi6_flags = FLOWI_FLAG_KNOWN_NH;
 
-	if (!tbl_id) {
+	if (!tbl_id && !oif) {
 		dst = ip6_route_input_lookup(net, skb->dev, &fl6, skb, flags);
-	} else {
+	} else if (tbl_id) {
 		struct fib6_table *table;
 
 		table = fib6_get_table(net, tbl_id);
 		if (!table)
 			goto out;
 
-		rt = ip6_pol_route(net, table, 0, &fl6, skb, flags);
+		rt = ip6_pol_route(net, table, oif, &fl6, skb, flags);
 		dst = &rt->dst;
+	} else {
+		dst = ip6_route_output(net, NULL, &fl6);
 	}
 
 	/* we want to discard traffic destined for local packet processing,
@@ -310,7 +376,7 @@ seg6_lookup_any_nexthop(struct sk_buff *skb, struct in6_addr *nhaddr,
 	if (!local_delivery)
 		dev_flags |= IFF_LOOPBACK;
 
-	if (dst && (dst->dev->flags & dev_flags) && !dst->error) {
+	if (dst && (dst_dev(dst)->flags & dev_flags) && !dst->error) {
 		dst_release(dst);
 		dst = NULL;
 	}
@@ -330,7 +396,7 @@ out:
 int seg6_lookup_nexthop(struct sk_buff *skb,
 			struct in6_addr *nhaddr, u32 tbl_id)
 {
-	return seg6_lookup_any_nexthop(skb, nhaddr, tbl_id, false);
+	return seg6_lookup_any_nexthop(skb, nhaddr, tbl_id, false, 0);
 }
 
 static __u8 seg6_flv_lcblock_octects(const struct seg6_flavors_info *finfo)
@@ -360,12 +426,26 @@ static bool seg6_next_csid_is_arg_zero(const struct in6_addr *addr,
 	return true;
 }
 
-/* assume that DA.Argument length > 0 */
-static void seg6_next_csid_advance_arg(struct in6_addr *addr,
-				       const struct seg6_flavors_info *finfo)
+/* assume that DA.Argument length > 0.
+ * skb pointers may change: after this call, the caller must evaluate again
+ * any pointer into the packet data.
+ *
+ * This function returns:
+ *  - SKB_NOT_DROPPED_YET on success;
+ *  - SKB_DROP_REASON_NOMEM when the skb cannot be made writable.
+ */
+static enum skb_drop_reason
+seg6_next_csid_advance_arg(struct sk_buff *skb,
+			   const struct seg6_flavors_info *finfo)
 {
 	__u8 fnc_octects = seg6_flv_lcnode_func_octects(finfo);
 	__u8 blk_octects = seg6_flv_lcblock_octects(finfo);
+	struct in6_addr *addr;
+
+	if (unlikely(skb_ensure_writable(skb, sizeof(struct ipv6hdr))))
+		return SKB_DROP_REASON_NOMEM;
+
+	addr = &ipv6_hdr(skb)->daddr;
 
 	/* advance DA.Argument */
 	memmove(&addr->s6_addr[blk_octects],
@@ -373,6 +453,8 @@ static void seg6_next_csid_advance_arg(struct in6_addr *addr,
 		16 - blk_octects - fnc_octects);
 
 	memset(&addr->s6_addr[16 - fnc_octects], 0x00, fnc_octects);
+
+	return SKB_NOT_DROPPED_YET;
 }
 
 static int input_action_end_finish(struct sk_buff *skb,
@@ -386,31 +468,42 @@ static int input_action_end_finish(struct sk_buff *skb,
 static int input_action_end_core(struct sk_buff *skb,
 				 struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct ipv6_sr_hdr *srh;
+	int err = -EINVAL;
 
 	srh = get_and_validate_srh(skb);
 	if (!srh)
 		goto drop;
 
-	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+	srh = advance_nextseg(skb, srh, &reason);
+	if (!srh) {
+		err = -ENOMEM;
+		goto drop;
+	}
 
 	return input_action_end_finish(skb, slwt);
 
 drop:
-	kfree_skb(skb);
-	return -EINVAL;
+	kfree_skb_reason(skb, reason);
+	return err;
 }
 
 static int end_next_csid_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 {
 	const struct seg6_flavors_info *finfo = &slwt->flv_info;
 	struct in6_addr *daddr = &ipv6_hdr(skb)->daddr;
+	enum skb_drop_reason reason;
 
 	if (seg6_next_csid_is_arg_zero(daddr, finfo))
 		return input_action_end_core(skb, slwt);
 
 	/* update DA */
-	seg6_next_csid_advance_arg(daddr, finfo);
+	reason = seg6_next_csid_advance_arg(skb, finfo);
+	if (reason) {
+		kfree_skb_reason(skb, reason);
+		return -ENOMEM;
+	}
 
 	return input_action_end_finish(skb, slwt);
 }
@@ -418,7 +511,7 @@ static int end_next_csid_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 static int input_action_end_x_finish(struct sk_buff *skb,
 				     struct seg6_local_lwt *slwt)
 {
-	seg6_lookup_nexthop(skb, &slwt->nh6, 0);
+	seg6_lookup_any_nexthop(skb, &slwt->nh6, 0, false, slwt->oif);
 
 	return dst_input(skb);
 }
@@ -426,19 +519,25 @@ static int input_action_end_x_finish(struct sk_buff *skb,
 static int input_action_end_x_core(struct sk_buff *skb,
 				   struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct ipv6_sr_hdr *srh;
+	int err = -EINVAL;
 
 	srh = get_and_validate_srh(skb);
 	if (!srh)
 		goto drop;
 
-	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+	srh = advance_nextseg(skb, srh, &reason);
+	if (!srh) {
+		err = -ENOMEM;
+		goto drop;
+	}
 
 	return input_action_end_x_finish(skb, slwt);
 
 drop:
-	kfree_skb(skb);
-	return -EINVAL;
+	kfree_skb_reason(skb, reason);
+	return err;
 }
 
 static int end_x_next_csid_core(struct sk_buff *skb,
@@ -446,12 +545,17 @@ static int end_x_next_csid_core(struct sk_buff *skb,
 {
 	const struct seg6_flavors_info *finfo = &slwt->flv_info;
 	struct in6_addr *daddr = &ipv6_hdr(skb)->daddr;
+	enum skb_drop_reason reason;
 
 	if (seg6_next_csid_is_arg_zero(daddr, finfo))
 		return input_action_end_x_core(skb, slwt);
 
 	/* update DA */
-	seg6_next_csid_advance_arg(daddr, finfo);
+	reason = seg6_next_csid_advance_arg(skb, finfo);
+	if (reason) {
+		kfree_skb_reason(skb, reason);
+		return -ENOMEM;
+	}
 
 	return input_action_end_x_finish(skb, slwt);
 }
@@ -738,10 +842,12 @@ pull:
  */
 static int end_flv8986_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	const struct seg6_flavors_info *finfo = &slwt->flv_info;
 	enum seg6_local_flv_action action;
 	enum seg6_local_pktinfo pinfo;
 	struct ipv6_sr_hdr *srh;
+	int err = -EINVAL;
 	__u32 flvmask;
 	int srhoff;
 
@@ -749,7 +855,7 @@ static int end_flv8986_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 	srhoff = srh ? ((unsigned char *)srh - skb->data) : 0;
 	pinfo = seg6_get_srh_pktinfo(srh);
 #ifdef CONFIG_IPV6_SEG6_HMAC
-	if (srh && !seg6_hmac_validate_skb(skb))
+	if (srh && !seg6_hmac_validate_skb(skb, srh))
 		goto drop;
 #endif
 	flvmask = finfo->flv_ops;
@@ -765,10 +871,18 @@ static int end_flv8986_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 	switch (action) {
 	case SEG6_LOCAL_FLV_ACT_END:
 		/* process the packet as the "standard" End behavior */
-		advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+		srh = advance_nextseg(skb, srh, &reason);
+		if (!srh) {
+			err = -ENOMEM;
+			goto drop;
+		}
 		break;
 	case SEG6_LOCAL_FLV_ACT_PSP:
-		advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+		srh = advance_nextseg(skb, srh, &reason);
+		if (!srh) {
+			err = -ENOMEM;
+			goto drop;
+		}
 
 		if (unlikely(!seg6_pop_srh(skb, srhoff)))
 			goto drop;
@@ -785,8 +899,8 @@ static int end_flv8986_core(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 	return input_action_end_finish(skb, slwt);
 
 drop:
-	kfree_skb(skb);
-	return -EINVAL;
+	kfree_skb_reason(skb, reason);
+	return err;
 }
 
 /* regular endpoint function */
@@ -825,21 +939,27 @@ static int input_action_end_x(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 
 static int input_action_end_t(struct sk_buff *skb, struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct ipv6_sr_hdr *srh;
+	int err = -EINVAL;
 
 	srh = get_and_validate_srh(skb);
 	if (!srh)
 		goto drop;
 
-	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+	srh = advance_nextseg(skb, srh, &reason);
+	if (!srh) {
+		err = -ENOMEM;
+		goto drop;
+	}
 
 	seg6_lookup_nexthop(skb, NULL, slwt->table);
 
 	return dst_input(skb);
 
 drop:
-	kfree_skb(skb);
-	return -EINVAL;
+	kfree_skb_reason(skb, reason);
+	return err;
 }
 
 /* decapsulate and forward inner L2 frame on specified interface */
@@ -922,6 +1042,17 @@ static int input_action_end_dx6_finish(struct net *net, struct sock *sk,
 	return dst_input(skb);
 }
 
+static int input_action_end_dx6_finish_nf(struct net *net, struct sock *sk,
+					  struct sk_buff *skb)
+{
+	if (unlikely(!seg6_local_skb_has_lwtstate(skb))) {
+		kfree_skb(skb);
+		return -EINVAL;
+	}
+
+	return input_action_end_dx6_finish(net, sk, skb);
+}
+
 /* decapsulate and forward to specified nexthop */
 static int input_action_end_dx6(struct sk_buff *skb,
 				struct seg6_local_lwt *slwt)
@@ -941,8 +1072,8 @@ static int input_action_end_dx6(struct sk_buff *skb,
 
 	if (static_branch_unlikely(&nf_hooks_lwtunnel_enabled))
 		return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
-			       dev_net(skb->dev), NULL, skb, NULL,
-			       skb_dst(skb)->dev, input_action_end_dx6_finish);
+			       dev_net(skb->dev), NULL, skb, skb->dev,
+			       NULL, input_action_end_dx6_finish_nf);
 
 	return input_action_end_dx6_finish(dev_net(skb->dev), NULL, skb);
 drop:
@@ -950,14 +1081,48 @@ drop:
 	return -EINVAL;
 }
 
+/* Validate the length of the IPv4 header at skb->data (which must point to
+ * the network header) and report that length, options included.
+ * Only the version, the header length and the presence of the whole header
+ * are checked.
+ * The length is written only when SKB_NOT_DROPPED_YET is returned.
+ *
+ * skb pointers may change: after this call, the caller must evaluate again
+ * any pointer into the packet data.
+ */
+static enum skb_drop_reason
+seg6_validate_iphdr_len(struct sk_buff *skb, int *hdrlen)
+{
+	enum skb_drop_reason reason;
+	const struct iphdr *iph;
+	int len;
+
+	reason = pskb_may_pull_reason(skb, sizeof(struct iphdr));
+	if (reason)
+		return reason;
+
+	iph = ip_hdr(skb);
+	if (iph->version != 4 || iph->ihl < 5)
+		return SKB_DROP_REASON_IP_INHDR;
+
+	len = ip_hdrlen(skb);
+
+	reason = pskb_may_pull_reason(skb, len);
+	if (reason)
+		return reason;
+
+	*hdrlen = len;
+	return SKB_NOT_DROPPED_YET;
+}
+
 static int input_action_end_dx4_finish(struct net *net, struct sock *sk,
 				       struct sk_buff *skb)
 {
 	struct dst_entry *orig_dst = skb_dst(skb);
+	enum skb_drop_reason reason;
 	struct seg6_local_lwt *slwt;
 	struct iphdr *iph;
 	__be32 nhaddr;
-	int err;
 
 	slwt = seg6_local_lwtunnel(orig_dst->lwtstate);
 
@@ -967,36 +1132,51 @@ static int input_action_end_dx4_finish(struct net *net, struct sock *sk,
 
 	skb_dst_drop(skb);
 
-	err = ip_route_input(skb, nhaddr, iph->saddr, 0, skb->dev);
-	if (err) {
-		kfree_skb(skb);
+	reason = ip_route_input(skb, nhaddr, iph->saddr, 0, skb->dev);
+	if (reason) {
+		kfree_skb_reason(skb, reason);
 		return -EINVAL;
 	}
 
 	return dst_input(skb);
 }
 
+static int input_action_end_dx4_finish_nf(struct net *net, struct sock *sk,
+					  struct sk_buff *skb)
+{
+	if (unlikely(!seg6_local_skb_has_lwtstate(skb))) {
+		kfree_skb(skb);
+		return -EINVAL;
+	}
+
+	return input_action_end_dx4_finish(net, sk, skb);
+}
+
 static int input_action_end_dx4(struct sk_buff *skb,
 				struct seg6_local_lwt *slwt)
 {
+	SKB_DR(reason);
+	int hdrlen;
+
 	if (!decap_and_validate(skb, IPPROTO_IPIP))
 		goto drop;
 
-	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+	reason = seg6_validate_iphdr_len(skb, &hdrlen);
+	if (reason)
 		goto drop;
 
 	skb->protocol = htons(ETH_P_IP);
-	skb_set_transport_header(skb, sizeof(struct iphdr));
+	skb_set_transport_header(skb, hdrlen);
 	nf_reset_ct(skb);
 
 	if (static_branch_unlikely(&nf_hooks_lwtunnel_enabled))
 		return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
-			       dev_net(skb->dev), NULL, skb, NULL,
-			       skb_dst(skb)->dev, input_action_end_dx4_finish);
+			       dev_net(skb->dev), NULL, skb, skb->dev,
+			       NULL, input_action_end_dx4_finish_nf);
 
 	return input_action_end_dx4_finish(dev_net(skb->dev), NULL, skb);
 drop:
-	kfree_skb(skb);
+	kfree_skb_reason(skb, reason);
 	return -EINVAL;
 }
 
@@ -1131,16 +1311,24 @@ static struct sk_buff *end_dt_vrf_core(struct sk_buff *skb,
 	struct seg6_end_dt_info *info = &slwt->dt_info;
 	struct net_device *vrf;
 	__be16 protocol;
+	SKB_DR(reason);
 	int hdrlen;
 
 	vrf = end_dt_get_vrf_rcu(skb, info);
 	if (unlikely(!vrf))
 		goto drop;
 
+	if (unlikely(info->family != AF_UNSPEC && info->family != family)) {
+		pr_warn_once("seg6local: SRv6 End.DT* family mismatch");
+		goto drop;
+	}
+
 	switch (family) {
 	case AF_INET:
 		protocol = htons(ETH_P_IP);
-		hdrlen = sizeof(struct iphdr);
+		reason = seg6_validate_iphdr_len(skb, &hdrlen);
+		if (unlikely(reason))
+			goto drop;
 		break;
 	case AF_INET6:
 		protocol = htons(ETH_P_IPV6);
@@ -1149,11 +1337,6 @@ static struct sk_buff *end_dt_vrf_core(struct sk_buff *skb,
 	case AF_UNSPEC:
 		fallthrough;
 	default:
-		goto drop;
-	}
-
-	if (unlikely(info->family != AF_UNSPEC && info->family != family)) {
-		pr_warn_once("seg6local: SRv6 End.DT* family mismatch");
 		goto drop;
 	}
 
@@ -1167,22 +1350,20 @@ static struct sk_buff *end_dt_vrf_core(struct sk_buff *skb,
 	return end_dt_vrf_rcv(skb, family, vrf);
 
 drop:
-	kfree_skb(skb);
+	kfree_skb_reason(skb, reason);
 	return ERR_PTR(-EINVAL);
 }
 
 static int input_action_end_dt4(struct sk_buff *skb,
 				struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason;
 	struct iphdr *iph;
-	int err;
 
 	if (!decap_and_validate(skb, IPPROTO_IPIP))
 		goto drop;
 
-	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
-		goto drop;
-
+	/* end_dt_vrf_core() validates the inner IPv4 header length */
 	skb = end_dt_vrf_core(skb, slwt, AF_INET);
 	if (!skb)
 		/* packet has been processed and consumed by the VRF */
@@ -1193,8 +1374,8 @@ static int input_action_end_dt4(struct sk_buff *skb,
 
 	iph = ip_hdr(skb);
 
-	err = ip_route_input(skb, iph->daddr, iph->saddr, 0, skb->dev);
-	if (unlikely(err))
+	reason = ip_route_input(skb, iph->daddr, iph->saddr, 0, skb->dev);
+	if (unlikely(reason))
 		goto drop;
 
 	return dst_input(skb);
@@ -1277,7 +1458,7 @@ static int input_action_end_dt6(struct sk_buff *skb,
 	/* note: this time we do not need to specify the table because the VRF
 	 * takes care of selecting the correct table.
 	 */
-	seg6_lookup_any_nexthop(skb, NULL, 0, true);
+	seg6_lookup_any_nexthop(skb, NULL, 0, true, 0);
 
 	return dst_input(skb);
 
@@ -1285,7 +1466,7 @@ legacy_mode:
 #endif
 	skb_set_transport_header(skb, sizeof(struct ipv6hdr));
 
-	seg6_lookup_any_nexthop(skb, NULL, slwt->table, true);
+	seg6_lookup_any_nexthop(skb, NULL, slwt->table, true, 0);
 
 	return dst_input(skb);
 
@@ -1353,6 +1534,7 @@ drop:
 static int input_action_end_b6_encap(struct sk_buff *skb,
 				     struct seg6_local_lwt *slwt)
 {
+	enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct ipv6_sr_hdr *srh;
 	int err = -EINVAL;
 
@@ -1360,7 +1542,11 @@ static int input_action_end_b6_encap(struct sk_buff *skb,
 	if (!srh)
 		goto drop;
 
-	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+	srh = advance_nextseg(skb, srh, &reason);
+	if (!srh) {
+		err = -ENOMEM;
+		goto drop;
+	}
 
 	skb_reset_inner_headers(skb);
 	skb->encapsulation = 1;
@@ -1376,11 +1562,13 @@ static int input_action_end_b6_encap(struct sk_buff *skb,
 	return dst_input(skb);
 
 drop:
-	kfree_skb(skb);
+	kfree_skb_reason(skb, reason);
 	return err;
 }
 
-DEFINE_PER_CPU(struct seg6_bpf_srh_state, seg6_bpf_srh_states);
+DEFINE_PER_CPU(struct seg6_bpf_srh_state, seg6_bpf_srh_states) = {
+	.bh_lock	= INIT_LOCAL_LOCK(bh_lock),
+};
 
 bool seg6_bpf_has_valid_srh(struct sk_buff *skb)
 {
@@ -1388,6 +1576,7 @@ bool seg6_bpf_has_valid_srh(struct sk_buff *skb)
 		this_cpu_ptr(&seg6_bpf_srh_states);
 	struct ipv6_sr_hdr *srh = srh_state->srh;
 
+	lockdep_assert_held(&srh_state->bh_lock);
 	if (unlikely(srh == NULL))
 		return false;
 
@@ -1408,8 +1597,8 @@ bool seg6_bpf_has_valid_srh(struct sk_buff *skb)
 static int input_action_end_bpf(struct sk_buff *skb,
 				struct seg6_local_lwt *slwt)
 {
-	struct seg6_bpf_srh_state *srh_state =
-		this_cpu_ptr(&seg6_bpf_srh_states);
+	struct seg6_bpf_srh_state *srh_state;
+	enum skb_drop_reason reason;
 	struct ipv6_sr_hdr *srh;
 	int ret;
 
@@ -1418,12 +1607,20 @@ static int input_action_end_bpf(struct sk_buff *skb,
 		kfree_skb(skb);
 		return -EINVAL;
 	}
-	advance_nextseg(srh, &ipv6_hdr(skb)->daddr);
+	srh = advance_nextseg(skb, srh, &reason);
+	if (!srh) {
+		kfree_skb_reason(skb, reason);
+		return -ENOMEM;
+	}
 
-	/* preempt_disable is needed to protect the per-CPU buffer srh_state,
-	 * which is also accessed by the bpf_lwt_seg6_* helpers
+	/* The access to the per-CPU buffer srh_state is protected by running
+	 * always in softirq context (with disabled BH). On PREEMPT_RT the
+	 * required locking is provided by the following local_lock_nested_bh()
+	 * statement. It is also accessed by the bpf_lwt_seg6_* helpers via
+	 * bpf_prog_run_save_cb().
 	 */
-	preempt_disable();
+	local_lock_nested_bh(&seg6_bpf_srh_states.bh_lock);
+	srh_state = this_cpu_ptr(&seg6_bpf_srh_states);
 	srh_state->srh = srh;
 	srh_state->hdrlen = srh->hdrlen << 3;
 	srh_state->valid = true;
@@ -1446,15 +1643,15 @@ static int input_action_end_bpf(struct sk_buff *skb,
 
 	if (srh_state->srh && !seg6_bpf_has_valid_srh(skb))
 		goto drop;
+	local_unlock_nested_bh(&seg6_bpf_srh_states.bh_lock);
 
-	preempt_enable();
 	if (ret != BPF_REDIRECT)
 		seg6_lookup_nexthop(skb, NULL, 0);
 
 	return dst_input(skb);
 
 drop:
-	preempt_enable();
+	local_unlock_nested_bh(&seg6_bpf_srh_states.bh_lock);
 	kfree_skb(skb);
 	return -EINVAL;
 }
@@ -1471,7 +1668,8 @@ static struct seg6_action_desc seg6_action_table[] = {
 		.action		= SEG6_LOCAL_ACTION_END_X,
 		.attrs		= SEG6_F_ATTR(SEG6_LOCAL_NH6),
 		.optattrs	= SEG6_F_LOCAL_COUNTERS |
-				  SEG6_F_LOCAL_FLAVORS,
+				  SEG6_F_LOCAL_FLAVORS |
+				  SEG6_F_ATTR(SEG6_LOCAL_OIF),
 		.input		= input_action_end_x,
 	},
 	{
@@ -1618,6 +1816,17 @@ static int seg6_local_input_core(struct net *net, struct sock *sk,
 	return rc;
 }
 
+static int seg6_local_input_core_nf(struct net *net, struct sock *sk,
+				    struct sk_buff *skb)
+{
+	if (unlikely(!seg6_local_skb_has_lwtstate(skb))) {
+		kfree_skb(skb);
+		return -EINVAL;
+	}
+
+	return seg6_local_input_core(net, sk, skb);
+}
+
 static int seg6_local_input(struct sk_buff *skb)
 {
 	if (skb->protocol != htons(ETH_P_IPV6)) {
@@ -1628,7 +1837,7 @@ static int seg6_local_input(struct sk_buff *skb)
 	if (static_branch_unlikely(&nf_hooks_lwtunnel_enabled))
 		return NF_HOOK(NFPROTO_IPV6, NF_INET_LOCAL_IN,
 			       dev_net(skb->dev), NULL, skb, skb->dev, NULL,
-			       seg6_local_input_core);
+			       seg6_local_input_core_nf);
 
 	return seg6_local_input_core(dev_net(skb->dev), NULL, skb);
 }
@@ -1638,10 +1847,8 @@ static const struct nla_policy seg6_local_policy[SEG6_LOCAL_MAX + 1] = {
 	[SEG6_LOCAL_SRH]	= { .type = NLA_BINARY },
 	[SEG6_LOCAL_TABLE]	= { .type = NLA_U32 },
 	[SEG6_LOCAL_VRFTABLE]	= { .type = NLA_U32 },
-	[SEG6_LOCAL_NH4]	= { .type = NLA_BINARY,
-				    .len = sizeof(struct in_addr) },
-	[SEG6_LOCAL_NH6]	= { .type = NLA_BINARY,
-				    .len = sizeof(struct in6_addr) },
+	[SEG6_LOCAL_NH4]	= NLA_POLICY_EXACT_LEN(sizeof(struct in_addr)),
+	[SEG6_LOCAL_NH6]	= NLA_POLICY_EXACT_LEN(sizeof(struct in6_addr)),
 	[SEG6_LOCAL_IIF]	= { .type = NLA_U32 },
 	[SEG6_LOCAL_OIF]	= { .type = NLA_U32 },
 	[SEG6_LOCAL_BPF]	= { .type = NLA_NESTED },
@@ -2079,7 +2286,7 @@ struct nla_policy seg6_local_flavors_policy[SEG6_LOCAL_FLV_MAX + 1] = {
 static int seg6_chk_next_csid_cfg(__u8 block_len, __u8 func_len)
 {
 	/* Locator-Block and Locator-Node Function cannot exceed 128 bits
-	 * (i.e. C-SID container lenghts).
+	 * (i.e. C-SID container length).
 	 */
 	if (next_csid_chk_cntr_bits(block_len, func_len))
 		return -EINVAL;

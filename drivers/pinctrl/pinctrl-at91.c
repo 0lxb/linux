@@ -308,8 +308,7 @@ static int at91_dt_node_to_map(struct pinctrl_dev *pctldev,
 	}
 
 	map_num += grp->npins;
-	new_map = devm_kcalloc(pctldev->dev, map_num, sizeof(*new_map),
-			       GFP_KERNEL);
+	new_map = devm_kzalloc_objs(pctldev->dev, *new_map, map_num);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -1218,12 +1217,9 @@ static int at91_pinctrl_parse_groups(struct device_node *np,
 	}
 
 	grp->npins = size / 4;
-	pin = grp->pins_conf = devm_kcalloc(info->dev,
-					    grp->npins,
-					    sizeof(struct at91_pmx_pin),
-					    GFP_KERNEL);
-	grp->pins = devm_kcalloc(info->dev, grp->npins, sizeof(unsigned int),
-				 GFP_KERNEL);
+	pin = grp->pins_conf = devm_kzalloc_objs(info->dev, struct at91_pmx_pin,
+						 grp->npins);
+	grp->pins = devm_kzalloc_objs(info->dev, unsigned int, grp->npins);
 	if (!grp->pins_conf || !grp->pins)
 		return -ENOMEM;
 
@@ -1244,7 +1240,6 @@ static int at91_pinctrl_parse_groups(struct device_node *np,
 static int at91_pinctrl_parse_functions(struct device_node *np,
 					struct at91_pinctrl *info, u32 index)
 {
-	struct device_node *child;
 	struct at91_pmx_func *func;
 	struct at91_pin_group *grp;
 	int ret;
@@ -1267,14 +1262,12 @@ static int at91_pinctrl_parse_functions(struct device_node *np,
 	if (!func->groups)
 		return -ENOMEM;
 
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		func->groups[i] = child->name;
 		grp = &info->groups[grp_index++];
 		ret = at91_pinctrl_parse_groups(child, grp, info, i++);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return ret;
-		}
 	}
 
 	return 0;
@@ -1296,7 +1289,6 @@ static int at91_pinctrl_probe_dt(struct platform_device *pdev,
 	int i, j, ngpio_chips_enabled = 0;
 	uint32_t *tmp;
 	struct device_node *np = dev->of_node;
-	struct device_node *child;
 
 	if (!np)
 		return -ENODEV;
@@ -1333,13 +1325,12 @@ static int at91_pinctrl_probe_dt(struct platform_device *pdev,
 
 	dev_dbg(dev, "nfunctions = %d\n", info->nfunctions);
 	dev_dbg(dev, "ngroups = %d\n", info->ngroups);
-	info->functions = devm_kcalloc(dev, info->nfunctions, sizeof(*info->functions),
-				       GFP_KERNEL);
+	info->functions = devm_kzalloc_objs(dev, *info->functions,
+					    info->nfunctions);
 	if (!info->functions)
 		return -ENOMEM;
 
-	info->groups = devm_kcalloc(dev, info->ngroups, sizeof(*info->groups),
-				    GFP_KERNEL);
+	info->groups = devm_kzalloc_objs(dev, *info->groups, info->ngroups);
 	if (!info->groups)
 		return -ENOMEM;
 
@@ -1349,14 +1340,12 @@ static int at91_pinctrl_probe_dt(struct platform_device *pdev,
 
 	i = 0;
 
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		if (of_device_is_compatible(child, gpio_compat))
 			continue;
 		ret = at91_pinctrl_parse_functions(child, info, i++);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			return dev_err_probe(dev, ret, "failed to parse function\n");
-		}
 	}
 
 	return 0;
@@ -1369,7 +1358,7 @@ static int at91_pinctrl_probe(struct platform_device *pdev)
 	struct pinctrl_pin_desc *pdesc;
 	int ret, i, j, k;
 
-	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(dev, *info);
 	if (!info)
 		return -ENOMEM;
 
@@ -1380,7 +1369,7 @@ static int at91_pinctrl_probe(struct platform_device *pdev)
 	at91_pinctrl_desc.name = dev_name(dev);
 	at91_pinctrl_desc.npins = gpio_banks * MAX_NB_GPIO_PER_BANK;
 	at91_pinctrl_desc.pins = pdesc =
-		devm_kcalloc(dev, at91_pinctrl_desc.npins, sizeof(*pdesc), GFP_KERNEL);
+		devm_kzalloc_objs(dev, *pdesc, at91_pinctrl_desc.npins);
 	if (!at91_pinctrl_desc.pins)
 		return -ENOMEM;
 
@@ -1409,8 +1398,11 @@ static int at91_pinctrl_probe(struct platform_device *pdev)
 
 	/* We will handle a range of GPIO pins */
 	for (i = 0; i < gpio_banks; i++)
-		if (gpio_chips[i])
+		if (gpio_chips[i]) {
 			pinctrl_add_gpio_range(info->pctl, &gpio_chips[i]->range);
+			gpiochip_add_pin_range(&gpio_chips[i]->chip, dev_name(info->pctl->dev), 0,
+				gpio_chips[i]->range.pin_base, gpio_chips[i]->range.npins);
+		}
 
 	dev_info(dev, "initialized AT91 pinctrl driver\n");
 
@@ -1452,18 +1444,19 @@ static int at91_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return (pdsr & mask) != 0;
 }
 
-static void at91_gpio_set(struct gpio_chip *chip, unsigned offset,
-				int val)
+static int at91_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
 {
 	struct at91_gpio_chip *at91_gpio = gpiochip_get_data(chip);
 	void __iomem *pio = at91_gpio->regbase;
 	unsigned mask = 1 << offset;
 
 	writel_relaxed(mask, pio + (val ? PIO_SODR : PIO_CODR));
+
+	return 0;
 }
 
-static void at91_gpio_set_multiple(struct gpio_chip *chip,
-				      unsigned long *mask, unsigned long *bits)
+static int at91_gpio_set_multiple(struct gpio_chip *chip,
+				  unsigned long *mask, unsigned long *bits)
 {
 	struct at91_gpio_chip *at91_gpio = gpiochip_get_data(chip);
 	void __iomem *pio = at91_gpio->regbase;
@@ -1475,6 +1468,8 @@ static void at91_gpio_set_multiple(struct gpio_chip *chip,
 
 	writel_relaxed(set_mask, pio + PIO_SODR);
 	writel_relaxed(clear_mask, pio + PIO_CODR);
+
+	return 0;
 }
 
 static int at91_gpio_direction_output(struct gpio_chip *chip, unsigned offset,
@@ -1731,7 +1726,7 @@ static int at91_gpio_of_irq_setup(struct platform_device *pdev,
 	struct gpio_irq_chip	*girq;
 	int i;
 
-	gpio_irqchip = devm_kzalloc(dev, sizeof(*gpio_irqchip), GFP_KERNEL);
+	gpio_irqchip = devm_kzalloc_obj(dev, *gpio_irqchip);
 	if (!gpio_irqchip)
 		return -ENOMEM;
 
@@ -1770,9 +1765,8 @@ static int at91_gpio_of_irq_setup(struct platform_device *pdev,
 	if (!gpiochip_prev) {
 		girq->parent_handler = gpio_irq_handler;
 		girq->num_parents = 1;
-		girq->parents = devm_kcalloc(dev, girq->num_parents,
-					     sizeof(*girq->parents),
-					     GFP_KERNEL);
+		girq->parents = devm_kzalloc_objs(dev, *girq->parents,
+						  girq->num_parents);
 		if (!girq->parents)
 			return -ENOMEM;
 		girq->parents[0] = at91_gpio->pioc_virq;
@@ -1822,11 +1816,15 @@ static int at91_gpio_probe(struct platform_device *pdev)
 	struct at91_gpio_chip *at91_chip = NULL;
 	struct gpio_chip *chip;
 	struct pinctrl_gpio_range *range;
+	int alias_idx;
 	int ret = 0;
 	int irq, i;
-	int alias_idx = of_alias_get_id(np, "gpio");
 	uint32_t ngpio;
 	char **names;
+
+	alias_idx = of_alias_get_id(np, "gpio");
+	if (alias_idx < 0)
+		return alias_idx;
 
 	BUG_ON(alias_idx >= ARRAY_SIZE(gpio_chips));
 	if (gpio_chips[alias_idx])
@@ -1836,7 +1834,7 @@ static int at91_gpio_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	at91_chip = devm_kzalloc(dev, sizeof(*at91_chip), GFP_KERNEL);
+	at91_chip = devm_kzalloc_obj(dev, *at91_chip);
 	if (!at91_chip)
 		return -ENOMEM;
 

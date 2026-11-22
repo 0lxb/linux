@@ -207,7 +207,7 @@ static int sc27xx_efuse_probe(struct platform_device *pdev)
 	struct sc27xx_efuse *efuse;
 	int ret;
 
-	efuse = devm_kzalloc(&pdev->dev, sizeof(*efuse), GFP_KERNEL);
+	efuse = devm_kzalloc_obj(&pdev->dev, *efuse);
 	if (!efuse)
 		return -ENOMEM;
 
@@ -262,6 +262,7 @@ static const struct of_device_id sc27xx_efuse_of_match[] = {
 	{ .compatible = "sprd,sc2730-efuse", .data = &sc2730_edata},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, sc27xx_efuse_of_match);
 
 static struct platform_driver sc27xx_efuse_driver = {
 	.probe = sc27xx_efuse_probe,

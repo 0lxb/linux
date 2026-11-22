@@ -49,6 +49,7 @@
 #include <linux/pm.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <dt-bindings/mux/mux.h>
@@ -116,6 +117,9 @@ struct pca954x {
 	unsigned int irq_mask;
 	raw_spinlock_t lock;
 	struct regulator *supply;
+
+	struct gpio_desc *reset_gpio;
+	struct reset_control *reset_cont;
 };
 
 /* Provide specs for the MAX735x, PCA954x and PCA984x types we know about */
@@ -246,24 +250,24 @@ static const struct chip_desc chips[] = {
 };
 
 static const struct i2c_device_id pca954x_id[] = {
-	{ "max7356", max_7356 },
-	{ "max7357", max_7357 },
-	{ "max7358", max_7358 },
-	{ "max7367", max_7367 },
-	{ "max7368", max_7368 },
-	{ "max7369", max_7369 },
-	{ "pca9540", pca_9540 },
-	{ "pca9542", pca_9542 },
-	{ "pca9543", pca_9543 },
-	{ "pca9544", pca_9544 },
-	{ "pca9545", pca_9545 },
-	{ "pca9546", pca_9546 },
-	{ "pca9547", pca_9547 },
-	{ "pca9548", pca_9548 },
-	{ "pca9846", pca_9846 },
-	{ "pca9847", pca_9847 },
-	{ "pca9848", pca_9848 },
-	{ "pca9849", pca_9849 },
+	{ .name = "max7356", .driver_data = max_7356 },
+	{ .name = "max7357", .driver_data = max_7357 },
+	{ .name = "max7358", .driver_data = max_7358 },
+	{ .name = "max7367", .driver_data = max_7367 },
+	{ .name = "max7368", .driver_data = max_7368 },
+	{ .name = "max7369", .driver_data = max_7369 },
+	{ .name = "pca9540", .driver_data = pca_9540 },
+	{ .name = "pca9542", .driver_data = pca_9542 },
+	{ .name = "pca9543", .driver_data = pca_9543 },
+	{ .name = "pca9544", .driver_data = pca_9544 },
+	{ .name = "pca9545", .driver_data = pca_9545 },
+	{ .name = "pca9546", .driver_data = pca_9546 },
+	{ .name = "pca9547", .driver_data = pca_9547 },
+	{ .name = "pca9548", .driver_data = pca_9548 },
+	{ .name = "pca9846", .driver_data = pca_9846 },
+	{ .name = "pca9847", .driver_data = pca_9847 },
+	{ .name = "pca9848", .driver_data = pca_9848 },
+	{ .name = "pca9849", .driver_data = pca_9849 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pca954x_id);
@@ -410,7 +414,7 @@ static irqreturn_t pca954x_irq_handler(int irq, void *dev_id)
 
 	pending = (ret >> PCA954X_IRQ_OFFSET) & (BIT(data->chip->nchans) - 1);
 	for_each_set_bit(i, &pending, data->chip->nchans)
-		handle_nested_irq(irq_linear_revmap(data->irq, i));
+		handle_nested_irq(irq_find_mapping(data->irq, i));
 
 	return IRQ_RETVAL(pending);
 }
@@ -438,9 +442,8 @@ static int pca954x_irq_setup(struct i2c_mux_core *muxc)
 
 	raw_spin_lock_init(&data->lock);
 
-	data->irq = irq_domain_add_linear(client->dev.of_node,
-					  data->chip->nchans,
-					  &irq_domain_simple_ops, data);
+	data->irq = irq_domain_create_linear(dev_fwnode(&client->dev), data->chip->nchans,
+					     &irq_domain_simple_ops, data);
 	if (!data->irq)
 		return -ENODEV;
 
@@ -518,6 +521,35 @@ static int pca954x_init(struct i2c_client *client, struct pca954x *data)
 	return ret;
 }
 
+static int pca954x_get_reset(struct device *dev, struct pca954x *data)
+{
+	data->reset_cont = devm_reset_control_get_optional_shared(dev, NULL);
+	if (IS_ERR(data->reset_cont))
+		return dev_err_probe(dev, PTR_ERR(data->reset_cont),
+				     "Failed to get reset\n");
+	else if (data->reset_cont)
+		return 0;
+
+	/*
+	 * fallback to legacy reset-gpios
+	 */
+	data->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(data->reset_gpio)) {
+		return dev_err_probe(dev, PTR_ERR(data->reset_gpio),
+				     "Failed to get reset gpio");
+	}
+
+	return 0;
+}
+
+static void pca954x_reset_deassert(struct pca954x *data)
+{
+	if (data->reset_cont)
+		reset_control_deassert(data->reset_cont);
+	else
+		gpiod_set_value_cansleep(data->reset_gpio, 0);
+}
+
 /*
  * I2C init/probing/exit functions
  */
@@ -526,7 +558,6 @@ static int pca954x_probe(struct i2c_client *client)
 	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct i2c_adapter *adap = client->adapter;
 	struct device *dev = &client->dev;
-	struct gpio_desc *gpio;
 	struct i2c_mux_core *muxc;
 	struct pca954x *data;
 	int num;
@@ -554,15 +585,13 @@ static int pca954x_probe(struct i2c_client *client)
 		return dev_err_probe(dev, ret,
 				     "Failed to enable vdd supply\n");
 
-	/* Reset the mux if a reset GPIO is specified. */
-	gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(gpio)) {
-		ret = PTR_ERR(gpio);
+	ret = pca954x_get_reset(dev, data);
+	if (ret)
 		goto fail_cleanup;
-	}
-	if (gpio) {
+
+	if (data->reset_cont || data->reset_gpio) {
 		udelay(1);
-		gpiod_set_value_cansleep(gpio, 0);
+		pca954x_reset_deassert(data);
 		/* Give the chip some time to recover. */
 		udelay(1);
 	}
@@ -614,7 +643,7 @@ static int pca954x_probe(struct i2c_client *client)
 
 	/* Now create an adapter for each channel */
 	for (num = 0; num < data->chip->nchans; num++) {
-		ret = i2c_mux_add_adapter(muxc, 0, num, 0);
+		ret = i2c_mux_add_adapter(muxc, 0, num);
 		if (ret)
 			goto fail_cleanup;
 	}

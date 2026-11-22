@@ -5,7 +5,6 @@
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -169,7 +168,7 @@ static const struct regmap_config fsl_aud2htx_regmap_config = {
 	.readable_reg = fsl_aud2htx_readable_reg,
 	.volatile_reg = fsl_aud2htx_volatile_reg,
 	.writeable_reg = fsl_aud2htx_writeable_reg,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static const struct of_device_id fsl_aud2htx_dt_ids[] = {
@@ -190,7 +189,7 @@ static int fsl_aud2htx_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int ret, irq;
 
-	aud2htx = devm_kzalloc(&pdev->dev, sizeof(*aud2htx), GFP_KERNEL);
+	aud2htx = devm_kzalloc_obj(&pdev->dev, *aud2htx);
 	if (!aud2htx)
 		return -ENOMEM;
 
@@ -261,7 +260,7 @@ static void fsl_aud2htx_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
-static int __maybe_unused fsl_aud2htx_runtime_suspend(struct device *dev)
+static int fsl_aud2htx_runtime_suspend(struct device *dev)
 {
 	struct fsl_aud2htx *aud2htx = dev_get_drvdata(dev);
 
@@ -271,7 +270,7 @@ static int __maybe_unused fsl_aud2htx_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused fsl_aud2htx_runtime_resume(struct device *dev)
+static int fsl_aud2htx_runtime_resume(struct device *dev)
 {
 	struct fsl_aud2htx *aud2htx = dev_get_drvdata(dev);
 	int ret;
@@ -288,19 +287,17 @@ static int __maybe_unused fsl_aud2htx_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops fsl_aud2htx_pm_ops = {
-	SET_RUNTIME_PM_OPS(fsl_aud2htx_runtime_suspend,
-			   fsl_aud2htx_runtime_resume,
-			   NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(fsl_aud2htx_runtime_suspend, fsl_aud2htx_runtime_resume,
+		       NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver fsl_aud2htx_driver = {
 	.probe = fsl_aud2htx_probe,
-	.remove_new = fsl_aud2htx_remove,
+	.remove = fsl_aud2htx_remove,
 	.driver = {
 		.name = "fsl-aud2htx",
-		.pm = &fsl_aud2htx_pm_ops,
+		.pm = pm_ptr(&fsl_aud2htx_pm_ops),
 		.of_match_table = fsl_aud2htx_dt_ids,
 	},
 };

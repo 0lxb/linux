@@ -22,7 +22,6 @@
 #include <linux/sh_intc.h>
 #include <linux/usb/ohci_pdriver.h>
 #include <cpu/dma-register.h>
-#include <asm/mmzone.h>
 #include <asm/platform_early.h>
 
 static struct plat_sci_port scif0_platform_data = {
@@ -399,20 +398,6 @@ static struct platform_device *sh7786_devices[] __initdata = {
 	&usb_ehci_device,
 	&usb_ohci_device,
 };
-
-/*
- * Please call this function if your platform board
- * use external clock for USB
- * */
-#define USBCTL0		0xffe70858
-#define CLOCK_MODE_MASK 0xffffff7f
-#define EXT_CLOCK_MODE  0x00000080
-
-void __init sh7786_usb_use_exclock(void)
-{
-	u32 val = __raw_readl(USBCTL0) & CLOCK_MODE_MASK;
-	__raw_writel(val | EXT_CLOCK_MODE, USBCTL0);
-}
 
 #define USBINITREG1	0xffe70094
 #define USBINITREG2	0xffe7009c
@@ -795,10 +780,6 @@ void __init plat_irq_setup_pins(int mode)
 	default:
 		BUG();
 	}
-}
-
-void __init plat_mem_setup(void)
-{
 }
 
 static int __init sh7786_devices_setup(void)

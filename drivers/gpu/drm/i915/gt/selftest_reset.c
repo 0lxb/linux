@@ -38,7 +38,7 @@ __igt_reset_stolen(struct intel_gt *gt,
 	if (!num_pages)
 		return 0;
 
-	crc = kmalloc_array(num_pages, sizeof(u32), GFP_KERNEL);
+	crc = kmalloc_objs(u32, num_pages);
 	if (!crc)
 		return -ENOMEM;
 
@@ -281,7 +281,7 @@ static int igt_atomic_reset(void *arg)
 		awake = reset_prepare(gt);
 		p->critical_section_begin();
 
-		err = __intel_gt_reset(gt, ALL_ENGINES);
+		err = intel_gt_reset_all_engines(gt);
 
 		p->critical_section_end();
 		reset_finish(gt, awake);

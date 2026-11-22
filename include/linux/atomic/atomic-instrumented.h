@@ -1269,14 +1269,14 @@ atomic_cmpxchg_relaxed(atomic_t *v, int old, int new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_try_cmpxchg() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_try_cmpxchg(atomic_t *v, int *old, int new)
 {
 	kcsan_mb();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_try_cmpxchg(v, old, new);
 }
 
@@ -1292,13 +1292,13 @@ atomic_try_cmpxchg(atomic_t *v, int *old, int new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_try_cmpxchg_acquire() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_try_cmpxchg_acquire(atomic_t *v, int *old, int new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_try_cmpxchg_acquire(v, old, new);
 }
 
@@ -1314,14 +1314,14 @@ atomic_try_cmpxchg_acquire(atomic_t *v, int *old, int new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_try_cmpxchg_release() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_try_cmpxchg_release(atomic_t *v, int *old, int new)
 {
 	kcsan_release();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_try_cmpxchg_release(v, old, new);
 }
 
@@ -1337,19 +1337,19 @@ atomic_try_cmpxchg_release(atomic_t *v, int *old, int new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_try_cmpxchg_relaxed() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_try_cmpxchg_relaxed(atomic_t *v, int *old, int new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_try_cmpxchg_relaxed(v, old, new);
 }
 
 /**
  * atomic_sub_and_test() - atomic subtract and test if zero with full ordering
- * @i: int value to add
+ * @i: int value to subtract
  * @v: pointer to atomic_t
  *
  * Atomically updates @v to (@v - @i) with full ordering.
@@ -2847,14 +2847,14 @@ atomic64_cmpxchg_relaxed(atomic64_t *v, s64 old, s64 new)
  *
  * Unsafe to use in noinstr code; use raw_atomic64_try_cmpxchg() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic64_try_cmpxchg(atomic64_t *v, s64 *old, s64 new)
 {
 	kcsan_mb();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic64_try_cmpxchg(v, old, new);
 }
 
@@ -2870,13 +2870,13 @@ atomic64_try_cmpxchg(atomic64_t *v, s64 *old, s64 new)
  *
  * Unsafe to use in noinstr code; use raw_atomic64_try_cmpxchg_acquire() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic64_try_cmpxchg_acquire(atomic64_t *v, s64 *old, s64 new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic64_try_cmpxchg_acquire(v, old, new);
 }
 
@@ -2892,14 +2892,14 @@ atomic64_try_cmpxchg_acquire(atomic64_t *v, s64 *old, s64 new)
  *
  * Unsafe to use in noinstr code; use raw_atomic64_try_cmpxchg_release() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic64_try_cmpxchg_release(atomic64_t *v, s64 *old, s64 new)
 {
 	kcsan_release();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic64_try_cmpxchg_release(v, old, new);
 }
 
@@ -2915,19 +2915,19 @@ atomic64_try_cmpxchg_release(atomic64_t *v, s64 *old, s64 new)
  *
  * Unsafe to use in noinstr code; use raw_atomic64_try_cmpxchg_relaxed() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic64_try_cmpxchg_relaxed(atomic64_t *v, s64 *old, s64 new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic64_try_cmpxchg_relaxed(v, old, new);
 }
 
 /**
  * atomic64_sub_and_test() - atomic subtract and test if zero with full ordering
- * @i: s64 value to add
+ * @i: s64 value to subtract
  * @v: pointer to atomic64_t
  *
  * Atomically updates @v to (@v - @i) with full ordering.
@@ -4425,14 +4425,14 @@ atomic_long_cmpxchg_relaxed(atomic_long_t *v, long old, long new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_long_try_cmpxchg() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_long_try_cmpxchg(atomic_long_t *v, long *old, long new)
 {
 	kcsan_mb();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_long_try_cmpxchg(v, old, new);
 }
 
@@ -4448,13 +4448,13 @@ atomic_long_try_cmpxchg(atomic_long_t *v, long *old, long new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_long_try_cmpxchg_acquire() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_long_try_cmpxchg_acquire(atomic_long_t *v, long *old, long new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_long_try_cmpxchg_acquire(v, old, new);
 }
 
@@ -4470,14 +4470,14 @@ atomic_long_try_cmpxchg_acquire(atomic_long_t *v, long *old, long new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_long_try_cmpxchg_release() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_long_try_cmpxchg_release(atomic_long_t *v, long *old, long new)
 {
 	kcsan_release();
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_long_try_cmpxchg_release(v, old, new);
 }
 
@@ -4493,19 +4493,19 @@ atomic_long_try_cmpxchg_release(atomic_long_t *v, long *old, long new)
  *
  * Unsafe to use in noinstr code; use raw_atomic_long_try_cmpxchg_relaxed() there.
  *
- * Return: @true if the exchange occured, @false otherwise.
+ * Return: @true if the exchange occurred, @false otherwise.
  */
 static __always_inline bool
 atomic_long_try_cmpxchg_relaxed(atomic_long_t *v, long *old, long new)
 {
 	instrument_atomic_read_write(v, sizeof(*v));
-	instrument_atomic_read_write(old, sizeof(*old));
+	instrument_read_write(old, sizeof(*old));
 	return raw_atomic_long_try_cmpxchg_relaxed(v, old, new);
 }
 
 /**
  * atomic_long_sub_and_test() - atomic subtract and test if zero with full ordering
- * @i: long value to add
+ * @i: long value to subtract
  * @v: pointer to atomic_long_t
  *
  * Atomically updates @v to (@v - @i) with full ordering.
@@ -5050,4 +5050,4 @@ atomic_long_dec_if_positive(atomic_long_t *v)
 
 
 #endif /* _LINUX_ATOMIC_INSTRUMENTED_H */
-// ce5b65e0f1f8a276268b667194581d24bed219d4
+// 9dd948d3012b22c4e75933a5172983f912e46439

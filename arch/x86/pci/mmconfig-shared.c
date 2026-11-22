@@ -22,9 +22,10 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/rculist.h>
-#include <asm/e820/api.h>
-#include <asm/pci_x86.h>
 #include <asm/acpi.h>
+#include <asm/e820/api.h>
+#include <asm/msr.h>
+#include <asm/pci_x86.h>
 
 /* Indicate if the ECAM resources have been placed into the resource table */
 static bool pci_mmcfg_running_state;
@@ -76,7 +77,7 @@ static struct pci_mmcfg_region *pci_mmconfig_alloc(int segment, int start,
 	if (addr == 0)
 		return NULL;
 
-	new = kzalloc(sizeof(*new), GFP_KERNEL);
+	new = kzalloc_obj(*new);
 	if (!new)
 		return NULL;
 
@@ -188,7 +189,7 @@ static const char *__init pci_mmcfg_intel_945(void)
 
 static const char *__init pci_mmcfg_amd_fam10h(void)
 {
-	u32 low, high, address;
+	u32 address;
 	u64 base, msr;
 	int i;
 	unsigned segnbits = 0, busnbits, end_bus;
@@ -197,12 +198,8 @@ static const char *__init pci_mmcfg_amd_fam10h(void)
 		return NULL;
 
 	address = MSR_FAM10H_MMIO_CONF_BASE;
-	if (rdmsr_safe(address, &low, &high))
+	if (rdmsrq_safe(address, &msr))
 		return NULL;
-
-	msr = high;
-	msr <<= 32;
-	msr |= low;
 
 	/* ECAM is not enabled */
 	if (!(msr & FAM10H_MMIO_CONF_ENABLE))
@@ -518,7 +515,34 @@ static bool __ref pci_mmcfg_reserved(struct device *dev,
 {
 	struct resource *conflict;
 
-	if (!early && !acpi_disabled) {
+	if (early) {
+
+		/*
+		 * Don't try to do this check unless configuration type 1
+		 * is available.  How about type 2?
+		 */
+
+		/*
+		 * 946f2ee5c731 ("Check that MCFG points to an e820
+		 * reserved area") added this E820 check in 2006 to work
+		 * around BIOS defects.
+		 *
+		 * Per PCI Firmware r3.3, sec 4.1.2, ECAM space must be
+		 * reserved by a PNP0C02 resource, but it need not be
+		 * mentioned in E820.  Before the ACPI interpreter is
+		 * available, we can't check for PNP0C02 resources, so
+		 * there's no reliable way to verify the region in this
+		 * early check.  Keep it only for the old machines that
+		 * motivated 946f2ee5c731.
+		 */
+		if (dmi_get_bios_year() < 2016 && raw_pci_ops)
+			return is_mmconf_reserved(e820__mapped_all, cfg, dev,
+						  "E820 entry");
+
+		return true;
+	}
+
+	if (!acpi_disabled) {
 		if (is_mmconf_reserved(is_acpi_reserved, cfg, dev,
 				       "ACPI motherboard resource"))
 			return true;
@@ -551,16 +575,7 @@ static bool __ref pci_mmcfg_reserved(struct device *dev,
 	 * For MCFG information constructed from hotpluggable host bridge's
 	 * _CBA method, just assume it's reserved.
 	 */
-	if (pci_mmcfg_running_state)
-		return true;
-
-	/* Don't try to do this check unless configuration
-	   type 1 is available. how about type 2 ?*/
-	if (raw_pci_ops)
-		return is_mmconf_reserved(e820__mapped_all, cfg, dev,
-					  "E820 entry");
-
-	return false;
+	return pci_mmcfg_running_state;
 }
 
 static void __init pci_mmcfg_reject_broken(int early)

@@ -1143,7 +1143,7 @@ static const struct pinconf_ops zynq_pinconf_ops = {
 	.pin_config_group_set = zynq_pinconf_group_set,
 };
 
-static struct pinctrl_desc zynq_desc = {
+static const struct pinctrl_desc zynq_desc = {
 	.name = "zynq_pinctrl",
 	.pins = zynq_pins,
 	.npins = ARRAY_SIZE(zynq_pins),
@@ -1164,7 +1164,7 @@ static int zynq_pinctrl_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct zynq_pinctrl *pctrl;
 
-	pctrl = devm_kzalloc(&pdev->dev, sizeof(*pctrl), GFP_KERNEL);
+	pctrl = devm_kzalloc_obj(&pdev->dev, *pctrl);
 	if (!pctrl)
 		return -ENOMEM;
 
@@ -1202,6 +1202,7 @@ static const struct of_device_id zynq_pinctrl_of_match[] = {
 	{ .compatible = "xlnx,pinctrl-zynq" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, zynq_pinctrl_of_match);
 
 static struct platform_driver zynq_pinctrl_driver = {
 	.driver = {

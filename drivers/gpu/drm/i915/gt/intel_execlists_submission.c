@@ -106,14 +106,20 @@
  * preemption, but just sampling the new tail pointer).
  *
  */
+
 #include <linux/interrupt.h>
 #include <linux/string_helpers.h>
 
+#include <drm/drm_print.h>
+
+#include "gen8_engine_cs.h"
 #include "i915_drv.h"
+#include "i915_list_util.h"
 #include "i915_reg.h"
+#include "i915_timer_util.h"
 #include "i915_trace.h"
 #include "i915_vgpu.h"
-#include "gen8_engine_cs.h"
+#include "i915_wait_util.h"
 #include "intel_breadcrumbs.h"
 #include "intel_context.h"
 #include "intel_engine_heartbeat.h"
@@ -405,15 +411,6 @@ __unwind_incomplete_requests(struct intel_engine_cs *engine)
 	return active;
 }
 
-struct i915_request *
-execlists_unwind_incomplete_requests(struct intel_engine_execlists *execlists)
-{
-	struct intel_engine_cs *engine =
-		container_of(execlists, typeof(*engine), execlists);
-
-	return __unwind_incomplete_requests(engine);
-}
-
 static void
 execlists_context_status_change(struct i915_request *rq, unsigned long status)
 {
@@ -493,7 +490,7 @@ __execlists_schedule_in(struct i915_request *rq)
 		/* Use a fixed tag for OA and friends */
 		GEM_BUG_ON(ce->tag <= BITS_PER_LONG);
 		ce->lrc.ccid = ce->tag;
-	} else if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50)) {
+	} else if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55)) {
 		/* We don't need a strict matching tag, just different values */
 		unsigned int tag = ffs(READ_ONCE(engine->context_tag));
 
@@ -613,7 +610,7 @@ static void __execlists_schedule_out(struct i915_request * const rq,
 		intel_engine_add_retire(engine, ce->timeline);
 
 	ccid = ce->lrc.ccid;
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50)) {
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55)) {
 		ccid >>= XEHP_SW_CTX_ID_SHIFT - 32;
 		ccid &= XEHP_MAX_CONTEXT_HW_ID;
 	} else {
@@ -1303,7 +1300,7 @@ static void execlists_dequeue(struct intel_engine_cs *engine)
 	 * and context switches) submission.
 	 */
 
-	spin_lock(&sched_engine->lock);
+	spin_lock_irq(&sched_engine->lock);
 
 	/*
 	 * If the queue is higher priority than the last
@@ -1403,7 +1400,7 @@ static void execlists_dequeue(struct intel_engine_cs *engine)
 				 * Even if ELSP[1] is occupied and not worthy
 				 * of timeslices, our queue might be.
 				 */
-				spin_unlock(&sched_engine->lock);
+				spin_unlock_irq(&sched_engine->lock);
 				return;
 			}
 		}
@@ -1429,7 +1426,7 @@ static void execlists_dequeue(struct intel_engine_cs *engine)
 
 		if (last && !can_merge_rq(last, rq)) {
 			spin_unlock(&ve->base.sched_engine->lock);
-			spin_unlock(&engine->sched_engine->lock);
+			spin_unlock_irq(&engine->sched_engine->lock);
 			return; /* leave this for another sibling */
 		}
 
@@ -1591,7 +1588,7 @@ done:
 	 */
 	sched_engine->queue_priority_hint = queue_prio(sched_engine);
 	i915_sched_engine_reset_on_empty(sched_engine);
-	spin_unlock(&sched_engine->lock);
+	spin_unlock_irq(&sched_engine->lock);
 
 	/*
 	 * We can skip poking the HW if we ended up with exactly the same set
@@ -1615,13 +1612,6 @@ done:
 			i915_request_put(*port);
 		*execlists->pending = NULL;
 	}
-}
-
-static void execlists_dequeue_irq(struct intel_engine_cs *engine)
-{
-	local_irq_disable(); /* Suspend interrupts across request submission */
-	execlists_dequeue(engine);
-	local_irq_enable(); /* flush irq_work (e.g. breadcrumb enabling) */
 }
 
 static void clear_ports(struct i915_request **ports, int count)
@@ -1907,7 +1897,7 @@ process_csb(struct intel_engine_cs *engine, struct i915_request **inactive)
 		ENGINE_TRACE(engine, "csb[%d]: status=0x%08x:0x%08x\n",
 			     head, upper_32_bits(csb), lower_32_bits(csb));
 
-		if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50))
+		if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55))
 			promote = xehp_csb_parse(csb);
 		else if (GRAPHICS_VER(engine->i915) >= 12)
 			promote = gen12_csb_parse(csb);
@@ -2257,7 +2247,7 @@ static struct execlists_capture *capture_regs(struct intel_engine_cs *engine)
 	const gfp_t gfp = GFP_ATOMIC | __GFP_NOWARN;
 	struct execlists_capture *cap;
 
-	cap = kmalloc(sizeof(*cap), gfp);
+	cap = kmalloc_obj(*cap, gfp);
 	if (!cap)
 		return NULL;
 
@@ -2478,7 +2468,7 @@ static void execlists_submission_tasklet(struct tasklet_struct *t)
 	}
 
 	if (!engine->execlists.pending[0]) {
-		execlists_dequeue_irq(engine);
+		execlists_dequeue(engine);
 		start_timeslice(engine);
 	}
 
@@ -2511,7 +2501,7 @@ static void execlists_irq_handler(struct intel_engine_cs *engine, u16 iir)
 			   ENGINE_READ_FW(engine, RING_EXECLIST_STATUS_HI));
 		ENGINE_TRACE(engine, "semaphore yield: %08x\n",
 			     engine->execlists.yield);
-		if (del_timer(&engine->execlists.timer))
+		if (timer_delete(&engine->execlists.timer))
 			tasklet = true;
 	}
 
@@ -2898,7 +2888,7 @@ static void enable_error_interrupt(struct intel_engine_cs *engine)
 		drm_err(&engine->i915->drm,
 			"engine '%s' resumed still in error: %08x\n",
 			engine->name, status);
-		__intel_gt_reset(engine->gt, engine->mask);
+		intel_gt_reset_engine(engine);
 	}
 
 	/*
@@ -2937,12 +2927,12 @@ static void enable_execlists(struct intel_engine_cs *engine)
 	intel_engine_set_hwsp_writemask(engine, ~0u); /* HWSTAM */
 
 	if (GRAPHICS_VER(engine->i915) >= 11)
-		mode = _MASKED_BIT_ENABLE(GEN11_GFX_DISABLE_LEGACY_MODE);
+		mode = REG_MASKED_FIELD_ENABLE(GEN11_GFX_DISABLE_LEGACY_MODE);
 	else
-		mode = _MASKED_BIT_ENABLE(GFX_RUN_LIST_ENABLE);
+		mode = REG_MASKED_FIELD_ENABLE(GFX_RUN_LIST_ENABLE);
 	ENGINE_WRITE_FW(engine, RING_MODE_GEN7, mode);
 
-	ENGINE_WRITE_FW(engine, RING_MI_MODE, _MASKED_BIT_DISABLE(STOP_RING));
+	ENGINE_WRITE_FW(engine, RING_MI_MODE, REG_MASKED_FIELD_DISABLE(STOP_RING));
 
 	ENGINE_WRITE_FW(engine,
 			RING_HWS_PGA,
@@ -3272,6 +3262,9 @@ static void execlists_park(struct intel_engine_cs *engine)
 {
 	cancel_timer(&engine->execlists.timer);
 	cancel_timer(&engine->execlists.preempt);
+
+	/* Reset upon idling, or we may delay the busy wakeup. */
+	WRITE_ONCE(engine->sched_engine->queue_priority_hint, INT_MIN);
 }
 
 static void add_to_engine(struct i915_request *rq)
@@ -3312,11 +3305,7 @@ static void remove_from_engine(struct i915_request *rq)
 
 static bool can_preempt(struct intel_engine_cs *engine)
 {
-	if (GRAPHICS_VER(engine->i915) > 8)
-		return true;
-
-	/* GPGPU on bdw requires extra w/a; not implemented */
-	return engine->class != RENDER_CLASS;
+	return GRAPHICS_VER(engine->i915) > 8;
 }
 
 static void kick_execlists(const struct i915_request *rq, int prio)
@@ -3380,8 +3369,8 @@ static void execlists_set_default_submission(struct intel_engine_cs *engine)
 static void execlists_shutdown(struct intel_engine_cs *engine)
 {
 	/* Synchronise with residual timers and any softirq they raise */
-	del_timer_sync(&engine->execlists.timer);
-	del_timer_sync(&engine->execlists.preempt);
+	timer_delete_sync(&engine->execlists.timer);
+	timer_delete_sync(&engine->execlists.preempt);
 	tasklet_kill(&engine->sched_engine->tasklet);
 }
 
@@ -3479,7 +3468,7 @@ logical_ring_default_vfuncs(struct intel_engine_cs *engine)
 		}
 	}
 
-	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 50)) {
+	if (GRAPHICS_VER_FULL(engine->i915) >= IP_VER(12, 55)) {
 		if (intel_engine_has_preemption(engine))
 			engine->emit_bb_start = xehp_emit_bb_start;
 		else
@@ -3582,7 +3571,7 @@ int intel_execlists_submission_setup(struct intel_engine_cs *engine)
 
 	engine->context_tag = GENMASK(BITS_PER_LONG - 2, 0);
 	if (GRAPHICS_VER(engine->i915) >= 11 &&
-	    GRAPHICS_VER_FULL(engine->i915) < IP_VER(12, 50)) {
+	    GRAPHICS_VER_FULL(engine->i915) < IP_VER(12, 55)) {
 		execlists->ccid |= engine->instance << (GEN11_ENGINE_INSTANCE_SHIFT - 32);
 		execlists->ccid |= engine->class << (GEN11_ENGINE_CLASS_SHIFT - 32);
 	}
@@ -3936,11 +3925,11 @@ execlists_create_virtual(struct intel_engine_cs **siblings, unsigned int count,
 	struct drm_i915_private *i915 = siblings[0]->i915;
 	struct virtual_engine *ve;
 	unsigned int n;
-	int err;
+	int err = -ENOMEM;
 
-	ve = kzalloc(struct_size(ve, siblings, count), GFP_KERNEL);
+	ve = kzalloc_flex(*ve, siblings, count);
 	if (!ve)
-		return ERR_PTR(-ENOMEM);
+		goto err;
 
 	ve->base.i915 = i915;
 	ve->base.gt = siblings[0]->gt;
@@ -3972,10 +3961,8 @@ execlists_create_virtual(struct intel_engine_cs **siblings, unsigned int count,
 	intel_engine_init_execlists(&ve->base);
 
 	ve->base.sched_engine = i915_sched_engine_create(ENGINE_VIRTUAL);
-	if (!ve->base.sched_engine) {
-		err = -ENOMEM;
-		goto err_put;
-	}
+	if (!ve->base.sched_engine)
+		goto err_noput;
 	ve->base.sched_engine->private_data = &ve->base;
 
 	ve->base.cops = &virtual_context_ops;
@@ -3991,10 +3978,8 @@ execlists_create_virtual(struct intel_engine_cs **siblings, unsigned int count,
 	intel_context_init(&ve->context, &ve->base);
 
 	ve->base.breadcrumbs = intel_breadcrumbs_create(NULL);
-	if (!ve->base.breadcrumbs) {
-		err = -ENOMEM;
+	if (!ve->base.breadcrumbs)
 		goto err_put;
-	}
 
 	for (n = 0; n < count; n++) {
 		struct intel_engine_cs *sibling = siblings[n];
@@ -4069,8 +4054,13 @@ execlists_create_virtual(struct intel_engine_cs **siblings, unsigned int count,
 	virtual_engine_initial_hint(ve);
 	return &ve->context;
 
+err_noput:
+	kfree(ve);
+	goto err;
+
 err_put:
 	intel_context_put(&ve->context);
+err:
 	return ERR_PTR(err);
 }
 

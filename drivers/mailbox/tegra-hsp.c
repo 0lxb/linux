@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2025, NVIDIA CORPORATION.  All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -16,8 +16,6 @@
 
 #include <dt-bindings/mailbox/tegra186-hsp.h>
 
-#include "mailbox.h"
-
 #define HSP_INT_IE(x)		(0x100 + ((x) * 4))
 #define HSP_INT_IV		0x300
 #define HSP_INT_IR		0x304
@@ -28,12 +26,6 @@
 #define HSP_INT_FULL_MASK	0xff
 
 #define HSP_INT_DIMENSIONING	0x380
-#define HSP_nSM_SHIFT		0
-#define HSP_nSS_SHIFT		4
-#define HSP_nAS_SHIFT		8
-#define HSP_nDB_SHIFT		12
-#define HSP_nSI_SHIFT		16
-#define HSP_nINT_MASK		0xf
 
 #define HSP_DB_TRIGGER	0x0
 #define HSP_DB_ENABLE	0x4
@@ -97,6 +89,20 @@ struct tegra_hsp_soc {
 	bool has_per_mb_ie;
 	bool has_128_bit_mb;
 	unsigned int reg_stride;
+
+	/* Shifts for dimensioning register. */
+	unsigned int si_shift;
+	unsigned int db_shift;
+	unsigned int as_shift;
+	unsigned int ss_shift;
+	unsigned int sm_shift;
+
+	/* Masks for dimensioning register. */
+	unsigned int si_mask;
+	unsigned int db_mask;
+	unsigned int as_mask;
+	unsigned int ss_mask;
+	unsigned int sm_mask;
 };
 
 struct tegra_hsp {
@@ -274,7 +280,7 @@ tegra_hsp_doorbell_create(struct tegra_hsp *hsp, const char *name,
 	unsigned int offset;
 	unsigned long flags;
 
-	db = devm_kzalloc(hsp->dev, sizeof(*db), GFP_KERNEL);
+	db = devm_kzalloc_obj(hsp->dev, *db);
 	if (!db)
 		return ERR_PTR(-ENOMEM);
 
@@ -388,7 +394,6 @@ static void tegra_hsp_sm_recv32(struct tegra_hsp_channel *channel)
 	value = tegra_hsp_channel_readl(channel, HSP_SM_SHRD_MBOX);
 	value &= ~HSP_SM_SHRD_MBOX_FULL;
 	msg = (void *)(unsigned long)value;
-	mbox_chan_received_data(channel->chan, msg);
 
 	/*
 	 * Need to clear all bits here since some producers, such as TCU, depend
@@ -398,6 +403,8 @@ static void tegra_hsp_sm_recv32(struct tegra_hsp_channel *channel)
 	 * explicitly, so we have to make sure we cover all possible cases.
 	 */
 	tegra_hsp_channel_writel(channel, 0x0, HSP_SM_SHRD_MBOX);
+
+	mbox_chan_received_data(channel->chan, msg);
 }
 
 static const struct tegra_hsp_sm_ops tegra_hsp_sm_32bit_ops = {
@@ -433,7 +440,6 @@ static void tegra_hsp_sm_recv128(struct tegra_hsp_channel *channel)
 	value[3] = tegra_hsp_channel_readl(channel, HSP_SHRD_MBOX_TYPE1_DATA3);
 
 	msg = (void *)(unsigned long)value;
-	mbox_chan_received_data(channel->chan, msg);
 
 	/*
 	 * Clear data registers and tag.
@@ -443,6 +449,8 @@ static void tegra_hsp_sm_recv128(struct tegra_hsp_channel *channel)
 	tegra_hsp_channel_writel(channel, 0x0, HSP_SHRD_MBOX_TYPE1_DATA2);
 	tegra_hsp_channel_writel(channel, 0x0, HSP_SHRD_MBOX_TYPE1_DATA3);
 	tegra_hsp_channel_writel(channel, 0x0, HSP_SHRD_MBOX_TYPE1_TAG);
+
+	mbox_chan_received_data(channel->chan, msg);
 }
 
 static const struct tegra_hsp_sm_ops tegra_hsp_sm_128bit_ops = {
@@ -487,7 +495,7 @@ static int tegra_hsp_mailbox_flush(struct mbox_chan *chan,
 			mbox_chan_txdone(chan, 0);
 
 			/* Wait until channel is empty */
-			if (chan->active_req != NULL)
+			if (chan->active_req != MBOX_NO_MSG)
 				continue;
 
 			return 0;
@@ -506,7 +514,7 @@ static int tegra_hsp_mailbox_startup(struct mbox_chan *chan)
 	struct tegra_hsp *hsp = mb->channel.hsp;
 	unsigned long flags;
 
-	chan->txdone_method = TXDONE_BY_IRQ;
+	chan->txdone_method = MBOX_TXDONE_BY_IRQ;
 
 	/*
 	 * Shared mailboxes start out as consumers by default. FULL and EMPTY
@@ -669,8 +677,7 @@ static int tegra_hsp_add_mailboxes(struct tegra_hsp *hsp, struct device *dev)
 {
 	int i;
 
-	hsp->mailboxes = devm_kcalloc(dev, hsp->num_sm, sizeof(*hsp->mailboxes),
-				      GFP_KERNEL);
+	hsp->mailboxes = devm_kzalloc_objs(dev, *hsp->mailboxes, hsp->num_sm);
 	if (!hsp->mailboxes)
 		return -ENOMEM;
 
@@ -700,11 +707,8 @@ static int tegra_hsp_request_shared_irq(struct tegra_hsp *hsp)
 
 		err = devm_request_irq(hsp->dev, irq, tegra_hsp_shared_irq, 0,
 				       dev_name(hsp->dev), hsp);
-		if (err < 0) {
-			dev_err(hsp->dev, "failed to request interrupt: %d\n",
-				err);
+		if (err < 0)
 			continue;
-		}
 
 		hsp->shared_irq = i;
 
@@ -731,7 +735,7 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	u32 value;
 	int err;
 
-	hsp = devm_kzalloc(&pdev->dev, sizeof(*hsp), GFP_KERNEL);
+	hsp = devm_kzalloc_obj(&pdev->dev, *hsp);
 	if (!hsp)
 		return -ENOMEM;
 
@@ -745,11 +749,11 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 		return PTR_ERR(hsp->regs);
 
 	value = tegra_hsp_readl(hsp, HSP_INT_DIMENSIONING);
-	hsp->num_sm = (value >> HSP_nSM_SHIFT) & HSP_nINT_MASK;
-	hsp->num_ss = (value >> HSP_nSS_SHIFT) & HSP_nINT_MASK;
-	hsp->num_as = (value >> HSP_nAS_SHIFT) & HSP_nINT_MASK;
-	hsp->num_db = (value >> HSP_nDB_SHIFT) & HSP_nINT_MASK;
-	hsp->num_si = (value >> HSP_nSI_SHIFT) & HSP_nINT_MASK;
+	hsp->num_sm = (value >> hsp->soc->sm_shift) & hsp->soc->sm_mask;
+	hsp->num_ss = (value >> hsp->soc->ss_shift) & hsp->soc->ss_mask;
+	hsp->num_as = (value >> hsp->soc->as_shift) & hsp->soc->as_mask;
+	hsp->num_db = (value >> hsp->soc->db_shift) & hsp->soc->db_mask;
+	hsp->num_si = (value >> hsp->soc->si_shift) & hsp->soc->si_mask;
 
 	err = platform_get_irq_byname_optional(pdev, "doorbell");
 	if (err >= 0)
@@ -758,9 +762,9 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	if (hsp->num_si > 0) {
 		unsigned int count = 0;
 
-		hsp->shared_irqs = devm_kcalloc(&pdev->dev, hsp->num_si,
-						sizeof(*hsp->shared_irqs),
-						GFP_KERNEL);
+		hsp->shared_irqs = devm_kzalloc_objs(&pdev->dev,
+						     *hsp->shared_irqs,
+						     hsp->num_si);
 		if (!hsp->shared_irqs)
 			return -ENOMEM;
 
@@ -792,9 +796,8 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	hsp->mbox_db.dev = &pdev->dev;
 	hsp->mbox_db.ops = &tegra_hsp_db_ops;
 
-	hsp->mbox_db.chans = devm_kcalloc(&pdev->dev, hsp->mbox_db.num_chans,
-					  sizeof(*hsp->mbox_db.chans),
-					  GFP_KERNEL);
+	hsp->mbox_db.chans = devm_kzalloc_objs(&pdev->dev, *hsp->mbox_db.chans,
+					       hsp->mbox_db.num_chans);
 	if (!hsp->mbox_db.chans)
 		return -ENOMEM;
 
@@ -820,9 +823,8 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 	hsp->mbox_sm.dev = &pdev->dev;
 	hsp->mbox_sm.ops = &tegra_hsp_sm_ops;
 
-	hsp->mbox_sm.chans = devm_kcalloc(&pdev->dev, hsp->mbox_sm.num_chans,
-					  sizeof(*hsp->mbox_sm.chans),
-					  GFP_KERNEL);
+	hsp->mbox_sm.chans = devm_kzalloc_objs(&pdev->dev, *hsp->mbox_sm.chans,
+					       hsp->mbox_sm.num_chans);
 	if (!hsp->mbox_sm.chans)
 		return -ENOMEM;
 
@@ -848,12 +850,8 @@ static int tegra_hsp_probe(struct platform_device *pdev)
 		err = devm_request_irq(&pdev->dev, hsp->doorbell_irq,
 				       tegra_hsp_doorbell_irq, IRQF_NO_SUSPEND,
 				       dev_name(&pdev->dev), hsp);
-		if (err < 0) {
-			dev_err(&pdev->dev,
-			        "failed to request doorbell IRQ#%u: %d\n",
-				hsp->doorbell_irq, err);
+		if (err < 0)
 			return err;
-		}
 	}
 
 	if (hsp->shared_irqs) {
@@ -913,6 +911,16 @@ static const struct tegra_hsp_soc tegra186_hsp_soc = {
 	.has_per_mb_ie = false,
 	.has_128_bit_mb = false,
 	.reg_stride = 0x100,
+	.si_shift = 16,
+	.db_shift = 12,
+	.as_shift = 8,
+	.ss_shift = 4,
+	.sm_shift = 0,
+	.si_mask = 0xf,
+	.db_mask = 0xf,
+	.as_mask = 0xf,
+	.ss_mask = 0xf,
+	.sm_mask = 0xf,
 };
 
 static const struct tegra_hsp_soc tegra194_hsp_soc = {
@@ -920,6 +928,16 @@ static const struct tegra_hsp_soc tegra194_hsp_soc = {
 	.has_per_mb_ie = true,
 	.has_128_bit_mb = false,
 	.reg_stride = 0x100,
+	.si_shift = 16,
+	.db_shift = 12,
+	.as_shift = 8,
+	.ss_shift = 4,
+	.sm_shift = 0,
+	.si_mask = 0xf,
+	.db_mask = 0xf,
+	.as_mask = 0xf,
+	.ss_mask = 0xf,
+	.sm_mask = 0xf,
 };
 
 static const struct tegra_hsp_soc tegra234_hsp_soc = {
@@ -927,6 +945,16 @@ static const struct tegra_hsp_soc tegra234_hsp_soc = {
 	.has_per_mb_ie = false,
 	.has_128_bit_mb = true,
 	.reg_stride = 0x100,
+	.si_shift = 16,
+	.db_shift = 12,
+	.as_shift = 8,
+	.ss_shift = 4,
+	.sm_shift = 0,
+	.si_mask = 0xf,
+	.db_mask = 0xf,
+	.as_mask = 0xf,
+	.ss_mask = 0xf,
+	.sm_mask = 0xf,
 };
 
 static const struct tegra_hsp_soc tegra264_hsp_soc = {
@@ -934,6 +962,16 @@ static const struct tegra_hsp_soc tegra264_hsp_soc = {
 	.has_per_mb_ie = false,
 	.has_128_bit_mb = true,
 	.reg_stride = 0x1000,
+	.si_shift = 17,
+	.db_shift = 12,
+	.as_shift = 8,
+	.ss_shift = 4,
+	.sm_shift = 0,
+	.si_mask = 0x1f,
+	.db_mask = 0x1f,
+	.as_mask = 0xf,
+	.ss_mask = 0xf,
+	.sm_mask = 0xf,
 };
 
 static const struct of_device_id tegra_hsp_match[] = {
@@ -951,7 +989,7 @@ static struct platform_driver tegra_hsp_driver = {
 		.pm = &tegra_hsp_pm_ops,
 	},
 	.probe = tegra_hsp_probe,
-	.remove_new = tegra_hsp_remove,
+	.remove = tegra_hsp_remove,
 };
 
 static int __init tegra_hsp_init(void)

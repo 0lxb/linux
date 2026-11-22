@@ -166,7 +166,7 @@ static int bbnsm_rtc_probe(struct platform_device *pdev)
 	struct bbnsm_rtc *bbnsm;
 	int ret;
 
-	bbnsm = devm_kzalloc(&pdev->dev, sizeof(*bbnsm), GFP_KERNEL);
+	bbnsm = devm_kzalloc_obj(&pdev->dev, *bbnsm);
 	if (!bbnsm)
 		return -ENOMEM;
 
@@ -189,8 +189,13 @@ static int bbnsm_rtc_probe(struct platform_device *pdev)
 	/* clear all the pending events */
 	regmap_write(bbnsm->regmap, BBNSM_EVENTS, 0x7A);
 
-	device_init_wakeup(&pdev->dev, true);
-	dev_pm_set_wake_irq(&pdev->dev, bbnsm->irq);
+	ret = devm_device_init_wakeup(&pdev->dev);
+	if (ret)
+		dev_err(&pdev->dev, "failed to init wakeup, %d\n", ret);
+
+	ret = devm_pm_set_wake_irq(&pdev->dev, bbnsm->irq);
+	if (ret)
+		dev_err(&pdev->dev, "failed to set wake irq, %d\n", ret);
 
 	ret = devm_request_irq(&pdev->dev, bbnsm->irq, bbnsm_rtc_irq_handler,
 			       IRQF_SHARED, "rtc alarm", &pdev->dev);

@@ -624,7 +624,7 @@ static struct ata_port_operations sata_rcar_port_ops = {
 
 	.freeze			= sata_rcar_freeze,
 	.thaw			= sata_rcar_thaw,
-	.softreset		= sata_rcar_softreset,
+	.reset.softreset	= sata_rcar_softreset,
 
 	.scr_read		= sata_rcar_scr_read,
 	.scr_write		= sata_rcar_scr_write,
@@ -867,7 +867,7 @@ static int sata_rcar_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	priv = devm_kzalloc(dev, sizeof(struct sata_rcar_priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, struct sata_rcar_priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -1009,7 +1009,7 @@ static const struct dev_pm_ops sata_rcar_pm_ops = {
 
 static struct platform_driver sata_rcar_driver = {
 	.probe		= sata_rcar_probe,
-	.remove_new	= sata_rcar_remove,
+	.remove		= sata_rcar_remove,
 	.driver = {
 		.name		= DRV_NAME,
 		.of_match_table	= sata_rcar_match,

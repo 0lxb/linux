@@ -8,7 +8,6 @@
 #include "clk-mux.h"
 
 #include <dt-bindings/clock/mt8195-clk.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
 static DEFINE_SPINLOCK(mt8195_clk_lock);
@@ -1247,7 +1246,7 @@ static int clk_mt8195_reg_mfg_mux_notifier(struct device *dev, struct clk *clk)
 {
 	struct mtk_mux_nb *mfg_mux_nb;
 
-	mfg_mux_nb = devm_kzalloc(dev, sizeof(*mfg_mux_nb), GFP_KERNEL);
+	mfg_mux_nb = devm_kzalloc_obj(dev, *mfg_mux_nb);
 	if (!mfg_mux_nb)
 		return -ENOMEM;
 
@@ -1354,11 +1353,13 @@ static void clk_mt8195_topck_remove(struct platform_device *pdev)
 
 static struct platform_driver clk_mt8195_topck_drv = {
 	.probe = clk_mt8195_topck_probe,
-	.remove_new = clk_mt8195_topck_remove,
+	.remove = clk_mt8195_topck_remove,
 	.driver = {
 		.name = "clk-mt8195-topck",
 		.of_match_table = of_match_clk_mt8195_topck,
 	},
 };
 module_platform_driver(clk_mt8195_topck_drv);
+
+MODULE_DESCRIPTION("MediaTek MT8195 top clock generators driver");
 MODULE_LICENSE("GPL");

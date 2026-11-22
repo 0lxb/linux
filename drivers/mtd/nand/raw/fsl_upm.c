@@ -169,7 +169,7 @@ static int fun_probe(struct platform_device *ofdev)
 	int size;
 	int i;
 
-	fun = devm_kzalloc(&ofdev->dev, sizeof(*fun), GFP_KERNEL);
+	fun = devm_kzalloc_obj(&ofdev->dev, *fun);
 	if (!fun)
 		return -ENOMEM;
 
@@ -259,7 +259,7 @@ static struct platform_driver of_fun_driver = {
 		.of_match_table = of_fun_match,
 	},
 	.probe		= fun_probe,
-	.remove_new	= fun_remove,
+	.remove		= fun_remove,
 };
 
 module_platform_driver(of_fun_driver);

@@ -9,6 +9,7 @@
 
 /* The length of register space exposed to host */
 #define XDMA_REG_SPACE_LEN	65536
+#define XDMA_MAX_REG_OFFSET	(XDMA_REG_SPACE_LEN - 4)
 
 /*
  * maximum number of DMA channels for each direction:
@@ -116,6 +117,9 @@ struct xdma_hw_desc {
 			 CHAN_CTRL_IE_READ_ERROR |			\
 			 CHAN_CTRL_IE_WRITE_ERROR |			\
 			 CHAN_CTRL_IE_DESC_ERROR)
+
+/* bits of the channel status register */
+#define XDMA_CHAN_STATUS_BUSY			BIT(0)
 
 #define XDMA_CHAN_STATUS_MASK CHAN_CTRL_START
 

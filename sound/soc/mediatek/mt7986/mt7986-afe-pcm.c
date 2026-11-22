@@ -106,7 +106,7 @@ static const struct snd_pcm_hardware mt7986_afe_hardware = {
 static int mt7986_memif_fs(struct snd_pcm_substream *substream,
 			   unsigned int rate)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 
@@ -116,7 +116,7 @@ static int mt7986_memif_fs(struct snd_pcm_substream *substream,
 static int mt7986_irq_fs(struct snd_pcm_substream *substream,
 			 unsigned int rate)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 
@@ -323,8 +323,7 @@ static int mt7986_init_clock(struct mtk_base_afe *afe)
 	struct mt7986_afe_private *afe_priv = afe->platform_priv;
 	int ret, i;
 
-	afe_priv->clks = devm_kcalloc(afe->dev, CLK_NUM,
-				sizeof(*afe_priv->clks), GFP_KERNEL);
+	afe_priv->clks = devm_kzalloc_objs(afe->dev, *afe_priv->clks, CLK_NUM);
 	if (!afe_priv->clks)
 		return -ENOMEM;
 	afe_priv->num_clks = CLK_NUM;
@@ -334,7 +333,7 @@ static int mt7986_init_clock(struct mtk_base_afe *afe)
 
 	ret = devm_clk_bulk_get(afe->dev, afe_priv->num_clks, afe_priv->clks);
 	if (ret)
-		return dev_err_probe(afe->dev, ret, "Failed to get clocks\n");
+		return ret;
 
 	return 0;
 }
@@ -414,7 +413,7 @@ static int mt7986_afe_runtime_resume(struct device *dev)
 
 	ret = clk_bulk_prepare_enable(afe_priv->num_clks, afe_priv->clks);
 	if (ret)
-		return dev_err_probe(afe->dev, ret, "Failed to enable clocks\n");
+		return ret;
 
 	if (!afe->regmap || afe_priv->pm_runtime_bypass_reg_ctl)
 		return 0;
@@ -429,23 +428,11 @@ static int mt7986_afe_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static int mt7986_afe_component_probe(struct snd_soc_component *component)
-{
-	return mtk_afe_add_sub_dai_control(component);
-}
-
-static const struct snd_soc_component_driver mt7986_afe_component = {
-	.name = AFE_PCM_NAME,
-	.probe = mt7986_afe_component_probe,
-	.pointer	= mtk_afe_pcm_pointer,
-	.pcm_construct	= mtk_afe_pcm_new,
-};
-
 static int mt7986_dai_memif_register(struct mtk_base_afe *afe)
 {
 	struct mtk_base_afe_dai *dai;
 
-	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
+	dai = devm_kzalloc_obj(afe->dev, *dai);
 	if (!dai)
 		return -ENOMEM;
 
@@ -475,13 +462,12 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 	struct device *dev;
 	int i, irq_id, ret;
 
-	afe = devm_kzalloc(&pdev->dev, sizeof(*afe), GFP_KERNEL);
+	afe = devm_kzalloc_obj(&pdev->dev, *afe);
 	if (!afe)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, afe);
 
-	afe->platform_priv = devm_kzalloc(&pdev->dev, sizeof(*afe_priv),
-					  GFP_KERNEL);
+	afe->platform_priv = devm_kzalloc_obj(&pdev->dev, *afe_priv);
 	if (!afe->platform_priv)
 		return -ENOMEM;
 
@@ -496,7 +482,7 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 	/* initial audio related clock */
 	ret = mt7986_init_clock(afe);
 	if (ret)
-		return dev_err_probe(dev, ret, "Cannot initialize clocks\n");
+		return ret;
 
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
@@ -517,8 +503,7 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* init memif */
 	afe->memif_size = MT7986_MEMIF_NUM;
-	afe->memif = devm_kcalloc(dev, afe->memif_size, sizeof(*afe->memif),
-				  GFP_KERNEL);
+	afe->memif = devm_kzalloc_objs(dev, *afe->memif, afe->memif_size);
 	if (!afe->memif)
 		return -ENOMEM;
 
@@ -531,8 +516,7 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* irq initialize */
 	afe->irqs_size = MT7986_IRQ_NUM;
-	afe->irqs = devm_kcalloc(dev, afe->irqs_size, sizeof(*afe->irqs),
-				 GFP_KERNEL);
+	afe->irqs = devm_kzalloc_objs(dev, *afe->irqs, afe->irqs_size);
 	if (!afe->irqs)
 		return -ENOMEM;
 
@@ -541,14 +525,13 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* request irq */
 	irq_id = platform_get_irq(pdev, 0);
-	if (irq_id < 0) {
-		ret = irq_id;
-		return dev_err_probe(dev, ret, "No irq found\n");
-	}
+	if (irq_id < 0)
+		return irq_id;
+
 	ret = devm_request_irq(dev, irq_id, mt7986_afe_irq_handler,
 			       IRQF_TRIGGER_NONE, "asys-isr", (void *)afe);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to request irq for asys-isr\n");
+		return ret;
 
 	/* init sub_dais */
 	INIT_LIST_HEAD(&afe->sub_dais);
@@ -573,7 +556,7 @@ static int mt7986_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* register component */
 	ret = devm_snd_soc_register_component(&pdev->dev,
-					      &mt7986_afe_component,
+					      &mtk_afe_pcm_platform,
 					      NULL, 0);
 	if (ret)
 		return dev_err_probe(dev, ret, "Cannot register AFE component\n");
@@ -602,18 +585,18 @@ static const struct of_device_id mt7986_afe_pcm_dt_match[] = {
 MODULE_DEVICE_TABLE(of, mt7986_afe_pcm_dt_match);
 
 static const struct dev_pm_ops mt7986_afe_pm_ops = {
-	SET_RUNTIME_PM_OPS(mt7986_afe_runtime_suspend,
-			   mt7986_afe_runtime_resume, NULL)
+	RUNTIME_PM_OPS(mt7986_afe_runtime_suspend,
+		       mt7986_afe_runtime_resume, NULL)
 };
 
 static struct platform_driver mt7986_afe_pcm_driver = {
 	.driver = {
 		   .name = "mt7986-audio",
 		   .of_match_table = mt7986_afe_pcm_dt_match,
-		   .pm = &mt7986_afe_pm_ops,
+		   .pm = pm_ptr(&mt7986_afe_pm_ops),
 	},
 	.probe = mt7986_afe_pcm_dev_probe,
-	.remove_new = mt7986_afe_pcm_dev_remove,
+	.remove = mt7986_afe_pcm_dev_remove,
 };
 module_platform_driver(mt7986_afe_pcm_driver);
 

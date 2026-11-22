@@ -3,12 +3,13 @@
  * Copyright (C) 2016 National Instruments Corp.
  */
 
-#include <linux/acpi.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/stringify.h>
+#include <linux/types.h>
 #include <linux/watchdog.h>
 
 #define LOCK			0xA5
@@ -34,13 +35,13 @@ static unsigned int timeout;
 module_param(timeout, uint, 0);
 MODULE_PARM_DESC(timeout,
 		 "Watchdog timeout in seconds. (default="
-		 __MODULE_STRING(WDT_DEFAULT_TIMEOUT) ")");
+		 __stringify(WDT_DEFAULT_TIMEOUT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started. (default="
-		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+		 __stringify(WATCHDOG_NOWAYOUT) ")");
 
 struct nic7018_wdt {
 	u16 io_base;
@@ -173,7 +174,7 @@ static int nic7018_probe(struct platform_device *pdev)
 	struct resource *io_rc;
 	int ret;
 
-	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
+	wdt = devm_kzalloc_obj(dev, *wdt);
 	if (!wdt)
 		return -ENOMEM;
 
@@ -229,17 +230,17 @@ static void nic7018_remove(struct platform_device *pdev)
 }
 
 static const struct acpi_device_id nic7018_device_ids[] = {
-	{"NIC7018", 0},
-	{"", 0},
+	{ "NIC7018" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, nic7018_device_ids);
 
 static struct platform_driver watchdog_driver = {
 	.probe = nic7018_probe,
-	.remove_new = nic7018_remove,
+	.remove = nic7018_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
-		.acpi_match_table = ACPI_PTR(nic7018_device_ids),
+		.acpi_match_table = nic7018_device_ids,
 	},
 };
 

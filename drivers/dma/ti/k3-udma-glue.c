@@ -84,6 +84,7 @@ struct k3_udma_glue_rx_channel {
 	struct k3_udma_glue_rx_flow *flows;
 	u32 flow_num;
 	u32 flows_ready;
+	bool single_fdq;	/* one FDQ for all flows */
 };
 
 static void k3_udma_chan_dev_release(struct device *dev)
@@ -200,12 +201,9 @@ of_k3_udma_glue_parse_chn_by_id(struct device_node *udmax_np, struct k3_udma_glu
 
 	ret = of_k3_udma_glue_parse(udmax_np, common);
 	if (ret)
-		goto out_put_spec;
+		return ret;
 
 	ret = of_k3_udma_glue_parse_chn_common(common, thread_id, tx_chn);
-
-out_put_spec:
-	of_node_put(udmax_np);
 	return ret;
 }
 
@@ -314,7 +312,7 @@ k3_udma_glue_request_tx_chn_common(struct device *dev,
 
 	if (xudma_is_pktdma(tx_chn->common.udmax)) {
 		/* prepare the channel device as coherent */
-		tx_chn->common.chan_dev.dma_coherent = true;
+		dev_set_dma_coherent(&tx_chn->common.chan_dev);
 		dma_coerce_mask_and_coherent(&tx_chn->common.chan_dev,
 					     DMA_BIT_MASK(48));
 	}
@@ -381,7 +379,7 @@ k3_udma_glue_request_tx_chn(struct device *dev, const char *name,
 	struct k3_udma_glue_tx_channel *tx_chn;
 	int ret;
 
-	tx_chn = devm_kzalloc(dev, sizeof(*tx_chn), GFP_KERNEL);
+	tx_chn = devm_kzalloc_obj(dev, *tx_chn);
 	if (!tx_chn)
 		return ERR_PTR(-ENOMEM);
 
@@ -418,7 +416,7 @@ k3_udma_glue_request_tx_chn_for_thread_id(struct device *dev,
 	struct k3_udma_glue_tx_channel *tx_chn;
 	int ret;
 
-	tx_chn = devm_kzalloc(dev, sizeof(*tx_chn), GFP_KERNEL);
+	tx_chn = devm_kzalloc_obj(dev, *tx_chn);
 	if (!tx_chn)
 		return ERR_PTR(-ENOMEM);
 
@@ -953,7 +951,7 @@ k3_udma_glue_request_rx_chn_priv(struct device *dev, const char *name,
 	    (cfg->def_flow_cfg || cfg->flow_id_use_rxchan_id))
 		return ERR_PTR(-EINVAL);
 
-	rx_chn = devm_kzalloc(dev, sizeof(*rx_chn), GFP_KERNEL);
+	rx_chn = devm_kzalloc_obj(dev, *rx_chn);
 	if (!rx_chn)
 		return ERR_PTR(-ENOMEM);
 
@@ -973,10 +971,13 @@ k3_udma_glue_request_rx_chn_priv(struct device *dev, const char *name,
 
 	ep_cfg = rx_chn->common.ep_config;
 
-	if (xudma_is_pktdma(rx_chn->common.udmax))
+	if (xudma_is_pktdma(rx_chn->common.udmax)) {
 		rx_chn->udma_rchan_id = ep_cfg->mapped_channel_id;
-	else
+		rx_chn->single_fdq = false;
+	} else {
 		rx_chn->udma_rchan_id = -1;
+		rx_chn->single_fdq = true;
+	}
 
 	/* request and cfg UDMAP RX channel */
 	rx_chn->udma_rchanx = xudma_rchan_get(rx_chn->common.udmax,
@@ -1002,7 +1003,7 @@ k3_udma_glue_request_rx_chn_priv(struct device *dev, const char *name,
 
 	if (xudma_is_pktdma(rx_chn->common.udmax)) {
 		/* prepare the channel device as coherent */
-		rx_chn->common.chan_dev.dma_coherent = true;
+		dev_set_dma_coherent(&rx_chn->common.chan_dev);
 		dma_coerce_mask_and_coherent(&rx_chn->common.chan_dev,
 					     DMA_BIT_MASK(48));
 	}
@@ -1032,8 +1033,7 @@ k3_udma_glue_request_rx_chn_priv(struct device *dev, const char *name,
 
 	rx_chn->flow_num = cfg->flow_id_num;
 
-	rx_chn->flows = devm_kcalloc(dev, rx_chn->flow_num,
-				     sizeof(*rx_chn->flows), GFP_KERNEL);
+	rx_chn->flows = devm_kzalloc_objs(dev, *rx_chn->flows, rx_chn->flow_num);
 	if (!rx_chn->flows) {
 		ret = -ENOMEM;
 		goto err;
@@ -1084,8 +1084,7 @@ k3_udma_glue_request_remote_rx_chn_common(struct k3_udma_glue_rx_channel *rx_chn
 						rx_chn->common.psdata_size,
 						rx_chn->common.swdata_size);
 
-	rx_chn->flows = devm_kcalloc(dev, rx_chn->flow_num,
-				     sizeof(*rx_chn->flows), GFP_KERNEL);
+	rx_chn->flows = devm_kzalloc_objs(dev, *rx_chn->flows, rx_chn->flow_num);
 	if (!rx_chn->flows)
 		return -ENOMEM;
 
@@ -1103,9 +1102,12 @@ k3_udma_glue_request_remote_rx_chn_common(struct k3_udma_glue_rx_channel *rx_chn
 
 	if (xudma_is_pktdma(rx_chn->common.udmax)) {
 		/* prepare the channel device as coherent */
-		rx_chn->common.chan_dev.dma_coherent = true;
+		dev_set_dma_coherent(&rx_chn->common.chan_dev);
 		dma_coerce_mask_and_coherent(&rx_chn->common.chan_dev,
 					     DMA_BIT_MASK(48));
+		rx_chn->single_fdq = false;
+	} else {
+		rx_chn->single_fdq = true;
 	}
 
 	ret = k3_udma_glue_allocate_rx_flows(rx_chn, cfg);
@@ -1138,7 +1140,7 @@ k3_udma_glue_request_remote_rx_chn(struct device *dev, const char *name,
 	 * Linux can only request and manipulate by dedicated RX flows
 	 */
 
-	rx_chn = devm_kzalloc(dev, sizeof(*rx_chn), GFP_KERNEL);
+	rx_chn = devm_kzalloc_obj(dev, *rx_chn);
 	if (!rx_chn)
 		return ERR_PTR(-ENOMEM);
 
@@ -1186,7 +1188,7 @@ k3_udma_glue_request_remote_rx_chn_for_thread_id(struct device *dev,
 	 * Linux can only request and manipulate by dedicated RX flows
 	 */
 
-	rx_chn = devm_kzalloc(dev, sizeof(*rx_chn), GFP_KERNEL);
+	rx_chn = devm_kzalloc_obj(dev, *rx_chn);
 	if (!rx_chn)
 		return ERR_PTR(-ENOMEM);
 
@@ -1239,8 +1241,9 @@ void k3_udma_glue_release_rx_chn(struct k3_udma_glue_rx_channel *rx_chn)
 		rx_chn->psil_paired = false;
 	}
 
-	for (i = 0; i < rx_chn->flow_num; i++)
-		k3_udma_glue_release_rx_flow(rx_chn, i);
+	if (rx_chn->flows)
+		for (i = 0; i < rx_chn->flow_num; i++)
+			k3_udma_glue_release_rx_flow(rx_chn, i);
 
 	if (xudma_rflow_is_gp(rx_chn->common.udmax, rx_chn->flow_id_base))
 		xudma_free_gp_rflow_range(rx_chn->common.udmax,
@@ -1456,7 +1459,7 @@ EXPORT_SYMBOL_GPL(k3_udma_glue_tdown_rx_chn);
 
 void k3_udma_glue_reset_rx_chn(struct k3_udma_glue_rx_channel *rx_chn,
 		u32 flow_num, void *data,
-		void (*cleanup)(void *data, dma_addr_t desc_dma), bool skip_fdq)
+		void (*cleanup)(void *data, dma_addr_t desc_dma))
 {
 	struct k3_udma_glue_rx_flow *flow = &rx_chn->flows[flow_num];
 	struct device *dev = rx_chn->common.dev;
@@ -1468,7 +1471,7 @@ void k3_udma_glue_reset_rx_chn(struct k3_udma_glue_rx_channel *rx_chn,
 	dev_dbg(dev, "RX reset flow %u occ_rx %u\n", flow_num, occ_rx);
 
 	/* Skip RX FDQ in case one FDQ is used for the set of flows */
-	if (skip_fdq)
+	if (rx_chn->single_fdq && flow_num)
 		goto do_reset;
 
 	/*
@@ -1531,6 +1534,9 @@ int k3_udma_glue_rx_get_irq(struct k3_udma_glue_rx_channel *rx_chn,
 		flow->virq = k3_ringacc_get_ring_irq_num(flow->ringrx);
 	}
 
+	if (!flow->virq)
+		return -ENXIO;
+
 	return flow->virq;
 }
 EXPORT_SYMBOL_GPL(k3_udma_glue_rx_get_irq);
@@ -1574,4 +1580,5 @@ static int __init k3_udma_glue_class_init(void)
 }
 
 module_init(k3_udma_glue_class_init);
+MODULE_DESCRIPTION("TI K3 NAVSS DMA glue interface");
 MODULE_LICENSE("GPL v2");

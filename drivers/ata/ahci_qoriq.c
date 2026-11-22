@@ -14,6 +14,7 @@
 #include <linux/device.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/libata.h>
 #include "ahci.h"
 
@@ -80,7 +81,7 @@ static const struct of_device_id ahci_qoriq_of_match[] = {
 MODULE_DEVICE_TABLE(of, ahci_qoriq_of_match);
 
 static const struct acpi_device_id ahci_qoriq_acpi_match[] = {
-	{"NXP0004", .driver_data = (kernel_ulong_t)AHCI_LX2160A},
+	{ .id = "NXP0004", .driver_data = (kernel_ulong_t)AHCI_LX2160A },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, ahci_qoriq_acpi_match);
@@ -146,8 +147,8 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 }
 
 static struct ata_port_operations ahci_qoriq_ops = {
-	.inherits	= &ahci_ops,
-	.hardreset	= ahci_qoriq_hardreset,
+	.inherits		= &ahci_ops,
+	.reset.hardreset	= ahci_qoriq_hardreset,
 };
 
 static const struct ata_port_info ahci_qoriq_port_info = {
@@ -273,7 +274,7 @@ static int ahci_qoriq_probe(struct platform_device *pdev)
 	if (!(of_id || acpi_id))
 		return -ENODEV;
 
-	qoriq_priv = devm_kzalloc(dev, sizeof(*qoriq_priv), GFP_KERNEL);
+	qoriq_priv = devm_kzalloc_obj(dev, *qoriq_priv);
 	if (!qoriq_priv)
 		return -ENOMEM;
 
@@ -357,7 +358,7 @@ static SIMPLE_DEV_PM_OPS(ahci_qoriq_pm_ops, ahci_platform_suspend,
 
 static struct platform_driver ahci_qoriq_driver = {
 	.probe = ahci_qoriq_probe,
-	.remove_new = ata_platform_remove_one,
+	.remove = ata_platform_remove_one,
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = ahci_qoriq_of_match,

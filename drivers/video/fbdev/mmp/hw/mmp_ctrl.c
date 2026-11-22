@@ -313,7 +313,7 @@ static void path_set_mode(struct mmp_path *path, struct mmp_mode *mode)
 	mutex_unlock(&path->access_ok);
 }
 
-static struct mmp_overlay_ops mmphw_overlay_ops = {
+static const struct mmp_overlay_ops mmphw_overlay_ops = {
 	.set_fetch = overlay_set_fetch,
 	.set_onoff = overlay_set_onoff,
 	.set_win = overlay_set_win,
@@ -325,7 +325,7 @@ static void ctrl_set_default(struct mmphw_ctrl *ctrl)
 	u32 tmp, irq_mask;
 
 	/*
-	 * LCD Global control(LCD_TOP_CTRL) should be configed before
+	 * LCD Global control(LCD_TOP_CTRL) should be configured before
 	 * any other LCD registers read/write, or there maybe issues.
 	 */
 	tmp = readl_relaxed(ctrl->reg_base + LCD_TOP_CTRL);
@@ -402,7 +402,7 @@ static int path_init(struct mmphw_path_plat *path_plat,
 	dev_info(ctrl->dev, "%s: %s\n", __func__, config->name);
 
 	/* init driver data */
-	path_info = kzalloc(sizeof(*path_info), GFP_KERNEL);
+	path_info = kzalloc_obj(*path_info);
 	if (!path_info)
 		return 0;
 
@@ -469,9 +469,7 @@ static int mmphw_probe(struct platform_device *pdev)
 	}
 
 	/* allocate */
-	ctrl = devm_kzalloc(&pdev->dev,
-			    struct_size(ctrl, path_plats, mi->path_num),
-			    GFP_KERNEL);
+	ctrl = devm_kzalloc_flex(&pdev->dev, *ctrl, path_plats, mi->path_num);
 	if (!ctrl) {
 		ret = -ENOMEM;
 		goto failed;
@@ -505,28 +503,23 @@ static int mmphw_probe(struct platform_device *pdev)
 	ret = devm_request_irq(ctrl->dev, ctrl->irq, ctrl_handle_irq,
 		IRQF_SHARED, "lcd_controller", ctrl);
 	if (ret < 0) {
-		dev_err(ctrl->dev, "%s unable to request IRQ %d\n",
-				__func__, ctrl->irq);
 		ret = -ENXIO;
 		goto failed;
 	}
 
 	/* get clock */
-	ctrl->clk = devm_clk_get(ctrl->dev, mi->clk_name);
+	ctrl->clk = devm_clk_get_enabled(ctrl->dev, mi->clk_name);
 	if (IS_ERR(ctrl->clk)) {
 		ret = PTR_ERR(ctrl->clk);
 		dev_err_probe(ctrl->dev, ret,
 			      "unable to get clk %s\n", mi->clk_name);
 		goto failed;
 	}
-	ret = clk_prepare_enable(ctrl->clk);
-	if (ret)
-		goto failed;
 
 	/* init global regs */
 	ctrl_set_default(ctrl);
 
-	/* init pathes from machine info and register them */
+	/* init paths from machine info and register them */
 	for (i = 0; i < ctrl->path_num; i++) {
 		/* get from config and machine info */
 		path_plat = &ctrl->path_plats[i];
@@ -556,7 +549,6 @@ failed_path_init:
 		path_deinit(path_plat);
 	}
 
-	clk_disable_unprepare(ctrl->clk);
 failed:
 	dev_err(&pdev->dev, "device init failed\n");
 

@@ -16,7 +16,6 @@
 #include <linux/interrupt.h>
 #include <linux/ctype.h>
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
 #include <linux/edac.h>
 #include <linux/smp.h>
 #include <linux/gfp.h>
@@ -323,7 +322,7 @@ static const struct platform_device_id mpc85xx_pci_err_match[] = {
 
 static struct platform_driver mpc85xx_pci_err_driver = {
 	.probe = mpc85xx_pci_err_probe,
-	.remove_new = mpc85xx_pci_err_remove,
+	.remove = mpc85xx_pci_err_remove,
 	.id_table = mpc85xx_pci_err_match,
 	.driver = {
 		.name = "mpc85xx_pci_err",
@@ -399,7 +398,7 @@ static ssize_t mpc85xx_l2_inject_ctrl_store(struct edac_device_ctl_info
 	return 0;
 }
 
-static struct edac_dev_sysfs_attribute mpc85xx_l2_sysfs_attributes[] = {
+static const struct edac_dev_sysfs_attribute mpc85xx_l2_sysfs_attributes[] = {
 	{
 	 .attr = {
 		  .name = "inject_data_hi",
@@ -496,7 +495,7 @@ static int mpc85xx_l2_err_probe(struct platform_device *op)
 		return -ENOMEM;
 
 	edac_dev = edac_device_alloc_ctl_info(sizeof(*pdata),
-					      "cpu", 1, "L", 1, 2, NULL, 0,
+					      "cpu", 1, "L", 1, 2,
 					      edac_dev_idx);
 	if (!edac_dev) {
 		devres_release_group(&op->dev, mpc85xx_l2_err_probe);
@@ -627,7 +626,7 @@ MODULE_DEVICE_TABLE(of, mpc85xx_l2_err_of_match);
 
 static struct platform_driver mpc85xx_l2_err_driver = {
 	.probe = mpc85xx_l2_err_probe,
-	.remove_new = mpc85xx_l2_err_remove,
+	.remove = mpc85xx_l2_err_remove,
 	.driver = {
 		.name = "mpc85xx_l2_err",
 		.of_match_table = mpc85xx_l2_err_of_match,
@@ -656,7 +655,7 @@ MODULE_DEVICE_TABLE(of, mpc85xx_mc_err_of_match);
 
 static struct platform_driver mpc85xx_mc_err_driver = {
 	.probe = fsl_mc_err_probe,
-	.remove_new = fsl_mc_err_remove,
+	.remove = fsl_mc_err_remove,
 	.driver = {
 		.name = "mpc85xx_mc_err",
 		.of_match_table = mpc85xx_mc_err_of_match,
@@ -704,6 +703,7 @@ static void __exit mpc85xx_mc_exit(void)
 
 module_exit(mpc85xx_mc_exit);
 
+MODULE_DESCRIPTION("Freescale MPC85xx Memory Controller EDAC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Montavista Software, Inc.");
 module_param(edac_op_state, int, 0444);

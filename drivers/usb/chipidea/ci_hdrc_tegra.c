@@ -278,7 +278,7 @@ static int tegra_usb_probe(struct platform_device *pdev)
 	struct tegra_usb *usb;
 	int err;
 
-	usb = devm_kzalloc(&pdev->dev, sizeof(*usb), GFP_KERNEL);
+	usb = devm_kzalloc_obj(&pdev->dev, *usb);
 	if (!usb)
 		return -ENOMEM;
 
@@ -306,8 +306,10 @@ static int tegra_usb_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 	err = pm_runtime_resume_and_get(&pdev->dev);
-	if (err)
+	if (err) {
+		pm_runtime_disable(&pdev->dev);
 		return err;
+	}
 
 	if (device_property_present(&pdev->dev, "nvidia,needs-double-reset"))
 		usb->needs_double_reset = true;
@@ -372,7 +374,7 @@ static void tegra_usb_remove(struct platform_device *pdev)
 	pm_runtime_force_suspend(&pdev->dev);
 }
 
-static int __maybe_unused tegra_usb_runtime_resume(struct device *dev)
+static int tegra_usb_runtime_resume(struct device *dev)
 {
 	struct tegra_usb *usb = dev_get_drvdata(dev);
 	int err;
@@ -386,7 +388,7 @@ static int __maybe_unused tegra_usb_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused tegra_usb_runtime_suspend(struct device *dev)
+static int tegra_usb_runtime_suspend(struct device *dev)
 {
 	struct tegra_usb *usb = dev_get_drvdata(dev);
 
@@ -396,18 +398,17 @@ static int __maybe_unused tegra_usb_runtime_suspend(struct device *dev)
 }
 
 static const struct dev_pm_ops tegra_usb_pm = {
-	SET_RUNTIME_PM_OPS(tegra_usb_runtime_suspend, tegra_usb_runtime_resume,
-			   NULL)
+	RUNTIME_PM_OPS(tegra_usb_runtime_suspend, tegra_usb_runtime_resume, NULL)
 };
 
 static struct platform_driver tegra_usb_driver = {
 	.driver = {
 		.name = "tegra-usb",
 		.of_match_table = tegra_usb_of_match,
-		.pm = &tegra_usb_pm,
+		.pm = pm_ptr(&tegra_usb_pm),
 	},
 	.probe = tegra_usb_probe,
-	.remove_new = tegra_usb_remove,
+	.remove = tegra_usb_remove,
 };
 module_platform_driver(tegra_usb_driver);
 

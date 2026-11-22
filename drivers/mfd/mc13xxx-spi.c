@@ -8,7 +8,6 @@
  */
 
 #include <linux/slab.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -116,7 +115,7 @@ static int mc13xxx_spi_write(void *context, const void *data, size_t count)
  * single transfer.
  */
 
-static struct regmap_bus regmap_mc13xxx_bus = {
+static const struct regmap_bus regmap_mc13xxx_bus = {
 	.write = mc13xxx_spi_write,
 	.read = mc13xxx_spi_read,
 };
@@ -126,7 +125,7 @@ static int mc13xxx_spi_probe(struct spi_device *spi)
 	struct mc13xxx *mc13xxx;
 	int ret;
 
-	mc13xxx = devm_kzalloc(&spi->dev, sizeof(*mc13xxx), GFP_KERNEL);
+	mc13xxx = devm_kzalloc_obj(&spi->dev, *mc13xxx);
 	if (!mc13xxx)
 		return -ENOMEM;
 

@@ -22,6 +22,12 @@ bool br_mst_enabled(const struct net_device *dev)
 }
 EXPORT_SYMBOL_GPL(br_mst_enabled);
 
+void br_mst_uninit(struct net_bridge *br)
+{
+	if (br_opt_get(br, BROPT_MST_ENABLED))
+		static_branch_dec(&br_mst_used);
+}
+
 int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids)
 {
 	const struct net_bridge_vlan_group *vg;
@@ -64,7 +70,7 @@ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state)
 
 	list_for_each_entry(v, &vg->vlan_list, vlist) {
 		if (v->brvlan->msti == msti) {
-			*state = v->state;
+			*state = br_vlan_get_state(v);
 			return 0;
 		}
 	}
@@ -73,18 +79,12 @@ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state)
 }
 EXPORT_SYMBOL_GPL(br_mst_get_state);
 
-static void br_mst_vlan_set_state(struct net_bridge_port *p, struct net_bridge_vlan *v,
-				  u8 state)
+static void br_mst_vlan_set_state(struct net_bridge_vlan *v, u8 state)
 {
-	struct net_bridge_vlan_group *vg = nbp_vlan_group(p);
-
-	if (v->state == state)
+	if (br_vlan_get_state(v) == state)
 		return;
 
 	br_vlan_set_state(v, state);
-
-	if (v->vid == vg->pvid)
-		br_vlan_set_pvid_state(vg, state);
 }
 
 int br_mst_set_state(struct net_bridge_port *p, u16 msti, u8 state,
@@ -100,29 +100,37 @@ int br_mst_set_state(struct net_bridge_port *p, u16 msti, u8 state,
 	};
 	struct net_bridge_vlan_group *vg;
 	struct net_bridge_vlan *v;
-	int err;
-
-	vg = nbp_vlan_group(p);
-	if (!vg)
-		return 0;
+	int err = 0;
 
 	/* MSTI 0 (CST) state changes are notified via the regular
-	 * SWITCHDEV_ATTR_ID_PORT_STP_STATE.
+	 * SWITCHDEV_ATTR_ID_PORT_STP_STATE. All other MSTIs are handled via
+	 * netlink with RTNL held
 	 */
 	if (msti) {
+		ASSERT_RTNL();
+
 		err = switchdev_port_attr_set(p->dev, &attr, extack);
 		if (err && err != -EOPNOTSUPP)
-			return err;
+			goto out;
+		err = 0;
 	}
 
-	list_for_each_entry(v, &vg->vlan_list, vlist) {
-		if (v->brvlan->msti != msti)
+	rcu_read_lock();
+	vg = nbp_vlan_group_rcu(p);
+	if (!vg)
+		goto out_rcu_unlock;
+
+	list_for_each_entry_rcu(v, &vg->vlan_list, vlist) {
+		if (READ_ONCE(v->brvlan->msti) != msti)
 			continue;
 
-		br_mst_vlan_set_state(p, v, state);
+		br_mst_vlan_set_state(v, state);
 	}
 
-	return 0;
+out_rcu_unlock:
+	rcu_read_unlock();
+out:
+	return err;
 }
 
 static void br_mst_vlan_sync_state(struct net_bridge_vlan *pv, u16 msti)
@@ -136,13 +144,13 @@ static void br_mst_vlan_sync_state(struct net_bridge_vlan *pv, u16 msti)
 		 * it.
 		 */
 		if (v != pv && v->brvlan->msti == msti) {
-			br_mst_vlan_set_state(pv->port, pv, v->state);
+			br_mst_vlan_set_state(pv, br_vlan_get_state(v));
 			return;
 		}
 	}
 
 	/* Otherwise, start out in a new MSTI with all ports disabled. */
-	return br_mst_vlan_set_state(pv->port, pv, BR_STATE_DISABLED);
+	return br_mst_vlan_set_state(pv, BR_STATE_DISABLED);
 }
 
 int br_mst_vlan_set_msti(struct net_bridge_vlan *mv, u16 msti)
@@ -167,7 +175,7 @@ int br_mst_vlan_set_msti(struct net_bridge_vlan *mv, u16 msti)
 	if (err && err != -EOPNOTSUPP)
 		return err;
 
-	mv->msti = msti;
+	WRITE_ONCE(mv->msti, msti);
 
 	list_for_each_entry(p, &mv->br->port_list, list) {
 		vg = nbp_vlan_group(p);
@@ -222,9 +230,9 @@ int br_mst_set_enabled(struct net_bridge *br, bool on,
 		return err;
 
 	if (on)
-		static_branch_enable(&br_mst_used);
+		static_branch_inc(&br_mst_used);
 	else
-		static_branch_disable(&br_mst_used);
+		static_branch_dec(&br_mst_used);
 
 	br_opt_toggle(br, BROPT_MST_ENABLED, on);
 	return 0;
@@ -240,7 +248,9 @@ size_t br_mst_info_size(const struct net_bridge_vlan_group *vg)
 	sz = nla_total_size(0);
 
 	list_for_each_entry_rcu(v, &vg->vlan_list, vlist) {
-		if (test_bit(v->brvlan->msti, seen))
+		u16 msti = READ_ONCE(v->brvlan->msti);
+
+		if (test_bit(msti, seen))
 			continue;
 
 		/* IFLA_BRIDGE_MST_ENTRY */
@@ -250,7 +260,7 @@ size_t br_mst_info_size(const struct net_bridge_vlan_group *vg)
 			/* IFLA_BRIDGE_MST_ENTRY_STATE */
 			nla_total_size(sizeof(u8));
 
-		__set_bit(v->brvlan->msti, seen);
+		__set_bit(msti, seen);
 	}
 
 	return sz;
@@ -271,7 +281,8 @@ int br_mst_fill_info(struct sk_buff *skb,
 		nest = nla_nest_start_noflag(skb, IFLA_BRIDGE_MST_ENTRY);
 		if (!nest ||
 		    nla_put_u16(skb, IFLA_BRIDGE_MST_ENTRY_MSTI, v->brvlan->msti) ||
-		    nla_put_u8(skb, IFLA_BRIDGE_MST_ENTRY_STATE, v->state)) {
+		    nla_put_u8(skb, IFLA_BRIDGE_MST_ENTRY_STATE,
+			       br_vlan_get_state(v))) {
 			err = -EMSGSIZE;
 			break;
 		}

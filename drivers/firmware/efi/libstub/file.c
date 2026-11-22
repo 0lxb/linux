@@ -29,6 +29,8 @@
  */
 #define EFI_READ_CHUNK_SIZE	SZ_1M
 
+static efi_guid_t fs_proto = EFI_FILE_SYSTEM_GUID;
+
 struct finfo {
 	efi_file_info_t info;
 	efi_char16_t	filename[MAX_FILENAME_SIZE];
@@ -39,7 +41,7 @@ static efi_status_t efi_open_file(efi_file_protocol_t *volume,
 				  efi_file_protocol_t **handle,
 				  unsigned long *file_size)
 {
-	efi_guid_t info_guid = EFI_FILE_INFO_ID;
+	static efi_guid_t info_guid = EFI_FILE_INFO_ID;
 	efi_file_protocol_t *fh;
 	unsigned long info_sz;
 	efi_status_t status;
@@ -74,7 +76,6 @@ static efi_status_t efi_open_file(efi_file_protocol_t *volume,
 static efi_status_t efi_open_volume(efi_loaded_image_t *image,
 				    efi_file_protocol_t **fh)
 {
-	efi_guid_t fs_proto = EFI_FILE_SYSTEM_GUID;
 	efi_simple_file_system_protocol_t *io;
 	efi_status_t status;
 
@@ -128,9 +129,8 @@ static int find_file_option(const efi_char16_t *cmdline, int cmdline_len,
 static efi_status_t efi_open_device_path(efi_file_protocol_t **volume,
 					 struct finfo *fi)
 {
-	efi_guid_t text_to_dp_guid = EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL_GUID;
+	static efi_guid_t text_to_dp_guid = EFI_DEVICE_PATH_FROM_TEXT_PROTOCOL_GUID;
 	static efi_device_path_from_text_protocol_t *text_to_dp = NULL;
-	efi_guid_t fs_proto = EFI_FILE_SYSTEM_GUID;
 	efi_device_path_protocol_t *initrd_dp;
 	efi_simple_file_system_protocol_t *io;
 	struct efi_file_path_dev_path *fpath;
@@ -175,6 +175,12 @@ static efi_status_t efi_open_device_path(efi_file_protocol_t **volume,
 	return status;
 }
 
+#ifndef CONFIG_CMDLINE
+#define CONFIG_CMDLINE
+#endif
+
+static const efi_char16_t builtin_cmdline[] = L"" CONFIG_CMDLINE;
+
 /*
  * Check the cmdline for a LILO-style file= arguments.
  *
@@ -189,6 +195,8 @@ efi_status_t handle_cmdline_files(efi_loaded_image_t *image,
 				  unsigned long *load_addr,
 				  unsigned long *load_size)
 {
+	const bool ignore_load_options = IS_ENABLED(CONFIG_CMDLINE_OVERRIDE) ||
+					 IS_ENABLED(CONFIG_CMDLINE_FORCE);
 	const efi_char16_t *cmdline = efi_table_attr(image, load_options);
 	u32 cmdline_len = efi_table_attr(image, load_options_size);
 	unsigned long efi_chunk_size = ULONG_MAX;
@@ -197,6 +205,7 @@ efi_status_t handle_cmdline_files(efi_loaded_image_t *image,
 	unsigned long alloc_addr;
 	unsigned long alloc_size;
 	efi_status_t status;
+	bool twopass;
 	int offset;
 
 	if (!load_addr || !load_size)
@@ -209,6 +218,16 @@ efi_status_t handle_cmdline_files(efi_loaded_image_t *image,
 		efi_chunk_size = EFI_READ_CHUNK_SIZE;
 
 	alloc_addr = alloc_size = 0;
+
+	if (!ignore_load_options && cmdline_len > 0) {
+		twopass = IS_ENABLED(CONFIG_CMDLINE_BOOL) ||
+			  IS_ENABLED(CONFIG_CMDLINE_EXTEND);
+	} else {
+do_builtin:	cmdline	    = builtin_cmdline;
+		cmdline_len = ARRAY_SIZE(builtin_cmdline) - 1;
+		twopass     = false;
+	}
+
 	do {
 		struct finfo fi;
 		unsigned long size;
@@ -289,6 +308,9 @@ efi_status_t handle_cmdline_files(efi_loaded_image_t *image,
 		efi_call_proto(file, close);
 		efi_call_proto(volume, close);
 	} while (offset > 0);
+
+	if (twopass)
+		goto do_builtin;
 
 	*load_addr = alloc_addr;
 	*load_size = alloc_size;

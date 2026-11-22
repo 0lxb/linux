@@ -107,7 +107,7 @@ static int rcar_pcie_parse_outbound_ranges(struct rcar_pcie_endpoint *ep,
 		}
 		if (!devm_request_mem_region(&pdev->dev, res->start,
 					     resource_size(res),
-					     outbound_name)) {
+					     res->name)) {
 			dev_err(pcie->dev, "Cannot request memory region %s.\n",
 				outbound_name);
 			return -EIO;
@@ -141,8 +141,7 @@ static int rcar_pcie_ep_get_pdata(struct rcar_pcie_endpoint *ep,
 	if (IS_ERR(pcie->base))
 		return PTR_ERR(pcie->base);
 
-	ep->ob_window = devm_kcalloc(dev, RCAR_PCI_MAX_RESOURCES,
-				     sizeof(*window), GFP_KERNEL);
+	ep->ob_window = devm_kzalloc_objs(dev, *window, RCAR_PCI_MAX_RESOURCES);
 	if (!ep->ob_window)
 		return -ENOMEM;
 
@@ -256,15 +255,15 @@ static void rcar_pcie_ep_clear_bar(struct pci_epc *epc, u8 fn, u8 vfn,
 	clear_bit(atu_index + 1, ep->ib_window_map);
 }
 
-static int rcar_pcie_ep_set_msi(struct pci_epc *epc, u8 fn, u8 vfn,
-				u8 interrupts)
+static int rcar_pcie_ep_set_msi(struct pci_epc *epc, u8 fn, u8 vfn, u8 nr_irqs)
 {
 	struct rcar_pcie_endpoint *ep = epc_get_drvdata(epc);
 	struct rcar_pcie *pcie = &ep->pcie;
+	u8 mmc = order_base_2(nr_irqs);
 	u32 flags;
 
 	flags = rcar_pci_read_reg(pcie, MSICAP(fn));
-	flags |= interrupts << MSICAP0_MMESCAP_OFFSET;
+	flags |= mmc << MSICAP0_MMESCAP_OFFSET;
 	rcar_pci_write_reg(pcie, flags, MSICAP(fn));
 
 	return 0;
@@ -280,7 +279,7 @@ static int rcar_pcie_ep_get_msi(struct pci_epc *epc, u8 fn, u8 vfn)
 	if (!(flags & MSICAP0_MSIE))
 		return -EINVAL;
 
-	return ((flags & MSICAP0_MMESE_MASK) >> MSICAP0_MMESE_OFFSET);
+	return 1 << ((flags & MSICAP0_MMESE_MASK) >> MSICAP0_MMESE_OFFSET);
 }
 
 static int rcar_pcie_ep_map_addr(struct pci_epc *epc, u8 fn, u8 vfn,
@@ -436,19 +435,14 @@ static void rcar_pcie_ep_stop(struct pci_epc *epc)
 }
 
 static const struct pci_epc_features rcar_pcie_epc_features = {
-	.linkup_notifier = false,
 	.msi_capable = true,
-	.msix_capable = false,
 	/* use 64-bit BARs so mark BAR[1,3,5] as reserved */
 	.bar[BAR_0] = { .type = BAR_FIXED, .fixed_size = 128,
 			.only_64bit = true, },
-	.bar[BAR_1] = { .type = BAR_RESERVED, },
 	.bar[BAR_2] = { .type = BAR_FIXED, .fixed_size = 256,
 			.only_64bit = true, },
-	.bar[BAR_3] = { .type = BAR_RESERVED, },
 	.bar[BAR_4] = { .type = BAR_FIXED, .fixed_size = 256,
 			.only_64bit = true, },
-	.bar[BAR_5] = { .type = BAR_RESERVED, },
 };
 
 static const struct pci_epc_features*
@@ -485,7 +479,7 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 	struct pci_epc *epc;
 	int err;
 
-	ep = devm_kzalloc(dev, sizeof(*ep), GFP_KERNEL);
+	ep = devm_kzalloc_obj(dev, *ep);
 	if (!ep)
 		return -ENOMEM;
 
@@ -515,9 +509,8 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 		goto err_pm_put;
 	}
 
-	ep->ob_mapped_addr = devm_kcalloc(dev, ep->num_ob_windows,
-					  sizeof(*ep->ob_mapped_addr),
-					  GFP_KERNEL);
+	ep->ob_mapped_addr = devm_kzalloc_objs(dev, *ep->ob_mapped_addr,
+					       ep->num_ob_windows);
 	if (!ep->ob_mapped_addr) {
 		err = -ENOMEM;
 		dev_err(dev, "failed to allocate memory for outbound memory pointers\n");
@@ -541,6 +534,8 @@ static int rcar_pcie_ep_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to initialize the epc memory space\n");
 		goto err_pm_put;
 	}
+
+	pci_epc_init_notify(epc);
 
 	return 0;
 

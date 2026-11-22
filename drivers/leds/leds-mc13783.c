@@ -12,6 +12,7 @@
  *      Eric Miao <eric.miao@marvell.com>
  */
 
+#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
@@ -113,32 +114,30 @@ static struct mc13xxx_leds_platform_data __init *mc13xxx_led_probe_dt(
 {
 	struct mc13xxx_leds *leds = platform_get_drvdata(pdev);
 	struct mc13xxx_leds_platform_data *pdata;
-	struct device_node *parent, *child;
+	struct device_node *child;
 	struct device *dev = &pdev->dev;
 	int i = 0, ret = -ENODATA;
 
-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(dev, *pdata);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
-	parent = of_get_child_by_name(dev_of_node(dev->parent), "leds");
+	struct device_node *parent __free(device_node) =
+		of_get_child_by_name(dev_of_node(dev->parent), "leds");
 	if (!parent)
-		goto out_node_put;
+		return ERR_PTR(-ENODATA);
 
 	ret = of_property_read_u32_array(parent, "led-control",
 					 pdata->led_control,
 					 leds->devtype->num_regs);
 	if (ret)
-		goto out_node_put;
+		return ERR_PTR(ret);
 
 	pdata->num_leds = of_get_available_child_count(parent);
 
-	pdata->led = devm_kcalloc(dev, pdata->num_leds, sizeof(*pdata->led),
-				  GFP_KERNEL);
-	if (!pdata->led) {
-		ret = -ENOMEM;
-		goto out_node_put;
-	}
+	pdata->led = devm_kzalloc_objs(dev, *pdata->led, pdata->num_leds);
+	if (!pdata->led)
+		return ERR_PTR(-ENOMEM);
 
 	for_each_available_child_of_node(parent, child) {
 		const char *str;
@@ -158,12 +157,10 @@ static struct mc13xxx_leds_platform_data __init *mc13xxx_led_probe_dt(
 	}
 
 	pdata->num_leds = i;
-	ret = i > 0 ? 0 : -ENODATA;
+	if (i <= 0)
+		return ERR_PTR(-ENODATA);
 
-out_node_put:
-	of_node_put(parent);
-
-	return ret ? ERR_PTR(ret) : pdata;
+	return pdata;
 }
 #else
 static inline struct mc13xxx_leds_platform_data __init *mc13xxx_led_probe_dt(
@@ -184,7 +181,7 @@ static int __init mc13xxx_led_probe(struct platform_device *pdev)
 	int i, id, ret = -ENODATA;
 	u32 init_led = 0;
 
-	leds = devm_kzalloc(dev, sizeof(*leds), GFP_KERNEL);
+	leds = devm_kzalloc_obj(dev, *leds);
 	if (!leds)
 		return -ENOMEM;
 
@@ -207,8 +204,7 @@ static int __init mc13xxx_led_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	leds->led = devm_kcalloc(dev, leds->num_leds, sizeof(*leds->led),
-				 GFP_KERNEL);
+	leds->led = devm_kzalloc_objs(dev, *leds->led, leds->num_leds);
 	if (!leds->led)
 		return -ENOMEM;
 
@@ -303,7 +299,7 @@ static struct platform_driver mc13xxx_led_driver = {
 	.driver	= {
 		.name	= "mc13xxx-led",
 	},
-	.remove_new	= mc13xxx_led_remove,
+	.remove		= mc13xxx_led_remove,
 	.id_table	= mc13xxx_led_id_table,
 };
 module_platform_driver_probe(mc13xxx_led_driver, mc13xxx_led_probe);

@@ -124,14 +124,14 @@ eesoxscsi_terminator_ctl(struct Scsi_Host *host, int on_off)
 	struct eesoxscsi_info *info = (struct eesoxscsi_info *)host->hostdata;
 	unsigned long flags;
 
-	spin_lock_irqsave(host->host_lock, flags);
+	spin_lock_irqsave(&host->host_lock, flags);
 	if (on_off)
 		info->control |= EESOX_TERM_ENABLE;
 	else
 		info->control &= ~EESOX_TERM_ENABLE;
 
 	writeb(info->control, info->ctl_port);
-	spin_unlock_irqrestore(host->host_lock, flags);
+	spin_unlock_irqrestore(&host->host_lock, flags);
 }
 
 /* Prototype: void eesoxscsi_intr(irq, *dev_id, *regs)
@@ -381,7 +381,7 @@ eesoxscsi_dma_stop(struct Scsi_Host *host, struct scsi_pointer *SCp)
  * Params   : host - driver host structure to return info for.
  * Returns  : pointer to a static buffer containing null terminated string.
  */
-const char *eesoxscsi_info(struct Scsi_Host *host)
+static const char *eesoxscsi_info(struct Scsi_Host *host)
 {
 	struct eesoxscsi_info *info = (struct eesoxscsi_info *)host->hostdata;
 	static char string[150];
@@ -457,14 +457,14 @@ static ssize_t eesoxscsi_store_term(struct device *dev, struct device_attribute 
 	unsigned long flags;
 
 	if (len > 1) {
-		spin_lock_irqsave(host->host_lock, flags);
+		spin_lock_irqsave(&host->host_lock, flags);
 		if (buf[0] != '0') {
 			info->control |= EESOX_TERM_ENABLE;
 		} else {
 			info->control &= ~EESOX_TERM_ENABLE;
 		}
 		writeb(info->control, info->ctl_port);
-		spin_unlock_irqrestore(host->host_lock, flags);
+		spin_unlock_irqrestore(&host->host_lock, flags);
 	}
 
 	return len;

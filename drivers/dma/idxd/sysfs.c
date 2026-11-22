@@ -1197,12 +1197,37 @@ static ssize_t wq_enqcmds_retries_store(struct device *dev, struct device_attrib
 static struct device_attribute dev_attr_wq_enqcmds_retries =
 		__ATTR(enqcmds_retries, 0644, wq_enqcmds_retries_show, wq_enqcmds_retries_store);
 
+static ssize_t op_cap_show_common(struct device *dev, char *buf, unsigned long *opcap_bmap)
+{
+	ssize_t pos;
+	int i;
+
+	pos = 0;
+	for (i = IDXD_MAX_OPCAP_BITS/64 - 1; i >= 0; i--) {
+		unsigned long val = opcap_bmap[i];
+
+		/* On systems where direct user submissions are not safe, we need to clear out
+		 * the BATCH capability from the capability mask in sysfs since we cannot support
+		 * that command on such systems. Narrow the restriction of operations with the
+		 * BATCH opcode to only DSA version 1 devices.
+		 */
+		if (i == DSA_OPCODE_BATCH/64 && !confdev_to_idxd(dev)->user_submission_safe &&
+		    confdev_to_idxd(dev)->hw.version == DEVICE_VERSION_1)
+			clear_bit(DSA_OPCODE_BATCH % 64, &val);
+
+		pos += sysfs_emit_at(buf, pos, "%*pb", 64, &val);
+		pos += sysfs_emit_at(buf, pos, "%c", i == 0 ? '\n' : ',');
+	}
+
+	return pos;
+}
+
 static ssize_t wq_op_config_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
 	struct idxd_wq *wq = confdev_to_wq(dev);
 
-	return sysfs_emit(buf, "%*pb\n", IDXD_MAX_OPCAP_BITS, wq->opcap_bmap);
+	return op_cap_show_common(dev, buf, wq->opcap_bmap);
 }
 
 static int idxd_verify_supported_opcap(struct idxd_device *idxd, unsigned long *opmask)
@@ -1455,7 +1480,7 @@ static ssize_t op_cap_show(struct device *dev,
 {
 	struct idxd_device *idxd = confdev_to_idxd(dev);
 
-	return sysfs_emit(buf, "%*pb\n", IDXD_MAX_OPCAP_BITS, idxd->opcap_bmap);
+	return op_cap_show_common(dev, buf, idxd->opcap_bmap);
 }
 static DEVICE_ATTR_RO(op_cap);
 
@@ -1688,6 +1713,18 @@ static ssize_t event_log_size_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(event_log_size);
 
+static ssize_t dsacaps_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct idxd_device *idxd = confdev_to_idxd(dev);
+
+	return sysfs_emit(buf, "%016llx,%016llx,%016llx\n",
+			  (u64)idxd->hw.dsacap2.bits,
+			  (u64)idxd->hw.dsacap1.bits,
+			  (u64)idxd->hw.dsacap0.bits);
+}
+static DEVICE_ATTR_RO(dsacaps);
+
 static bool idxd_device_attr_max_batch_size_invisible(struct attribute *attr,
 						      struct idxd_device *idxd)
 {
@@ -1725,6 +1762,14 @@ static bool idxd_device_attr_event_log_size_invisible(struct attribute *attr,
 		!idxd->hw.gen_cap.evl_support);
 }
 
+static bool idxd_device_attr_dsacaps_invisible(struct attribute *attr,
+					       struct idxd_device *idxd)
+{
+	return attr == &dev_attr_dsacaps.attr &&
+		(idxd->data->type != IDXD_TYPE_DSA ||
+		idxd->hw.version < DEVICE_VERSION_3);
+}
+
 static umode_t idxd_device_attr_visible(struct kobject *kobj,
 					struct attribute *attr, int n)
 {
@@ -1741,6 +1786,9 @@ static umode_t idxd_device_attr_visible(struct kobject *kobj,
 		return 0;
 
 	if (idxd_device_attr_event_log_size_invisible(attr, idxd))
+		return 0;
+
+	if (idxd_device_attr_dsacaps_invisible(attr, idxd))
 		return 0;
 
 	return attr->mode;
@@ -1770,6 +1818,7 @@ static struct attribute *idxd_device_attributes[] = {
 	&dev_attr_cmd_status.attr,
 	&dev_attr_iaa_cap.attr,
 	&dev_attr_event_log_size.attr,
+	&dev_attr_dsacaps.attr,
 	NULL,
 };
 
@@ -1787,6 +1836,7 @@ static void idxd_conf_device_release(struct device *dev)
 {
 	struct idxd_device *idxd = confdev_to_idxd(dev);
 
+	destroy_workqueue(idxd->wq);
 	kfree(idxd->groups);
 	bitmap_free(idxd->wq_enable_map);
 	kfree(idxd->wqs);
@@ -1955,14 +2005,4 @@ void idxd_unregister_devices(struct idxd_device *idxd)
 
 		device_unregister(group_confdev(group));
 	}
-}
-
-int idxd_register_bus_type(void)
-{
-	return bus_register(&dsa_bus_type);
-}
-
-void idxd_unregister_bus_type(void)
-{
-	bus_unregister(&dsa_bus_type);
 }

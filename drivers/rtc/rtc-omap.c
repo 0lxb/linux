@@ -408,7 +408,7 @@ static struct omap_rtc *omap_rtc_power_off_rtc;
  * generates pmic_pwr_enable control, which can be used to control an external
  * PMIC.
  */
-int omap_rtc_power_off_program(struct device *dev)
+int omap_rtc_power_off_program(void)
 {
 	struct omap_rtc *rtc = omap_rtc_power_off_rtc;
 	struct rtc_time tm;
@@ -481,10 +481,9 @@ EXPORT_SYMBOL(omap_rtc_power_off_program);
  */
 static void omap_rtc_power_off(void)
 {
-	struct rtc_device *rtc = omap_rtc_power_off_rtc->rtc;
 	u32 val;
 
-	omap_rtc_power_off_program(rtc->dev.parent);
+	omap_rtc_power_off_program();
 
 	/* Set PMIC power enable and EXT_WAKEUP in case PB power on is used */
 	omap_rtc_power_off_rtc->type->unlock(omap_rtc_power_off_rtc);
@@ -731,7 +730,7 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	const struct platform_device_id *id_entry;
 	int ret;
 
-	rtc = devm_kzalloc(&pdev->dev, sizeof(*rtc), GFP_KERNEL);
+	rtc = devm_kzalloc_obj(&pdev->dev, *rtc);
 	if (!rtc)
 		return -ENOMEM;
 
@@ -920,7 +919,7 @@ static void omap_rtc_remove(struct platform_device *pdev)
 		omap_rtc_power_off_rtc = NULL;
 	}
 
-	device_init_wakeup(&pdev->dev, 0);
+	device_init_wakeup(&pdev->dev, false);
 
 	if (!IS_ERR(rtc->clk))
 		clk_disable_unprepare(rtc->clk);
@@ -1014,7 +1013,7 @@ static void omap_rtc_shutdown(struct platform_device *pdev)
 
 static struct platform_driver omap_rtc_driver = {
 	.probe		= omap_rtc_probe,
-	.remove_new	= omap_rtc_remove,
+	.remove		= omap_rtc_remove,
 	.shutdown	= omap_rtc_shutdown,
 	.driver		= {
 		.name	= "omap_rtc",
@@ -1027,4 +1026,5 @@ static struct platform_driver omap_rtc_driver = {
 module_platform_driver(omap_rtc_driver);
 
 MODULE_AUTHOR("George G. Davis (and others)");
+MODULE_DESCRIPTION("TI OMAP1, AM33xx, DA8xx/OMAP-L13x, AM43xx and DRA7xx RTC driver");
 MODULE_LICENSE("GPL");

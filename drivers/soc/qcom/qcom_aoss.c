@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/thermal.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/soc/qcom/qcom_aoss.h>
 
 #define CREATE_TRACE_POINTS
@@ -354,11 +355,11 @@ static int qmp_cdev_set_cur_state(struct thermal_cooling_device *cdev,
 	/* Normalize state */
 	cdev_state = !!state;
 
-	if (qmp_cdev->state == state)
+	if (qmp_cdev->state == cdev_state)
 		return 0;
 
 	ret = qmp_send(qmp_cdev->qmp, "{class: volt_flr, event:zero_temp, res:%s, value:%s}",
-		       qmp_cdev->name, cdev_state ? "on" : "off");
+		       qmp_cdev->name, str_on_off(cdev_state));
 	if (!ret)
 		qmp_cdev->state = cdev_state;
 
@@ -380,7 +381,7 @@ static int qmp_cooling_device_add(struct qmp *qmp,
 	qmp_cdev->qmp = qmp;
 	qmp_cdev->state = !qmp_cdev_max_state;
 	qmp_cdev->name = cdev_name;
-	qmp_cdev->cdev = devm_thermal_of_cooling_device_register
+	qmp_cdev->cdev = devm_thermal_of_child_cooling_device_register
 				(qmp->dev, node,
 				cdev_name,
 				qmp_cdev, &qmp_cooling_device_ops);
@@ -394,28 +395,25 @@ static int qmp_cooling_device_add(struct qmp *qmp,
 
 static int qmp_cooling_devices_register(struct qmp *qmp)
 {
-	struct device_node *np, *child;
+	struct device_node *np;
 	int count = 0;
 	int ret;
 
 	np = qmp->dev->of_node;
 
-	qmp->cooling_devs = devm_kcalloc(qmp->dev, QMP_NUM_COOLING_RESOURCES,
-					 sizeof(*qmp->cooling_devs),
-					 GFP_KERNEL);
+	qmp->cooling_devs = devm_kzalloc_objs(qmp->dev, *qmp->cooling_devs,
+					      QMP_NUM_COOLING_RESOURCES);
 
 	if (!qmp->cooling_devs)
 		return -ENOMEM;
 
-	for_each_available_child_of_node(np, child) {
+	for_each_available_child_of_node_scoped(np, child) {
 		if (!of_property_present(child, "#cooling-cells"))
 			continue;
 		ret = qmp_cooling_device_add(qmp, &qmp->cooling_devs[count++],
 					     child);
-		if (ret) {
-			of_node_put(child);
+		if (ret)
 			goto unroll;
-		}
 	}
 
 	if (!count)
@@ -580,7 +578,7 @@ static int qmp_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	qmp = devm_kzalloc(&pdev->dev, sizeof(*qmp), GFP_KERNEL);
+	qmp = devm_kzalloc_obj(&pdev->dev, *qmp);
 	if (!qmp)
 		return -ENOMEM;
 
@@ -603,10 +601,8 @@ static int qmp_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	ret = devm_request_irq(&pdev->dev, irq, qmp_intr, 0,
 			       "aoss-qmp", qmp);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to request interrupt\n");
+	if (ret < 0)
 		goto err_free_mbox;
-	}
 
 	ret = qmp_open(qmp);
 	if (ret < 0)
@@ -666,7 +662,7 @@ static struct platform_driver qmp_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = qmp_probe,
-	.remove_new = qmp_remove,
+	.remove = qmp_remove,
 };
 module_platform_driver(qmp_driver);
 

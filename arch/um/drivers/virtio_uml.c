@@ -20,10 +20,12 @@
  *
  * Based on Virtio MMIO driver by Pawel Moll, copyright 2011-2014, ARM Ltd.
  */
+#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_ring.h>
@@ -33,6 +35,7 @@
 #include <irq_kern.h>
 #include <init.h>
 #include <os.h>
+#include "mconsole_kern.h"
 #include "vhost_user.h"
 
 #define MAX_SUPPORTED_QUEUE_SIZE	256
@@ -52,10 +55,11 @@ struct virtio_uml_device {
 	struct platform_device *pdev;
 	struct virtio_uml_platform_data *pdata;
 
-	spinlock_t sock_lock;
+	raw_spinlock_t sock_lock;
 	int sock, req_fd, irq;
 	u64 features;
 	u64 protocol_features;
+	u64 max_vqs;
 	u8 status;
 	u8 registered:1;
 	u8 suspended:1;
@@ -71,8 +75,6 @@ struct virtio_uml_vq_info {
 	char name[32];
 	bool suspended;
 };
-
-extern unsigned long long physmem_size, highmem;
 
 #define vu_err(vu_dev, ...)	dev_err(&(vu_dev)->pdev->dev, ##__VA_ARGS__)
 
@@ -247,7 +249,7 @@ static int vhost_user_send(struct virtio_uml_device *vu_dev,
 	if (request_ack)
 		msg->header.flags |= VHOST_USER_FLAG_NEED_REPLY;
 
-	spin_lock_irqsave(&vu_dev->sock_lock, flags);
+	raw_spin_lock_irqsave(&vu_dev->sock_lock, flags);
 	rc = full_sendmsg_fds(vu_dev->sock, msg, size, fds, num_fds);
 	if (rc < 0)
 		goto out;
@@ -267,7 +269,7 @@ static int vhost_user_send(struct virtio_uml_device *vu_dev,
 	}
 
 out:
-	spin_unlock_irqrestore(&vu_dev->sock_lock, flags);
+	raw_spin_unlock_irqrestore(&vu_dev->sock_lock, flags);
 	return rc;
 }
 
@@ -341,6 +343,17 @@ static int vhost_user_set_protocol_features(struct virtio_uml_device *vu_dev,
 {
 	return vhost_user_send_u64(vu_dev, VHOST_USER_SET_PROTOCOL_FEATURES,
 				   protocol_features);
+}
+
+static int vhost_user_get_queue_num(struct virtio_uml_device *vu_dev,
+				    u64 *queue_num)
+{
+	int rc = vhost_user_send_no_payload(vu_dev, true,
+			VHOST_USER_GET_QUEUE_NUM);
+
+	if (rc)
+		return rc;
+	return vhost_user_recv_u64(vu_dev, queue_num);
 }
 
 static void vhost_user_reply(struct virtio_uml_device *vu_dev,
@@ -516,6 +529,15 @@ static int vhost_user_init(struct virtio_uml_device *vu_dev)
 			return rc;
 	}
 
+	if (vu_dev->protocol_features &
+			BIT_ULL(VHOST_USER_PROTOCOL_F_MQ)) {
+		rc = vhost_user_get_queue_num(vu_dev, &vu_dev->max_vqs);
+		if (rc)
+			return rc;
+	} else {
+		vu_dev->max_vqs = U64_MAX;
+	}
+
 	return 0;
 }
 
@@ -547,7 +569,7 @@ static void vhost_user_get_config(struct virtio_uml_device *vu_dev,
 		goto free;
 	}
 
-	rc = vhost_user_recv_resp(vu_dev, msg, msg_size);
+	rc = vhost_user_recv_resp(vu_dev, msg, payload_size);
 	if (rc) {
 		vu_err(vu_dev,
 		       "receiving VHOST_USER_GET_CONFIG response failed: %d\n",
@@ -625,7 +647,7 @@ static int vhost_user_set_mem_table(struct virtio_uml_device *vu_dev)
 {
 	struct vhost_user_msg msg = {
 		.header.request = VHOST_USER_SET_MEM_TABLE,
-		.header.size = sizeof(msg.payload.mem_regions),
+		.header.size = offsetof(typeof(msg.payload.mem_regions), regions[1]),
 		.payload.mem_regions.num = 1,
 	};
 	unsigned long reserved = uml_reserved - uml_physmem;
@@ -673,13 +695,6 @@ static int vhost_user_set_mem_table(struct virtio_uml_device *vu_dev)
 
 	if (rc < 0)
 		return rc;
-	if (highmem) {
-		msg.payload.mem_regions.num++;
-		rc = vhost_user_init_mem_region(__pa(end_iomem), highmem,
-				&fds[1], &msg.payload.mem_regions.regions[1]);
-		if (rc < 0)
-			return rc;
-	}
 
 	return vhost_user_send(vu_dev, false, &msg, fds,
 			       msg.payload.mem_regions.num);
@@ -855,6 +870,14 @@ static void vu_reset(struct virtio_device *vdev)
 	vu_dev->status = 0;
 }
 
+static void vu_synchronize_cbs(struct virtio_device *vdev)
+{
+	struct virtio_uml_device *vu_dev = to_virtio_uml_device(vdev);
+
+	if (vu_dev->irq != UM_IRQ_ALLOC)
+		synchronize_irq(vu_dev->irq);
+}
+
 static void vu_del_vq(struct virtqueue *vq)
 {
 	struct virtio_uml_vq_info *info = vq->priv;
@@ -897,7 +920,7 @@ static int vu_setup_vq_call_fd(struct virtio_uml_device *vu_dev,
 {
 	struct virtio_uml_vq_info *info = vq->priv;
 	int call_fds[2];
-	int rc;
+	int rc, irq;
 
 	/* no call FD needed/desired in this case */
 	if (vu_dev->protocol_features &
@@ -914,19 +937,23 @@ static int vu_setup_vq_call_fd(struct virtio_uml_device *vu_dev,
 		return rc;
 
 	info->call_fd = call_fds[0];
-	rc = um_request_irq(vu_dev->irq, info->call_fd, IRQ_READ,
-			    vu_interrupt, IRQF_SHARED, info->name, vq);
-	if (rc < 0)
+	irq = um_request_irq(vu_dev->irq, info->call_fd, IRQ_READ,
+			     vu_interrupt, IRQF_SHARED, info->name, vq);
+	if (irq < 0) {
+		rc = irq;
 		goto close_both;
+	}
 
 	rc = vhost_user_set_vring_call(vu_dev, vq->index, call_fds[1]);
 	if (rc)
 		goto release_irq;
 
+	vu_dev->irq = irq;
+
 	goto out;
 
 release_irq:
-	um_free_irq(vu_dev->irq, vq);
+	um_free_irq(irq, vq);
 close_both:
 	os_close_file(call_fds[0]);
 out:
@@ -947,7 +974,7 @@ static struct virtqueue *vu_setup_vq(struct virtio_device *vdev,
 	int num = MAX_SUPPORTED_QUEUE_SIZE;
 	int rc;
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc_obj(*info);
 	if (!info) {
 		rc = -ENOMEM;
 		goto error_kzalloc;
@@ -1014,8 +1041,8 @@ error_kzalloc:
 }
 
 static int vu_find_vqs(struct virtio_device *vdev, unsigned nvqs,
-		       struct virtqueue *vqs[], vq_callback_t *callbacks[],
-		       const char * const names[], const bool *ctx,
+		       struct virtqueue *vqs[],
+		       struct virtqueue_info vqs_info[],
 		       struct irq_affinity *desc)
 {
 	struct virtio_uml_device *vu_dev = to_virtio_uml_device(vdev);
@@ -1023,7 +1050,9 @@ static int vu_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 	struct virtqueue *vq;
 
 	/* not supported for now */
-	if (WARN_ON(nvqs > 64))
+	if (WARN(nvqs > 64 || nvqs > vu_dev->max_vqs,
+		 "%d VQs requested, only up to 64 or %lld supported\n",
+		 nvqs, vu_dev->max_vqs))
 		return -EINVAL;
 
 	rc = vhost_user_set_mem_table(vu_dev);
@@ -1031,13 +1060,15 @@ static int vu_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		return rc;
 
 	for (i = 0; i < nvqs; ++i) {
-		if (!names[i]) {
+		struct virtqueue_info *vqi = &vqs_info[i];
+
+		if (!vqi->name) {
 			vqs[i] = NULL;
 			continue;
 		}
 
-		vqs[i] = vu_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
-				     ctx ? ctx[i] : false);
+		vqs[i] = vu_setup_vq(vdev, queue_idx++, vqi->callback,
+				     vqi->name, vqi->ctx);
 		if (IS_ERR(vqs[i])) {
 			rc = PTR_ERR(vqs[i]);
 			goto error_setup;
@@ -1099,6 +1130,7 @@ static const struct virtio_config_ops virtio_uml_config_ops = {
 	.reset = vu_reset,
 	.find_vqs = vu_find_vqs,
 	.del_vqs = vu_del_vqs,
+	.synchronize_cbs = vu_synchronize_cbs,
 	.get_features = vu_get_features,
 	.finalize_features = vu_finalize_features,
 	.bus_name = vu_bus_name,
@@ -1131,8 +1163,7 @@ void virtio_uml_set_no_vq_suspend(struct virtio_device *vdev,
 		return;
 
 	vu_dev->no_vq_suspend = no_vq_suspend;
-	dev_info(&vdev->dev, "%sabled VQ suspend\n",
-		 no_vq_suspend ? "dis" : "en");
+	dev_info(&vdev->dev, "%s VQ suspend\n", str_disabled_enabled(no_vq_suspend));
 }
 
 static void vu_of_conn_broken(struct work_struct *wk)
@@ -1165,7 +1196,7 @@ virtio_uml_create_pdata(struct platform_device *pdev)
 	if (!np)
 		return ERR_PTR(-EINVAL);
 
-	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 	if (!pdata)
 		return ERR_PTR(-ENOMEM);
 
@@ -1196,7 +1227,7 @@ static int virtio_uml_probe(struct platform_device *pdev)
 			return PTR_ERR(pdata);
 	}
 
-	vu_dev = kzalloc(sizeof(*vu_dev), GFP_KERNEL);
+	vu_dev = kzalloc_obj(*vu_dev);
 	if (!vu_dev)
 		return -ENOMEM;
 
@@ -1208,6 +1239,7 @@ static int virtio_uml_probe(struct platform_device *pdev)
 	vu_dev->vdev.id.vendor = VIRTIO_DEV_ANY_ID;
 	vu_dev->pdev = pdev;
 	vu_dev->req_fd = -1;
+	vu_dev->irq = UM_IRQ_ALLOC;
 
 	time_travel_propagate_time();
 
@@ -1218,7 +1250,7 @@ static int virtio_uml_probe(struct platform_device *pdev)
 		goto error_free;
 	vu_dev->sock = rc;
 
-	spin_lock_init(&vu_dev->sock_lock);
+	raw_spin_lock_init(&vu_dev->sock_lock);
 
 	rc = vhost_user_init(vu_dev);
 	if (rc)
@@ -1229,10 +1261,12 @@ static int virtio_uml_probe(struct platform_device *pdev)
 	device_set_wakeup_capable(&vu_dev->vdev.dev, true);
 
 	rc = register_virtio_device(&vu_dev->vdev);
-	if (rc)
+	if (rc) {
 		put_device(&vu_dev->vdev.dev);
+		return rc;
+	}
 	vu_dev->registered = 1;
-	return rc;
+	return 0;
 
 error_init:
 	os_close_file(vu_dev->sock);
@@ -1241,25 +1275,18 @@ error_free:
 	return rc;
 }
 
-static int virtio_uml_remove(struct platform_device *pdev)
+static void virtio_uml_remove(struct platform_device *pdev)
 {
 	struct virtio_uml_device *vu_dev = platform_get_drvdata(pdev);
 
 	unregister_virtio_device(&vu_dev->vdev);
-	return 0;
 }
 
 /* Command line device list */
 
-static void vu_cmdline_release_dev(struct device *d)
-{
-}
+static struct device *vu_cmdline_parent;
 
-static struct device vu_cmdline_parent = {
-	.init_name = "virtio-uml-cmdline",
-	.release = vu_cmdline_release_dev,
-};
-
+static DEFINE_MUTEX(vu_cmdline_lock);
 static bool vu_cmdline_parent_registered;
 static int vu_cmdline_id;
 
@@ -1287,7 +1314,7 @@ static void vu_conn_broken(struct work_struct *wk)
 	vu_unregister_cmdline_device(&pdata->pdev->dev, NULL);
 }
 
-static int vu_cmdline_set(const char *device, const struct kernel_param *kp)
+static int vu_cmdline_set_device(const char *device)
 {
 	const char *ids = strchr(device, ':');
 	unsigned int virtio_device_id;
@@ -1299,6 +1326,8 @@ static int vu_cmdline_set(const char *device, const struct kernel_param *kp)
 	if (!ids || ids == device)
 		return -EINVAL;
 
+	guard(mutex)(&vu_cmdline_lock);
+
 	processed = sscanf(ids, ":%u%n:%d%n",
 			   &virtio_device_id, &consumed,
 			   &vu_cmdline_id, &consumed);
@@ -1307,11 +1336,10 @@ static int vu_cmdline_set(const char *device, const struct kernel_param *kp)
 		return -EINVAL;
 
 	if (!vu_cmdline_parent_registered) {
-		err = device_register(&vu_cmdline_parent);
-		if (err) {
+		vu_cmdline_parent = __root_device_register("virtio-uml-cmdline", NULL);
+		if (IS_ERR(vu_cmdline_parent)) {
 			pr_err("Failed to register parent device!\n");
-			put_device(&vu_cmdline_parent);
-			return err;
+			return PTR_ERR(vu_cmdline_parent);
 		}
 		vu_cmdline_parent_registered = true;
 	}
@@ -1326,7 +1354,7 @@ static int vu_cmdline_set(const char *device, const struct kernel_param *kp)
 	pr_info("Registering device virtio-uml.%d id=%d at %s\n",
 		vu_cmdline_id, virtio_device_id, socket_path);
 
-	pdev = platform_device_register_data(&vu_cmdline_parent, "virtio-uml",
+	pdev = platform_device_register_data(vu_cmdline_parent, "virtio-uml",
 					     vu_cmdline_id++, &pdata,
 					     sizeof(pdata));
 	err = PTR_ERR_OR_ZERO(pdev);
@@ -1344,6 +1372,11 @@ free:
 	return err;
 }
 
+static int vu_cmdline_set(const char *device, const struct kernel_param *kp)
+{
+	return vu_cmdline_set_device(device);
+}
+
 static int vu_cmdline_get_device(struct device *dev, void *data)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -1358,9 +1391,11 @@ static int vu_cmdline_get_device(struct device *dev, void *data)
 
 static int vu_cmdline_get(char *buffer, const struct kernel_param *kp)
 {
+	guard(mutex)(&vu_cmdline_lock);
+
 	buffer[0] = '\0';
 	if (vu_cmdline_parent_registered)
-		device_for_each_child(&vu_cmdline_parent, buffer,
+		device_for_each_child(vu_cmdline_parent, buffer,
 				      vu_cmdline_get_device);
 	return strlen(buffer) + 1;
 }
@@ -1381,13 +1416,51 @@ __uml_help(vu_cmdline_param_ops,
 
 static void vu_unregister_cmdline_devices(void)
 {
+	guard(mutex)(&vu_cmdline_lock);
+
 	if (vu_cmdline_parent_registered) {
-		device_for_each_child(&vu_cmdline_parent, NULL,
+		device_for_each_child(vu_cmdline_parent, NULL,
 				      vu_unregister_cmdline_device);
-		device_unregister(&vu_cmdline_parent);
+		root_device_unregister(vu_cmdline_parent);
 		vu_cmdline_parent_registered = false;
 	}
 }
+
+static int vu_mc_config(char *str, char **error_out)
+{
+	if (*str != '=') {
+		*error_out = "Invalid config";
+		return -EINVAL;
+	}
+	str += 1;
+	return vu_cmdline_set_device(str);
+}
+
+static int vu_mc_id(char **str, int *start_out, int *end_out)
+{
+	return -EOPNOTSUPP;
+}
+
+static int vu_mc_remove(int n, char **error_out)
+{
+	return -EOPNOTSUPP;
+}
+
+static struct mc_device virtio_uml_mc = {
+	.list		= LIST_HEAD_INIT(virtio_uml_mc.list),
+	.name		= "virtio_uml.device",
+	.config		= vu_mc_config,
+	.get_config	= NULL,
+	.id		= vu_mc_id,
+	.remove		= vu_mc_remove,
+};
+
+static int __init virtio_uml_mc_init(void)
+{
+	mconsole_register_dev(&virtio_uml_mc);
+	return 0;
+}
+late_initcall(virtio_uml_mc_init);
 
 /* Platform driver */
 

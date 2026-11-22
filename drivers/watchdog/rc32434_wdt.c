@@ -27,6 +27,7 @@
 #include <linux/spinlock.h>		/* For spin_lock/spin_unlock/... */
 #include <linux/uaccess.h>		/* For copy_to_user/put_user/... */
 #include <linux/io.h>			/* For devm_ioremap */
+#include <linux/stringify.h>		/* For __stringify */
 
 #include <asm/mach-rc32434/integ.h>	/* For the Watchdog registers */
 
@@ -57,12 +58,12 @@ extern unsigned int idt_cpu_freq;
 static int timeout = WATCHDOG_TIMEOUT;
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "Watchdog timeout value, in seconds (default="
-		__MODULE_STRING(WATCHDOG_TIMEOUT) ")");
+		__stringify(WATCHDOG_TIMEOUT) ")");
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+	__stringify(WATCHDOG_NOWAYOUT) ")");
 
 /* apply or and nand masks to data read from addr and write back */
 #define SET_BITS(addr, or, nand) \
@@ -242,7 +243,6 @@ static long rc32434_wdt_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations rc32434_wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= rc32434_wdt_write,
 	.unlocked_ioctl	= rc32434_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -310,7 +310,7 @@ static void rc32434_wdt_shutdown(struct platform_device *pdev)
 
 static struct platform_driver rc32434_wdt_driver = {
 	.probe		= rc32434_wdt_probe,
-	.remove_new	= rc32434_wdt_remove,
+	.remove		= rc32434_wdt_remove,
 	.shutdown	= rc32434_wdt_shutdown,
 	.driver		= {
 			.name = "rc32434_wdt",

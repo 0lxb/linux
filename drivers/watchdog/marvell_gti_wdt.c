@@ -255,7 +255,7 @@ static int gti_wdt_probe(struct platform_device *pdev)
 	int irq;
 	int err;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -285,8 +285,8 @@ static int gti_wdt_probe(struct platform_device *pdev)
 	}
 
 	wdog_dev = &priv->wdev;
-	wdog_dev->info = &gti_wdt_ident,
-	wdog_dev->ops = &gti_wdt_ops,
+	wdog_dev->info = &gti_wdt_ident;
+	wdog_dev->ops = &gti_wdt_ops;
 	wdog_dev->parent = dev;
 	/*
 	 * Watchdog counter is 24 bit where lower 8 bits are zeros
@@ -321,7 +321,7 @@ static int gti_wdt_probe(struct platform_device *pdev)
 	err = devm_request_irq(dev, irq, gti_wdt_interrupt, 0,
 			       pdev->name, &priv->wdev);
 	if (err)
-		return dev_err_probe(dev, err, "Failed to register interrupt handler\n");
+		return err;
 
 	dev_info(dev, "Watchdog enabled (timeout=%d sec)\n", wdog_dev->timeout);
 	return 0;

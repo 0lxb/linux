@@ -81,6 +81,13 @@ static u32 dpu_hw_util_log_mask = DPU_DBG_MASK_NONE;
 #define QOS_CREQ_LUT_0                    0x14
 #define QOS_CREQ_LUT_1                    0x18
 
+/* CMN_QOS_LUT */
+#define SSPP_CMN_QOS_CTRL                      0x28
+#define SSPP_CMN_DANGER_LUT                    0x2c
+#define SSPP_CMN_SAFE_LUT                      0x30
+#define SSPP_CMN_CREQ_LUT_0                    0x34
+#define SSPP_CMN_CREQ_LUT_1                    0x38
+
 /* QOS_QOS_CTRL */
 #define QOS_QOS_CTRL_DANGER_SAFE_EN       BIT(0)
 #define QOS_QOS_CTRL_DANGER_VBLANK_MASK   GENMASK(5, 4)
@@ -282,7 +289,7 @@ static void _dpu_hw_setup_scaler3_de(struct dpu_hw_blk_reg_map *c,
 void dpu_hw_setup_scaler3(struct dpu_hw_blk_reg_map *c,
 		struct dpu_hw_scaler3_cfg *scaler3_cfg,
 		u32 scaler_offset, u32 scaler_version,
-		const struct dpu_format *format)
+		const struct msm_format *format)
 {
 	u32 op_mode = 0;
 	u32 phase_init, preload, src_y_rgb, src_uv, dst;
@@ -293,7 +300,7 @@ void dpu_hw_setup_scaler3(struct dpu_hw_blk_reg_map *c,
 	op_mode |= BIT(0);
 	op_mode |= (scaler3_cfg->y_rgb_filter_cfg & 0x3) << 16;
 
-	if (format && DPU_FORMAT_IS_YUV(format)) {
+	if (format && MSM_FORMAT_IS_YUV(format)) {
 		op_mode |= BIT(12);
 		op_mode |= (scaler3_cfg->uv_filter_cfg & 0x3) << 24;
 	}
@@ -367,7 +374,7 @@ void dpu_hw_setup_scaler3(struct dpu_hw_blk_reg_map *c,
 	DPU_REG_WRITE(c, QSEED3_DST_SIZE + scaler_offset, dst);
 
 end:
-	if (format && !DPU_FORMAT_IS_DX(format))
+	if (format && !MSM_FORMAT_IS_DX(format))
 		op_mode |= BIT(14);
 
 	if (format && format->alpha_enable) {
@@ -475,6 +482,17 @@ void _dpu_hw_setup_qos_lut(struct dpu_hw_blk_reg_map *c, u32 offset,
 		      cfg->danger_safe_en ? QOS_QOS_CTRL_DANGER_SAFE_EN : 0);
 }
 
+void dpu_hw_setup_qos_lut_v13(struct dpu_hw_blk_reg_map *c,
+			       const struct dpu_hw_qos_cfg *cfg)
+{
+	DPU_REG_WRITE(c, SSPP_CMN_DANGER_LUT, cfg->danger_lut);
+	DPU_REG_WRITE(c, SSPP_CMN_SAFE_LUT, cfg->safe_lut);
+	DPU_REG_WRITE(c, SSPP_CMN_CREQ_LUT_0, cfg->creq_lut);
+	DPU_REG_WRITE(c, SSPP_CMN_CREQ_LUT_1, cfg->creq_lut >> 32);
+	DPU_REG_WRITE(c, SSPP_CMN_QOS_CTRL,
+		      cfg->danger_safe_en ? QOS_QOS_CTRL_DANGER_SAFE_EN : 0);
+}
+
 /*
  * note: Aside from encoders, input_sel should be set to 0x0 by default
  */
@@ -522,16 +540,16 @@ int dpu_hw_collect_misr(struct dpu_hw_blk_reg_map *c,
 #define CDP_PRELOAD_AHEAD_64	BIT(3)
 
 void dpu_setup_cdp(struct dpu_hw_blk_reg_map *c, u32 offset,
-		   const struct dpu_format *fmt, bool enable)
+		   const struct msm_format *fmt, bool enable)
 {
 	u32 cdp_cntl = CDP_PRELOAD_AHEAD_64;
 
 	if (enable)
 		cdp_cntl |= CDP_ENABLE;
-	if (DPU_FORMAT_IS_UBWC(fmt))
+	if (MSM_FORMAT_IS_UBWC(fmt))
 		cdp_cntl |= CDP_UBWC_META_ENABLE;
-	if (DPU_FORMAT_IS_UBWC(fmt) ||
-	    DPU_FORMAT_IS_TILE(fmt))
+	if (MSM_FORMAT_IS_UBWC(fmt) ||
+	    MSM_FORMAT_IS_TILE(fmt))
 		cdp_cntl |= CDP_TILE_AMORTIZE_ENABLE;
 
 	DPU_REG_WRITE(c, offset, cdp_cntl);

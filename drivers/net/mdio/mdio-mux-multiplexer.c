@@ -67,7 +67,7 @@ static int mdio_mux_multiplexer_probe(struct platform_device *pdev)
 	struct mdio_mux_multiplexer_state *s;
 	int ret = 0;
 
-	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
+	s = devm_kzalloc_obj(&pdev->dev, *s);
 	if (!s)
 		return -ENOMEM;
 
@@ -107,7 +107,7 @@ static struct platform_driver mdio_mux_multiplexer_driver = {
 		.of_match_table	= mdio_mux_multiplexer_match,
 	},
 	.probe		= mdio_mux_multiplexer_probe,
-	.remove_new	= mdio_mux_multiplexer_remove,
+	.remove		= mdio_mux_multiplexer_remove,
 };
 
 module_platform_driver(mdio_mux_multiplexer_driver);

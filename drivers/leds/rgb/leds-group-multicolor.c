@@ -16,7 +16,6 @@
 #include <linux/led-class-multicolor.h>
 #include <linux/math.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 
@@ -55,7 +54,7 @@ static void restore_sysfs_write_access(void *data)
 {
 	struct led_classdev *led_cdev = data;
 
-	/* Restore the write acccess to the LED */
+	/* Restore the write access to the LED */
 	mutex_lock(&led_cdev->led_access);
 	led_sysfs_enable(led_cdev);
 	mutex_unlock(&led_cdev->led_access);
@@ -71,7 +70,7 @@ static int leds_gmc_probe(struct platform_device *pdev)
 	unsigned int max_brightness = 0;
 	int i, ret, count = 0, common_flags = 0;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -99,7 +98,7 @@ static int leds_gmc_probe(struct platform_device *pdev)
 		count++;
 	}
 
-	subled = devm_kcalloc(dev, count, sizeof(*subled), GFP_KERNEL);
+	subled = devm_kzalloc_objs(dev, *subled, count);
 	if (!subled)
 		return -ENOMEM;
 	priv->mc_cdev.subled_info = subled;

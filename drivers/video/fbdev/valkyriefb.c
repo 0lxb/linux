@@ -329,15 +329,17 @@ static int __init valkyriefb_init(void)
 
 		if (of_address_to_resource(dp, 0, &r)) {
 			printk(KERN_ERR "can't find address for valkyrie\n");
+			of_node_put(dp);
 			return 0;
 		}
 
 		frame_buffer_phys = r.start;
 		cmap_regs_phys = r.start + 0x304000;
+		of_node_put(dp);
 	}
 #endif /* ppc (!CONFIG_MAC) */
 
-	p = kzalloc(sizeof(*p), GFP_ATOMIC);
+	p = kzalloc_obj(*p, GFP_ATOMIC);
 	if (!p)
 		return -ENOMEM;
 
@@ -508,7 +510,7 @@ static void valkyrie_init_fix(struct fb_fix_screeninfo *fix, struct fb_info_valk
 	fix->mmio_len = sizeof(struct valkyrie_regs);
 	fix->type = FB_TYPE_PACKED_PIXELS;
 	fix->smem_start = p->frame_buffer_phys + 0x1000;
-	fix->smem_len = p->total_vram;
+	fix->smem_len = p->total_vram - 0x1000;
 
 	fix->type_aux = 0;
 	fix->ywrapstep = 0;
@@ -521,7 +523,6 @@ static void valkyrie_init_fix(struct fb_fix_screeninfo *fix, struct fb_info_valk
 static void valkyrie_par_to_fix(struct fb_par_valkyrie *par,
 	struct fb_fix_screeninfo *fix)
 {
-	fix->smem_len = valkyrie_vram_reqd(par->vmode, par->cmode);
 	fix->visual = (par->cmode == CMODE_8) ?
 		FB_VISUAL_PSEUDOCOLOR : FB_VISUAL_DIRECTCOLOR;
 	fix->line_length = par->vxres << par->cmode;

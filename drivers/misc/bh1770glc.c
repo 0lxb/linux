@@ -640,7 +640,9 @@ static ssize_t bh1770_power_state_store(struct device *dev,
 
 	mutex_lock(&chip->mutex);
 	if (value) {
-		pm_runtime_get_sync(dev);
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret < 0)
+			goto leave;
 
 		ret = bh1770_lux_rate(chip, chip->lux_rate_index);
 		if (ret < 0) {
@@ -680,15 +682,15 @@ static ssize_t bh1770_lux_result_show(struct device *dev,
 {
 	struct bh1770_chip *chip =  dev_get_drvdata(dev);
 	ssize_t ret;
-	long timeout;
+	long time_left;
 
 	if (pm_runtime_suspended(dev))
 		return -EIO; /* Chip is not enabled at all */
 
-	timeout = wait_event_interruptible_timeout(chip->wait,
-					!chip->lux_wait_result,
-					msecs_to_jiffies(BH1770_TIMEOUT));
-	if (!timeout)
+	time_left = wait_event_interruptible_timeout(chip->wait,
+						     !chip->lux_wait_result,
+						     msecs_to_jiffies(BH1770_TIMEOUT));
+	if (!time_left)
 		return -EIO;
 
 	mutex_lock(&chip->mutex);
@@ -1167,7 +1169,7 @@ static int bh1770_probe(struct i2c_client *client)
 	struct bh1770_chip *chip;
 	int err;
 
-	chip = devm_kzalloc(&client->dev, sizeof *chip, GFP_KERNEL);
+	chip = devm_kzalloc_obj(&client->dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -1361,9 +1363,9 @@ static int bh1770_runtime_resume(struct device *dev)
 #endif
 
 static const struct i2c_device_id bh1770_id[] = {
-	{"bh1770glc", 0 },
-	{"sfh7770", 0 },
-	{}
+	{ .name = "bh1770glc" },
+	{ .name = "sfh7770" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, bh1770_id);

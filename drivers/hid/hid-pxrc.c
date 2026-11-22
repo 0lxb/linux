@@ -17,7 +17,7 @@ struct pxrc_priv {
 	bool alternate;
 };
 
-static __u8 pxrc_rdesc_fixed[] = {
+static const __u8 pxrc_rdesc_fixed[] = {
 	0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
 	0x09, 0x04,        // Usage (Joystick)
 	0xA1, 0x01,        // Collection (Application)
@@ -42,8 +42,8 @@ static __u8 pxrc_rdesc_fixed[] = {
 	0xC0,              // End Collection
 };
 
-static __u8 *pxrc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
-				unsigned int *rsize)
+static const __u8 *pxrc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+				     unsigned int *rsize)
 {
 	hid_info(hdev, "fixing up PXRC report descriptor\n");
 	*rsize = sizeof(pxrc_rdesc_fixed);
@@ -54,6 +54,9 @@ static int pxrc_raw_event(struct hid_device *hdev, struct hid_report *report,
 	 u8 *data, int size)
 {
 	struct pxrc_priv *priv = hid_get_drvdata(hdev);
+
+	if (size < 8)
+		return 0;
 
 	if (priv->alternate)
 		priv->slider = data[7];
@@ -72,7 +75,7 @@ static int pxrc_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	int ret;
 	struct pxrc_priv *priv;
 
-	priv = devm_kzalloc(&hdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&hdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 	hid_set_drvdata(hdev, priv);

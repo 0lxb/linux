@@ -27,7 +27,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
-#include <linux/of_gpio.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
 #include <linux/platform_data/pxa2xx_udc.h>
 #include <linux/platform_device.h>
@@ -349,7 +348,7 @@ static int ohci_pxa_of_init(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 	if (!pdata)
 		return -ENOMEM;
 
@@ -570,7 +569,7 @@ static const struct dev_pm_ops ohci_hcd_pxa27x_pm_ops = {
 
 static struct platform_driver ohci_hcd_pxa27x_driver = {
 	.probe		= ohci_hcd_pxa27x_probe,
-	.remove_new	= ohci_hcd_pxa27x_remove,
+	.remove		= ohci_hcd_pxa27x_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
 		.name	= "pxa27x-ohci",

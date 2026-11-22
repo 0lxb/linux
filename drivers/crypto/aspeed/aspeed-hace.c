@@ -103,8 +103,7 @@ static int aspeed_hace_probe(struct platform_device *pdev)
 	struct aspeed_hace_dev *hace_dev;
 	int rc;
 
-	hace_dev = devm_kzalloc(&pdev->dev, sizeof(struct aspeed_hace_dev),
-				GFP_KERNEL);
+	hace_dev = devm_kzalloc_obj(&pdev->dev, struct aspeed_hace_dev);
 	if (!hace_dev)
 		return -ENOMEM;
 
@@ -127,14 +126,12 @@ static int aspeed_hace_probe(struct platform_device *pdev)
 	/* Get irq number and register it */
 	hace_dev->irq = platform_get_irq(pdev, 0);
 	if (hace_dev->irq < 0)
-		return -ENXIO;
+		return hace_dev->irq;
 
 	rc = devm_request_irq(&pdev->dev, hace_dev->irq, aspeed_hace_irq, 0,
 			      dev_name(&pdev->dev), hace_dev);
-	if (rc) {
-		dev_err(&pdev->dev, "Failed to request interrupt\n");
+	if (rc)
 		return rc;
-	}
 
 	/* Get clk and enable it */
 	hace_dev->clk = devm_clk_get(&pdev->dev, NULL);
@@ -266,7 +263,7 @@ MODULE_DEVICE_TABLE(of, aspeed_hace_of_matches);
 
 static struct platform_driver aspeed_hace_driver = {
 	.probe		= aspeed_hace_probe,
-	.remove_new	= aspeed_hace_remove,
+	.remove		= aspeed_hace_remove,
 	.driver         = {
 		.name   = KBUILD_MODNAME,
 		.of_match_table = aspeed_hace_of_matches,

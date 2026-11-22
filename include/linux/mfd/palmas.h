@@ -98,8 +98,8 @@ struct palmas_sleep_requestor_info {
 };
 
 struct palmas_regs_info {
-	char	*name;
-	char	*sname;
+	const char	*name;
+	const char	*sname;
 	u8	vsel_addr;
 	u8	ctrl_addr;
 	u8	tstep_addr;
@@ -251,7 +251,7 @@ enum tps65917_regulators {
 	TPS65917_NUM_REGS,
 };
 
-/* External controll signal name */
+/* External control signal name */
 enum {
 	PALMAS_EXT_CONTROL_ENABLE1      = 0x1,
 	PALMAS_EXT_CONTROL_ENABLE2      = 0x2,

@@ -113,7 +113,7 @@ static void bcm6328_led_mode(struct bcm6328_led *led, unsigned long value)
 	unsigned long val, shift;
 
 	shift = bcm6328_pin2shift(led->pin);
-	if (shift / 16)
+	if (shift >= 16)
 		mode = led->mem + BCM6328_REG_MODE_HI;
 	else
 		mode = led->mem + BCM6328_REG_MODE_LO;
@@ -335,7 +335,7 @@ static int bcm6328_led(struct device *dev, struct device_node *nc, u32 reg,
 	void __iomem *mode;
 	int rc;
 
-	led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
+	led = devm_kzalloc_obj(dev, *led);
 	if (!led)
 		return -ENOMEM;
 
@@ -357,7 +357,7 @@ static int bcm6328_led(struct device *dev, struct device_node *nc, u32 reg,
 		break;
 	case LEDS_DEFSTATE_KEEP:
 		shift = bcm6328_pin2shift(led->pin);
-		if (shift / 16)
+		if (shift >= 16)
 			mode = mem + BCM6328_REG_MODE_HI;
 		else
 			mode = mem + BCM6328_REG_MODE_LO;
@@ -392,7 +392,6 @@ static int bcm6328_leds_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev_of_node(&pdev->dev);
-	struct device_node *child;
 	void __iomem *mem;
 	spinlock_t *lock; /* memory lock */
 	unsigned long val, *blink_leds, *blink_delay;
@@ -401,17 +400,17 @@ static int bcm6328_leds_probe(struct platform_device *pdev)
 	if (IS_ERR(mem))
 		return PTR_ERR(mem);
 
-	lock = devm_kzalloc(dev, sizeof(*lock), GFP_KERNEL);
+	lock = devm_kzalloc_obj(dev, *lock);
 	if (!lock)
 		return -ENOMEM;
 
-	blink_leds = devm_kcalloc(dev, BCM6328_LED_BLINK_DELAYS,
-				  sizeof(*blink_leds), GFP_KERNEL);
+	blink_leds = devm_kzalloc_objs(dev, *blink_leds,
+				       BCM6328_LED_BLINK_DELAYS);
 	if (!blink_leds)
 		return -ENOMEM;
 
-	blink_delay = devm_kcalloc(dev, BCM6328_LED_BLINK_DELAYS,
-				   sizeof(*blink_delay), GFP_KERNEL);
+	blink_delay = devm_kzalloc_objs(dev, *blink_delay,
+					BCM6328_LED_BLINK_DELAYS);
 	if (!blink_delay)
 		return -ENOMEM;
 
@@ -435,7 +434,7 @@ static int bcm6328_leds_probe(struct platform_device *pdev)
 		val |= BCM6328_SERIAL_LED_SHIFT_DIR;
 	bcm6328_led_write(mem + BCM6328_REG_INIT, val);
 
-	for_each_available_child_of_node(np, child) {
+	for_each_available_child_of_node_scoped(np, child) {
 		int rc;
 		u32 reg;
 
@@ -454,10 +453,8 @@ static int bcm6328_leds_probe(struct platform_device *pdev)
 			rc = bcm6328_led(dev, child, reg, mem, lock,
 					 blink_leds, blink_delay);
 
-		if (rc < 0) {
-			of_node_put(child);
+		if (rc < 0)
 			return rc;
-		}
 	}
 
 	return 0;

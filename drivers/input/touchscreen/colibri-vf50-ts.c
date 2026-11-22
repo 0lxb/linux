@@ -239,14 +239,10 @@ static void vf50_ts_close(struct input_dev *dev_input)
 static int vf50_ts_get_gpiod(struct device *dev, struct gpio_desc **gpio_d,
 			     const char *con_id, enum gpiod_flags flags)
 {
-	int error;
-
 	*gpio_d = devm_gpiod_get(dev, con_id, flags);
-	if (IS_ERR(*gpio_d)) {
-		error = PTR_ERR(*gpio_d);
-		dev_err(dev, "Could not get gpio_%s %d\n", con_id, error);
-		return error;
-	}
+	if (IS_ERR(*gpio_d))
+		return dev_err_probe(dev, PTR_ERR(*gpio_d),
+				     "Could not get gpio_%s\n", con_id);
 
 	return 0;
 }
@@ -287,7 +283,7 @@ static int vf50_ts_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	touchdev = devm_kzalloc(dev, sizeof(*touchdev), GFP_KERNEL);
+	touchdev = devm_kzalloc_obj(dev, *touchdev);
 	if (!touchdev)
 		return -ENOMEM;
 
@@ -307,7 +303,6 @@ static int vf50_ts_probe(struct platform_device *pdev)
 
 	input->name = DRIVER_NAME;
 	input->id.bustype = BUS_HOST;
-	input->dev.parent = dev;
 	input->open = vf50_ts_open;
 	input->close = vf50_ts_close;
 
@@ -376,3 +371,4 @@ module_platform_driver(vf50_touch_driver);
 MODULE_AUTHOR("Sanchayan Maity");
 MODULE_DESCRIPTION("Colibri VF50 Touchscreen driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_CONSUMER");

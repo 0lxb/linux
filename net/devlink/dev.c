@@ -222,7 +222,7 @@ static void devlink_notify(struct devlink *devlink, enum devlink_command cmd)
 
 int devlink_nl_get_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	struct sk_buff *msg;
 	int err;
 
@@ -412,9 +412,9 @@ static struct net *devlink_netns_get(struct sk_buff *skb,
 	return net;
 }
 
-static void devlink_reload_netns_change(struct devlink *devlink,
-					struct net *curr_net,
-					struct net *dest_net)
+void devlink_reload_netns_change(struct devlink *devlink,
+				 struct net *curr_net,
+				 struct net *dest_net)
 {
 	/* Userspace needs to be notified about devlink objects
 	 * removed from original and entering new network namespace.
@@ -434,7 +434,7 @@ static void devlink_reload_reinit_sanity_check(struct devlink *devlink)
 	WARN_ON(!list_empty(&devlink->trap_list));
 	WARN_ON(!list_empty(&devlink->dpipe_table_list));
 	WARN_ON(!list_empty(&devlink->sb_list));
-	WARN_ON(!list_empty(&devlink->rate_list));
+	WARN_ON(devlink_rates_check(devlink, NULL, NULL));
 	WARN_ON(!list_empty(&devlink->linecard_list));
 	WARN_ON(!xa_empty(&devlink->ports));
 }
@@ -453,7 +453,8 @@ int devlink_reload(struct devlink *devlink, struct net *dest_net,
 	 * (e.g., PCI reset) and to close possible races between these
 	 * operations and probe/remove.
 	 */
-	device_lock_assert(devlink->dev);
+	if (devlink->dev)
+		device_lock_assert(devlink->dev);
 
 	memcpy(remote_reload_stats, devlink->stats.remote_reload_stats,
 	       sizeof(remote_reload_stats));
@@ -518,7 +519,7 @@ free_msg:
 
 int devlink_nl_reload_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	enum devlink_reload_action action;
 	enum devlink_reload_limit limit;
 	struct net *dest_net = NULL;
@@ -531,10 +532,8 @@ int devlink_nl_reload_doit(struct sk_buff *skb, struct genl_info *info)
 		return err;
 	}
 
-	if (info->attrs[DEVLINK_ATTR_RELOAD_ACTION])
-		action = nla_get_u8(info->attrs[DEVLINK_ATTR_RELOAD_ACTION]);
-	else
-		action = DEVLINK_RELOAD_ACTION_DRIVER_REINIT;
+	action = nla_get_u8_default(info->attrs[DEVLINK_ATTR_RELOAD_ACTION],
+				    DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
 
 	if (!devlink_reload_action_is_supported(devlink, action)) {
 		NL_SET_ERR_MSG(info->extack, "Requested reload action is not supported by the driver");
@@ -579,6 +578,7 @@ int devlink_nl_reload_doit(struct sk_buff *skb, struct genl_info *info)
 		    action != DEVLINK_RELOAD_ACTION_DRIVER_REINIT) {
 			NL_SET_ERR_MSG_MOD(info->extack,
 					   "Changing namespace is only supported for reinit action");
+			put_net(dest_net);
 			return -EOPNOTSUPP;
 		}
 	}
@@ -684,7 +684,7 @@ nla_put_failure:
 
 int devlink_nl_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	struct sk_buff *msg;
 	int err;
 
@@ -705,7 +705,7 @@ int devlink_nl_eswitch_get_doit(struct sk_buff *skb, struct genl_info *info)
 
 int devlink_nl_eswitch_set_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	const struct devlink_ops *ops = devlink->ops;
 	enum devlink_eswitch_encap_mode encap_mode;
 	u8 inline_mode;
@@ -715,10 +715,11 @@ int devlink_nl_eswitch_set_doit(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[DEVLINK_ATTR_ESWITCH_MODE]) {
 		if (!ops->eswitch_mode_set)
 			return -EOPNOTSUPP;
-		mode = nla_get_u16(info->attrs[DEVLINK_ATTR_ESWITCH_MODE]);
-		err = devlink_rate_nodes_check(devlink, mode, info->extack);
+		err = devlink_rates_check(devlink, devlink_rate_is_node,
+					  info->extack);
 		if (err)
 			return err;
+		mode = nla_get_u16(info->attrs[DEVLINK_ATTR_ESWITCH_MODE]);
 		err = ops->eswitch_mode_set(devlink, mode, info->extack);
 		if (err)
 			return err;
@@ -777,7 +778,7 @@ static int devlink_info_version_put(struct devlink_info_req *req, int attr,
 		req->version_cb(version_name, version_type,
 				req->version_cb_priv);
 
-	if (!req->msg)
+	if (!req->msg || !*version_value)
 		return 0;
 
 	nest = nla_nest_start_noflag(req->msg, attr);
@@ -855,7 +856,7 @@ int devlink_info_version_running_put_ext(struct devlink_info_req *req,
 }
 EXPORT_SYMBOL_GPL(devlink_info_version_running_put_ext);
 
-static int devlink_nl_driver_info_get(struct device_driver *drv,
+static int devlink_nl_driver_info_get(const struct device_driver *drv,
 				      struct devlink_info_req *req)
 {
 	if (!drv)
@@ -873,7 +874,6 @@ devlink_nl_info_fill(struct sk_buff *msg, struct devlink *devlink,
 		     enum devlink_command cmd, u32 portid,
 		     u32 seq, int flags, struct netlink_ext_ack *extack)
 {
-	struct device *dev = devlink_to_dev(devlink);
 	struct devlink_info_req req = {};
 	void *hdr;
 	int err;
@@ -893,7 +893,7 @@ devlink_nl_info_fill(struct sk_buff *msg, struct devlink *devlink,
 			goto err_cancel_msg;
 	}
 
-	err = devlink_nl_driver_info_get(dev->driver, &req);
+	err = devlink_nl_driver_info_get(devlink->dev_driver, &req);
 	if (err)
 		goto err_cancel_msg;
 
@@ -907,7 +907,7 @@ err_cancel_msg:
 
 int devlink_nl_info_get_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	struct sk_buff *msg;
 	int err;
 
@@ -971,14 +971,14 @@ static int devlink_nl_flash_update_fill(struct sk_buff *msg,
 	    nla_put_string(msg, DEVLINK_ATTR_FLASH_UPDATE_COMPONENT,
 			   params->component))
 		goto nla_put_failure;
-	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_DONE,
-			      params->done, DEVLINK_ATTR_PAD))
+	if (devlink_nl_put_u64(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_DONE,
+			       params->done))
 		goto nla_put_failure;
-	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TOTAL,
-			      params->total, DEVLINK_ATTR_PAD))
+	if (devlink_nl_put_u64(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TOTAL,
+			       params->total))
 		goto nla_put_failure;
-	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TIMEOUT,
-			      params->timeout, DEVLINK_ATTR_PAD))
+	if (devlink_nl_put_u64(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TIMEOUT,
+			       params->timeout))
 		goto nla_put_failure;
 
 out:
@@ -1135,7 +1135,7 @@ int devlink_nl_flash_update_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *nla_overwrite_mask, *nla_file_name;
 	struct devlink_flash_update_params params = {};
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	const char *file_name;
 	u32 supported_params;
 	int ret;
@@ -1169,7 +1169,7 @@ int devlink_nl_flash_update_doit(struct sk_buff *skb, struct genl_info *info)
 
 	nla_file_name = info->attrs[DEVLINK_ATTR_FLASH_UPDATE_FILE_NAME];
 	file_name = nla_data(nla_file_name);
-	ret = request_firmware(&params.fw, file_name, devlink->dev);
+	ret = request_firmware_direct(&params.fw, file_name, devlink->dev);
 	if (ret) {
 		NL_SET_ERR_MSG_ATTR(info->extack, nla_file_name,
 				    "failed to locate the requested firmware file");
@@ -1202,23 +1202,19 @@ static void __devlink_compat_running_version(struct devlink *devlink,
 	if (err)
 		goto free_msg;
 
-	nla_for_each_attr(nlattr, (void *)msg->data, msg->len, rem) {
+	nla_for_each_attr_type(nlattr, DEVLINK_ATTR_INFO_VERSION_RUNNING,
+			       (void *)msg->data, msg->len, rem) {
 		const struct nlattr *kv;
 		int rem_kv;
 
-		if (nla_type(nlattr) != DEVLINK_ATTR_INFO_VERSION_RUNNING)
-			continue;
-
-		nla_for_each_nested(kv, nlattr, rem_kv) {
-			if (nla_type(kv) != DEVLINK_ATTR_INFO_VERSION_VALUE)
-				continue;
-
+		nla_for_each_nested_type(kv, DEVLINK_ATTR_INFO_VERSION_VALUE,
+					 nlattr, rem_kv) {
 			strlcat(buf, nla_data(kv), len);
 			strlcat(buf, " ", len);
 		}
 	}
 free_msg:
-	nlmsg_free(msg);
+	nlmsg_consume(msg);
 }
 
 void devlink_compat_running_version(struct devlink *devlink,
@@ -1249,7 +1245,7 @@ int devlink_compat_flash_update(struct devlink *devlink, const char *file_name)
 		goto out_unlock;
 	}
 
-	ret = request_firmware(&params.fw, file_name, devlink->dev);
+	ret = request_firmware_direct(&params.fw, file_name, devlink->dev);
 	if (ret)
 		goto out_unlock;
 
@@ -1307,7 +1303,7 @@ err_cancel_msg:
 
 int devlink_nl_selftests_get_doit(struct sk_buff *skb, struct genl_info *info)
 {
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	struct sk_buff *msg;
 	int err;
 
@@ -1377,7 +1373,7 @@ static const struct nla_policy devlink_selftest_nl_policy[DEVLINK_ATTR_SELFTEST_
 int devlink_nl_selftests_run_doit(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlattr *tb[DEVLINK_ATTR_SELFTEST_ID_MAX + 1];
-	struct devlink *devlink = info->user_ptr[0];
+	struct devlink *devlink = devlink_nl_ctx(info)->devlink;
 	struct nlattr *attrs, *selftests;
 	struct sk_buff *msg;
 	void *hdr;

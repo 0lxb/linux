@@ -209,11 +209,16 @@ int media_entity_pads_init(struct media_entity *entity, u16 num_pads,
 		mutex_lock(&mdev->graph_mutex);
 
 	media_entity_for_each_pad(entity, iter) {
+		const u32 pad_flags = iter->flags & (MEDIA_PAD_FL_SINK |
+						     MEDIA_PAD_FL_SOURCE |
+						     MEDIA_PAD_FL_INTERNAL);
+
 		iter->entity = entity;
 		iter->index = i++;
 
-		if (hweight32(iter->flags & (MEDIA_PAD_FL_SINK |
-					     MEDIA_PAD_FL_SOURCE)) != 1) {
+		if (pad_flags != MEDIA_PAD_FL_SINK &&
+		    pad_flags != (MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_INTERNAL) &&
+		    pad_flags != MEDIA_PAD_FL_SOURCE) {
 			ret = -EINVAL;
 			break;
 		}
@@ -587,7 +592,7 @@ static int media_pipeline_add_pad(struct media_pipeline *pipe,
 		}
 	}
 
-	ppad = kzalloc(sizeof(*ppad), GFP_KERNEL);
+	ppad = kzalloc_obj(*ppad);
 	if (!ppad)
 		return -ENOMEM;
 
@@ -618,6 +623,12 @@ static int media_pipeline_explore_next_link(struct media_pipeline *pipe,
 	origin = entry->pad;
 	link = list_entry(entry->links, typeof(*link), list);
 	last_link = media_pipeline_walk_pop(walk);
+
+	if ((link->flags & MEDIA_LNK_FL_LINK_TYPE) != MEDIA_LNK_FL_DATA_LINK) {
+		dev_dbg(walk->mdev->dev,
+			"media pipeline: skipping link (not data-link)\n");
+		return 0;
+	}
 
 	dev_dbg(walk->mdev->dev,
 		"media pipeline: exploring link '%s':%u -> '%s':%u\n",
@@ -676,8 +687,8 @@ done:
 		return 0;
 
 	dev_dbg(walk->mdev->dev,
-		"media pipeline: adding unconnected pads of '%s'\n",
-		local->entity->name);
+		"media pipeline: adding unconnected pads of '%s' reachable from pad %u\n",
+		origin->entity->name, origin->index);
 
 	media_entity_for_each_pad(origin->entity, local) {
 		/*
@@ -685,7 +696,7 @@ done:
 		 * (already discovered through iterating over links) and pads
 		 * not internally connected.
 		 */
-		if (origin == local || !local->num_links ||
+		if (origin == local || local->num_links ||
 		    !media_entity_has_pad_interdep(origin->entity, origin->index,
 						   local->index))
 			continue;
@@ -762,10 +773,10 @@ done:
 	return ret;
 }
 
-__must_check int __media_pipeline_start(struct media_pad *pad,
+__must_check int __media_pipeline_start(struct media_pad *origin,
 					struct media_pipeline *pipe)
 {
-	struct media_device *mdev = pad->graph_obj.mdev;
+	struct media_device *mdev = origin->graph_obj.mdev;
 	struct media_pipeline_pad *err_ppad;
 	struct media_pipeline_pad *ppad;
 	int ret;
@@ -776,7 +787,7 @@ __must_check int __media_pipeline_start(struct media_pad *pad,
 	 * If the pad is already part of a pipeline, that pipeline must be the
 	 * same as the pipe given to media_pipeline_start().
 	 */
-	if (WARN_ON(pad->pipe && pad->pipe != pipe))
+	if (WARN_ON(origin->pipe && origin->pipe != pipe))
 		return -EINVAL;
 
 	/*
@@ -793,7 +804,7 @@ __must_check int __media_pipeline_start(struct media_pad *pad,
 	 * with media_pipeline_pad instances for each pad found during graph
 	 * walk.
 	 */
-	ret = media_pipeline_populate(pipe, pad);
+	ret = media_pipeline_populate(pipe, origin);
 	if (ret)
 		return ret;
 
@@ -908,14 +919,14 @@ error:
 }
 EXPORT_SYMBOL_GPL(__media_pipeline_start);
 
-__must_check int media_pipeline_start(struct media_pad *pad,
+__must_check int media_pipeline_start(struct media_pad *origin,
 				      struct media_pipeline *pipe)
 {
-	struct media_device *mdev = pad->graph_obj.mdev;
+	struct media_device *mdev = origin->graph_obj.mdev;
 	int ret;
 
 	mutex_lock(&mdev->graph_mutex);
-	ret = __media_pipeline_start(pad, pipe);
+	ret = __media_pipeline_start(origin, pipe);
 	mutex_unlock(&mdev->graph_mutex);
 	return ret;
 }
@@ -971,7 +982,7 @@ __must_check int media_pipeline_alloc_start(struct media_pad *pad)
 	 */
 	pipe = media_pad_pipeline(pad);
 	if (!pipe) {
-		new_pipe = kzalloc(sizeof(*new_pipe), GFP_KERNEL);
+		new_pipe = kzalloc_obj(*new_pipe);
 		if (!new_pipe) {
 			ret = -ENOMEM;
 			goto out;
@@ -1055,7 +1066,7 @@ static struct media_link *media_add_link(struct list_head *head)
 {
 	struct media_link *link;
 
-	link = kzalloc(sizeof(*link), GFP_KERNEL);
+	link = kzalloc_obj(*link);
 	if (link == NULL)
 		return NULL;
 
@@ -1112,7 +1123,8 @@ int media_get_pad_index(struct media_entity *entity, u32 pad_type,
 
 	for (i = 0; i < entity->num_pads; i++) {
 		if ((entity->pads[i].flags &
-		     (MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_SOURCE)) != pad_type)
+		     (MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_SOURCE |
+		      MEDIA_PAD_FL_INTERNAL)) != pad_type)
 			continue;
 
 		if (entity->pads[i].sig_type == sig_type)
@@ -1141,6 +1153,9 @@ media_create_pad_link(struct media_entity *source, u16 source_pad,
 	if (WARN_ON(!(source->pads[source_pad].flags & MEDIA_PAD_FL_SOURCE)))
 		return -EINVAL;
 	if (WARN_ON(!(sink->pads[sink_pad].flags & MEDIA_PAD_FL_SINK)))
+		return -EINVAL;
+	if (WARN_ON(source->pads[source_pad].flags & MEDIA_PAD_FL_INTERNAL) ||
+	    WARN_ON(sink->pads[sink_pad].flags & MEDIA_PAD_FL_INTERNAL))
 		return -EINVAL;
 
 	link = media_add_link(&source->links);
@@ -1541,7 +1556,7 @@ struct media_intf_devnode *media_devnode_create(struct media_device *mdev,
 {
 	struct media_intf_devnode *devnode;
 
-	devnode = kzalloc(sizeof(*devnode), GFP_KERNEL);
+	devnode = kzalloc_obj(*devnode);
 	if (!devnode)
 		return NULL;
 

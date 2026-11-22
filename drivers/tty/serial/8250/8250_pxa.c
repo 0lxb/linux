@@ -11,6 +11,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -26,7 +27,7 @@
 #include "8250.h"
 
 struct pxa8250_data {
-	int			line;
+	struct uart_8250_port	*uport;
 	struct clk		*clk;
 };
 
@@ -34,7 +35,7 @@ static int __maybe_unused serial_pxa_suspend(struct device *dev)
 {
 	struct pxa8250_data *data = dev_get_drvdata(dev);
 
-	serial8250_suspend_port(data->line);
+	serial8250_suspend_port(data->uport);
 
 	return 0;
 }
@@ -43,7 +44,7 @@ static int __maybe_unused serial_pxa_resume(struct device *dev)
 {
 	struct pxa8250_data *data = dev_get_drvdata(dev);
 
-	serial8250_resume_port(data->line);
+	serial8250_resume_port(data->uport);
 
 	return 0;
 }
@@ -92,17 +93,13 @@ static int serial_pxa_probe(struct platform_device *pdev)
 	struct uart_8250_port uart = {};
 	struct pxa8250_data *data;
 	struct resource *mmres;
-	int irq, ret;
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	int ret;
 
 	mmres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!mmres)
 		return -ENODEV;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&pdev->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -114,28 +111,29 @@ static int serial_pxa_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = of_alias_get_id(pdev->dev.of_node, "serial");
-	if (ret >= 0)
-		uart.port.line = ret;
-
 	uart.port.type = PORT_XSCALE;
-	uart.port.iotype = UPIO_MEM32;
 	uart.port.mapbase = mmres->start;
-	uart.port.regshift = 2;
-	uart.port.irq = irq;
-	uart.port.fifosize = 64;
 	uart.port.flags = UPF_IOREMAP | UPF_SKIP_TEST | UPF_FIXED_TYPE;
 	uart.port.dev = &pdev->dev;
 	uart.port.uartclk = clk_get_rate(data->clk);
 	uart.port.pm = serial_pxa_pm;
 	uart.port.private_data = data;
+
+	ret = uart_read_port_properties(&uart.port);
+	if (ret)
+		return ret;
+
+	uart.port.iotype = UPIO_MEM32;
+	uart.port.regshift = 2;
+	uart.port.fifosize = 64;
+	uart.tx_loadsz = 32;
 	uart.dl_write = serial_pxa_dl_write;
 
-	ret = serial8250_register_8250_port(&uart);
-	if (ret < 0)
+	data->uport = serial8250_register_8250_port(&uart);
+	if (IS_ERR(data->uport)) {
+		ret = PTR_ERR(data->uport);
 		goto err_clk;
-
-	data->line = ret;
+	}
 
 	platform_set_drvdata(pdev, data);
 
@@ -150,14 +148,14 @@ static void serial_pxa_remove(struct platform_device *pdev)
 {
 	struct pxa8250_data *data = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(data->line);
+	serial8250_unregister_port(data->uport);
 
 	clk_unprepare(data->clk);
 }
 
 static struct platform_driver serial_pxa_driver = {
 	.probe          = serial_pxa_probe,
-	.remove_new     = serial_pxa_remove,
+	.remove         = serial_pxa_remove,
 
 	.driver		= {
 		.name	= "pxa2xx-uart",
@@ -168,22 +166,7 @@ static struct platform_driver serial_pxa_driver = {
 
 module_platform_driver(serial_pxa_driver);
 
-#ifdef CONFIG_SERIAL_8250_CONSOLE
-static int __init early_serial_pxa_setup(struct earlycon_device *device,
-				  const char *options)
-{
-	struct uart_port *port = &device->port;
-
-	if (!(device->port.membase || device->port.iobase))
-		return -ENODEV;
-
-	port->regshift = 2;
-	return early_serial8250_setup(device, NULL);
-}
-OF_EARLYCON_DECLARE(early_pxa, "mrvl,pxa-uart", early_serial_pxa_setup);
-OF_EARLYCON_DECLARE(mmp, "mrvl,mmp-uart", early_serial_pxa_setup);
-#endif
-
 MODULE_AUTHOR("Sergei Ianovich");
+MODULE_DESCRIPTION("driver for PXA on-board UARTS");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:pxa2xx-uart");

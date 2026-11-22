@@ -7,6 +7,7 @@
 // Author: David Rhodes <david.rhodes@cirrus.com>
 
 #include <linux/acpi.h>
+#include <acpi/acpi_bus.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -483,7 +484,6 @@ static irqreturn_t cs35l41_irq(int irq, void *data)
 	}
 
 done:
-	pm_runtime_mark_last_busy(cs35l41->dev);
 	pm_runtime_put_autosuspend(cs35l41->dev);
 
 	return ret;
@@ -673,7 +673,8 @@ static const struct snd_soc_dapm_route cs35l41_audio_map[] = {
 };
 
 static int cs35l41_set_channel_map(struct snd_soc_dai *dai, unsigned int tx_n,
-				   unsigned int *tx_slot, unsigned int rx_n, unsigned int *rx_slot)
+				   const unsigned int *tx_slot,
+				   unsigned int rx_n, const unsigned int *rx_slot)
 {
 	struct cs35l41_private *cs35l41 = snd_soc_component_get_drvdata(dai->component);
 
@@ -772,10 +773,9 @@ static int cs35l41_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	asp_wl = params_width(params);
 
-	if (i < ARRAY_SIZE(cs35l41_fs_rates))
-		regmap_update_bits(cs35l41->regmap, CS35L41_GLOBAL_CLK_CTRL,
-				   CS35L41_GLOBAL_FS_MASK,
-				   cs35l41_fs_rates[i].fs_cfg << CS35L41_GLOBAL_FS_SHIFT);
+	regmap_update_bits(cs35l41->regmap, CS35L41_GLOBAL_CLK_CTRL,
+			   CS35L41_GLOBAL_FS_MASK,
+			   cs35l41_fs_rates[i].fs_cfg << CS35L41_GLOBAL_FS_SHIFT);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_FORMAT,
@@ -806,26 +806,6 @@ static int cs35l41_get_clk_config(int freq)
 	}
 
 	return -EINVAL;
-}
-
-static const unsigned int cs35l41_src_rates[] = {
-	8000, 12000, 11025, 16000, 22050, 24000, 32000,
-	44100, 48000, 88200, 96000, 176400, 192000
-};
-
-static const struct snd_pcm_hw_constraint_list cs35l41_constraints = {
-	.count = ARRAY_SIZE(cs35l41_src_rates),
-	.list = cs35l41_src_rates,
-};
-
-static int cs35l41_pcm_startup(struct snd_pcm_substream *substream,
-			       struct snd_soc_dai *dai)
-{
-	if (substream->runtime)
-		return snd_pcm_hw_constraint_list(substream->runtime, 0,
-						  SNDRV_PCM_HW_PARAM_RATE,
-						  &cs35l41_constraints);
-	return 0;
 }
 
 static int cs35l41_component_set_sysclk(struct snd_soc_component *component,
@@ -948,7 +928,7 @@ static const struct snd_soc_dapm_widget cs35l41_ext_bst_widget[] = {
 static int cs35l41_component_probe(struct snd_soc_component *component)
 {
 	struct cs35l41_private *cs35l41 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret;
 
 	if (cs35l41->hw_cfg.bst_type == CS35L41_EXT_BOOST) {
@@ -973,13 +953,31 @@ static void cs35l41_component_remove(struct snd_soc_component *component)
 	wm_adsp2_component_remove(&cs35l41->dsp, component);
 }
 
+static const u64 cs35l41_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
+	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_IF;
+
 static const struct snd_soc_dai_ops cs35l41_ops = {
-	.startup = cs35l41_pcm_startup,
 	.set_fmt = cs35l41_set_dai_fmt,
 	.hw_params = cs35l41_pcm_hw_params,
 	.set_sysclk = cs35l41_dai_set_sysclk,
 	.set_channel_map = cs35l41_set_channel_map,
+	.auto_selectable_formats = &cs35l41_selectable_formats,
+	.num_auto_selectable_formats = 1,
 };
+
+#define CS35L41_RATES (		    \
+	SNDRV_PCM_RATE_8000_48000 | \
+	SNDRV_PCM_RATE_12000 |	    \
+	SNDRV_PCM_RATE_24000 |	    \
+	SNDRV_PCM_RATE_88200 |	    \
+	SNDRV_PCM_RATE_96000 |	    \
+	SNDRV_PCM_RATE_176400 |	    \
+	SNDRV_PCM_RATE_192000)
 
 static struct snd_soc_dai_driver cs35l41_dai[] = {
 	{
@@ -989,14 +987,14 @@ static struct snd_soc_dai_driver cs35l41_dai[] = {
 			.stream_name = "AMP Playback",
 			.channels_min = 1,
 			.channels_max = 2,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS35L41_RATES,
 			.formats = CS35L41_RX_FORMATS,
 		},
 		.capture = {
 			.stream_name = "AMP Capture",
 			.channels_min = 1,
 			.channels_max = 4,
-			.rates = SNDRV_PCM_RATE_KNOT,
+			.rates = CS35L41_RATES,
 			.formats = CS35L41_TX_FORMATS,
 		},
 		.ops = &cs35l41_ops,
@@ -1094,6 +1092,7 @@ static int cs35l41_handle_pdata(struct device *dev, struct cs35l41_hw_cfg *hw_cf
 static int cs35l41_dsp_init(struct cs35l41_private *cs35l41)
 {
 	struct wm_adsp *dsp;
+	uint32_t dsp1rx5_src;
 	int ret;
 
 	dsp = &cs35l41->dsp;
@@ -1113,16 +1112,29 @@ static int cs35l41_dsp_init(struct cs35l41_private *cs35l41)
 		return ret;
 	}
 
-	ret = regmap_write(cs35l41->regmap, CS35L41_DSP1_RX5_SRC,
-			   CS35L41_INPUT_SRC_VPMON);
-	if (ret < 0) {
-		dev_err(cs35l41->dev, "Write INPUT_SRC_VPMON failed: %d\n", ret);
+	switch (cs35l41->hw_cfg.bst_type) {
+	case CS35L41_INT_BOOST:
+	case CS35L41_SHD_BOOST_ACTV:
+		dsp1rx5_src = CS35L41_INPUT_SRC_VPMON;
+		break;
+	case CS35L41_EXT_BOOST:
+	case CS35L41_SHD_BOOST_PASS:
+		dsp1rx5_src = CS35L41_INPUT_SRC_VBSTMON;
+		break;
+	default:
+		dev_err(cs35l41->dev, "wm_halo_init failed - Invalid Boost Type: %d\n",
+			cs35l41->hw_cfg.bst_type);
 		goto err_dsp;
 	}
-	ret = regmap_write(cs35l41->regmap, CS35L41_DSP1_RX6_SRC,
-			   CS35L41_INPUT_SRC_CLASSH);
+
+	ret = regmap_write(cs35l41->regmap, CS35L41_DSP1_RX5_SRC, dsp1rx5_src);
 	if (ret < 0) {
-		dev_err(cs35l41->dev, "Write INPUT_SRC_CLASSH failed: %d\n", ret);
+		dev_err(cs35l41->dev, "Write DSP1RX5_SRC: %d failed: %d\n", dsp1rx5_src, ret);
+		goto err_dsp;
+	}
+	ret = regmap_write(cs35l41->regmap, CS35L41_DSP1_RX6_SRC, CS35L41_INPUT_SRC_VBSTMON);
+	if (ret < 0) {
+		dev_err(cs35l41->dev, "Write CS35L41_INPUT_SRC_VBSTMON failed: %d\n", ret);
 		goto err_dsp;
 	}
 	ret = regmap_write(cs35l41->regmap, CS35L41_DSP1_RX7_SRC,
@@ -1146,33 +1158,60 @@ err_dsp:
 	return ret;
 }
 
-static int cs35l41_acpi_get_name(struct cs35l41_private *cs35l41)
+static int cs35l41_get_system_name(struct cs35l41_private *cs35l41)
 {
-	acpi_handle handle = ACPI_HANDLE(cs35l41->dev);
-	const char *sub;
+	struct acpi_device *adev = ACPI_COMPANION(cs35l41->dev);
+	const char *sub = NULL;
+	const char *tmp;
+	int ret = 0;
 
-	/* If there is no ACPI_HANDLE, there is no ACPI for this system, return 0 */
-	if (!handle)
-		return 0;
+	/* If there is no acpi_device, there is no ACPI for this system, skip checking ACPI */
+	if (adev) {
+		acpi_handle handle = acpi_device_handle(adev);
 
-	sub = acpi_get_subsystem_id(handle);
-	if (IS_ERR(sub)) {
-		/* If bad ACPI, return 0 and fallback to legacy firmware path, otherwise fail */
-		if (PTR_ERR(sub) == -ENODATA)
-			return 0;
-		else
-			return PTR_ERR(sub);
+		sub = acpi_get_subsystem_id(handle);
+		ret = PTR_ERR_OR_ZERO(sub);
+		if (ret) {
+			sub = NULL;
+			/* If no _SUB, fallback to _HID, otherwise fail */
+			if (ret == -ENODATA) {
+				tmp = acpi_device_hid(adev);
+				/* If dummy hid, return 0 and fallback to legacy firmware path */
+				if (!strcmp(tmp, "device")) {
+					ret = 0;
+					goto err;
+				}
+				sub = kstrdup(tmp, GFP_KERNEL);
+				if (!sub) {
+					ret = -ENOMEM;
+					goto err;
+				}
+			}
+		}
+	} else {
+		if (!device_property_read_string(cs35l41->dev, "cirrus,subsystem-id", &tmp)) {
+			sub = kstrdup(tmp, GFP_KERNEL);
+			if (!sub) {
+				ret = -ENOMEM;
+				goto err;
+			}
+		}
 	}
 
-	cs35l41->dsp.system_name = sub;
-	dev_dbg(cs35l41->dev, "Subsystem ID: %s\n", cs35l41->dsp.system_name);
+	if (sub) {
+		cs35l41->dsp.system_name = sub;
+		dev_info(cs35l41->dev, "Subsystem ID: %s\n", cs35l41->dsp.system_name);
+		return 0;
+	}
 
-	return 0;
+err:
+	dev_warn(cs35l41->dev, "Subsystem ID not found\n");
+	return ret;
 }
 
 int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *hw_cfg)
 {
-	u32 regid, reg_revid, i, mtl_revid, int_status, chipid_match;
+	u32 regid, reg_revid, i, mtl_revid, chipid_match;
 	int irq_pol = 0;
 	int ret;
 
@@ -1221,21 +1260,9 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 
 	usleep_range(2000, 2100);
 
-	ret = regmap_read_poll_timeout(cs35l41->regmap, CS35L41_IRQ1_STATUS4,
-				       int_status, int_status & CS35L41_OTP_BOOT_DONE,
-				       1000, 100000);
-	if (ret) {
-		dev_err_probe(cs35l41->dev, ret,
-			      "Failed waiting for OTP_BOOT_DONE\n");
+	ret = cs35l41_reset_and_boot(cs35l41->dev, cs35l41->regmap);
+	if (ret)
 		goto err;
-	}
-
-	regmap_read(cs35l41->regmap, CS35L41_IRQ1_STATUS3, &int_status);
-	if (int_status & CS35L41_OTP_BOOT_ERR) {
-		dev_err(cs35l41->dev, "OTP Boot error\n");
-		ret = -EINVAL;
-		goto err;
-	}
 
 	ret = regmap_read(cs35l41->regmap, CS35L41_DEVID, &regid);
 	if (ret < 0) {
@@ -1300,7 +1327,7 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 		goto err;
 	}
 
-	ret = cs35l41_acpi_get_name(cs35l41);
+	ret = cs35l41_get_system_name(cs35l41);
 	if (ret < 0)
 		goto err;
 
@@ -1310,7 +1337,6 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 
 	pm_runtime_set_autosuspend_delay(cs35l41->dev, 3000);
 	pm_runtime_use_autosuspend(cs35l41->dev);
-	pm_runtime_mark_last_busy(cs35l41->dev);
 	pm_runtime_set_active(cs35l41->dev);
 	pm_runtime_get_noresume(cs35l41->dev);
 	pm_runtime_enable(cs35l41->dev);
@@ -1376,6 +1402,7 @@ static int cs35l41_runtime_suspend(struct device *dev)
 	if (!cs35l41->dsp.preloaded || !cs35l41->dsp.cs_dsp.running)
 		return 0;
 
+	wm_adsp_hibernate(&cs35l41->dsp, true);
 	cs35l41_enter_hibernate(dev, cs35l41->regmap, cs35l41->hw_cfg.bst_type);
 
 	regcache_cache_only(cs35l41->regmap, true);
@@ -1404,10 +1431,14 @@ static int cs35l41_runtime_resume(struct device *dev)
 	cs35l41_test_key_unlock(cs35l41->dev, cs35l41->regmap);
 	ret = regcache_sync(cs35l41->regmap);
 	cs35l41_test_key_lock(cs35l41->dev, cs35l41->regmap);
+
+	wm_adsp_hibernate(&cs35l41->dsp, false);
+
 	if (ret) {
 		dev_err(cs35l41->dev, "Failed to restore register cache: %d\n", ret);
 		return ret;
 	}
+
 	cs35l41_init_boost(cs35l41->dev, cs35l41->regmap, &cs35l41->hw_cfg);
 
 	return 0;

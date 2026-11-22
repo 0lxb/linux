@@ -22,7 +22,7 @@ cpio-data :=
 # If CONFIG_INITRAMFS_SOURCE is empty, generate a small initramfs with the
 # default contents.
 ifeq ($(ramfs-input),)
-ramfs-input := $(srctree)/$(src)/default_cpio_list
+ramfs-input := $(src)/default_cpio_list
 endif
 
 ifeq ($(words $(ramfs-input)),1)
@@ -48,8 +48,6 @@ ifeq ($(cpio-data),)
 
 cpio-data := $(obj)/initramfs_data.cpio
 
-hostprogs := gen_init_cpio
-
 # .initramfs_data.cpio.d is used to identify all files included
 # in initramfs and to detect if any files are added/removed.
 # Removed files are identified by directory timestamp being updated
@@ -62,8 +60,8 @@ $(deps_initramfs): ;
 quiet_cmd_initfs = GEN     $@
       cmd_initfs = \
 	$(CONFIG_SHELL) $< -o $@ -l $(obj)/.initramfs_data.cpio.d \
-	$(if $(CONFIG_INITRAMFS_ROOT_UID), -u $(CONFIG_INITRAMFS_ROOT_UID)) \
-	$(if $(CONFIG_INITRAMFS_ROOT_GID), -g $(CONFIG_INITRAMFS_ROOT_GID)) \
+	$(addprefix -u , $(CONFIG_INITRAMFS_ROOT_UID)) \
+	$(addprefix -g , $(CONFIG_INITRAMFS_ROOT_GID)) \
 	$(if $(KBUILD_BUILD_TIMESTAMP), -d "$(KBUILD_BUILD_TIMESTAMP)") \
 	$(ramfs-input)
 
@@ -72,13 +70,13 @@ quiet_cmd_initfs = GEN     $@
 # 2) There are changes in which files are included (added or deleted)
 # 3) If gen_init_cpio are newer than initramfs_data.cpio
 # 4) Arguments to gen_initramfs.sh changes
-$(obj)/initramfs_data.cpio: $(src)/gen_initramfs.sh $(obj)/gen_init_cpio $(deps_initramfs) FORCE
+$(obj)/initramfs_data.cpio: $(srctree)/scripts/gen_initramfs.sh scripts/gen_init_cpio $(deps_initramfs) FORCE
 	$(call if_changed,initfs)
 
 endif
 
 $(obj)/initramfs_inc_data: $(cpio-data) FORCE
-	$(call if_changed,$(compress-y))
+	+$(call if_changed,$(compress-y))
 
 targets += initramfs_data.cpio initramfs_inc_data
 

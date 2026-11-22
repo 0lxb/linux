@@ -210,9 +210,7 @@ static int au1xpsc_ac97_hw_params(struct snd_pcm_substream *substream,
 {
 	struct au1xpsc_audio_data *pscdata = snd_soc_dai_get_drvdata(dai);
 	unsigned long r, ro, stat;
-	int chans, t, stype = substream->stream;
-
-	chans = params_channels(params);
+	int t, stype = substream->stream;
 
 	r = ro = __raw_readl(AC97_CFG(pscdata));
 	stat = __raw_readl(AC97_STAT(pscdata));
@@ -367,8 +365,7 @@ static int au1xpsc_ac97_drvprobe(struct platform_device *pdev)
 	unsigned long sel;
 	struct au1xpsc_audio_data *wd;
 
-	wd = devm_kzalloc(&pdev->dev, sizeof(struct au1xpsc_audio_data),
-			  GFP_KERNEL);
+	wd = devm_kzalloc_obj(&pdev->dev, struct au1xpsc_audio_data);
 	if (!wd)
 		return -ENOMEM;
 
@@ -436,7 +433,6 @@ static void au1xpsc_ac97_drvremove(struct platform_device *pdev)
 	au1xpsc_ac97_workdata = NULL;	/* MDEV */
 }
 
-#ifdef CONFIG_PM
 static int au1xpsc_ac97_drvsuspend(struct device *dev)
 {
 	struct au1xpsc_audio_data *wd = dev_get_drvdata(dev);
@@ -467,26 +463,16 @@ static int au1xpsc_ac97_drvresume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops au1xpscac97_pmops = {
-	.suspend	= au1xpsc_ac97_drvsuspend,
-	.resume		= au1xpsc_ac97_drvresume,
-};
-
-#define AU1XPSCAC97_PMOPS &au1xpscac97_pmops
-
-#else
-
-#define AU1XPSCAC97_PMOPS NULL
-
-#endif
+static DEFINE_SIMPLE_DEV_PM_OPS(au1xpscac97_pmops, au1xpsc_ac97_drvsuspend,
+				au1xpsc_ac97_drvresume);
 
 static struct platform_driver au1xpsc_ac97_driver = {
 	.driver	= {
 		.name	= "au1xpsc_ac97",
-		.pm	= AU1XPSCAC97_PMOPS,
+		.pm	= pm_ptr(&au1xpscac97_pmops),
 	},
 	.probe		= au1xpsc_ac97_drvprobe,
-	.remove_new	= au1xpsc_ac97_drvremove,
+	.remove		= au1xpsc_ac97_drvremove,
 };
 
 module_platform_driver(au1xpsc_ac97_driver);

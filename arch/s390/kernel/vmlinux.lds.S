@@ -39,7 +39,7 @@ PHDRS {
 
 SECTIONS
 {
-	. = 0x100000;
+	. = TEXT_OFFSET;
 	.text : {
 		_stext = .;		/* Start of text section */
 		_text = .;		/* Text and read-only data */
@@ -51,22 +51,13 @@ SECTIONS
 		IRQENTRY_TEXT
 		SOFTIRQENTRY_TEXT
 		FTRACE_HOTPATCH_TRAMPOLINES_TEXT
-		*(.text.*_indirect_*)
-		*(.fixup)
+		*(.text..*_indirect_*)
 		*(.gnu.warning)
 		. = ALIGN(PAGE_SIZE);
 		_etext = .;		/* End of text section */
 	} :text = 0x0700
 
 	RO_DATA(PAGE_SIZE)
-	.data.rel.ro : {
-		*(.data.rel.ro .data.rel.ro.*)
-	}
-	.got : {
-		__got_start = .;
-		*(.got)
-		__got_end = .;
-	}
 
 	. = ALIGN(PAGE_SIZE);
 	_sdata = .;		/* Start of data section */
@@ -79,6 +70,22 @@ SECTIONS
 	} :data
 	. = ALIGN(PAGE_SIZE);
 	__end_ro_after_init = .;
+
+	. = ALIGN(8);
+	.skey_region_table : {
+		__skey_region_start = .;
+		KEEP(*(.skey_region))
+		__skey_region_end = .;
+	}
+
+	.data.rel.ro : {
+		*(.data.rel.ro .data.rel.ro.*)
+	}
+	.got : {
+		__got_start = .;
+		*(.got)
+		__got_end = .;
+	}
 
 	RW_DATA(0x100, PAGE_SIZE, THREAD_SIZE)
 	.data.rel : {
@@ -143,6 +150,22 @@ SECTIONS
 		*(.altinstr_replacement)
 	}
 
+#ifdef CONFIG_STACKPROTECTOR
+	. = ALIGN(8);
+	.stack_prot_table : {
+		__stack_prot_start = .;
+		KEEP(*(__stack_protector_loc))
+		__stack_prot_end = .;
+	}
+#endif
+
+	. = ALIGN(8);
+	.s390dbf_info : {
+		__s390dbf_info = .;
+		*(.s390dbf_info)
+		__s390dbf_info_end = .;
+	}
+
 	/*
 	 * Table with the patch locations to undo expolines
 	*/
@@ -183,39 +206,16 @@ SECTIONS
 	.amode31.data : {
 		*(.amode31.data)
 	}
-	. = ALIGN(PAGE_SIZE);
+	. = _samode31 + AMODE31_SIZE;
 	_eamode31 = .;
 
 	/* early.c uses stsi, which requires page aligned data. */
 	. = ALIGN(PAGE_SIZE);
 	INIT_DATA_SECTION(0x100)
 
-	PERCPU_SECTION(0x100)
+	RUNTIME_CONST_VARIABLES
 
-#ifdef CONFIG_PIE_BUILD
-	.dynsym ALIGN(8) : {
-		__dynsym_start = .;
-		*(.dynsym)
-		__dynsym_end = .;
-	}
-	.rela.dyn ALIGN(8) : {
-		__rela_dyn_start = .;
-		*(.rela*)
-		__rela_dyn_end = .;
-	}
-	.dynamic ALIGN(8) : {
-		*(.dynamic)
-	}
-	.dynstr ALIGN(8) : {
-		*(.dynstr)
-	}
-#endif
-	.hash ALIGN(8) : {
-		*(.hash)
-	}
-	.gnu.hash ALIGN(8) : {
-		*(.gnu.hash)
-	}
+	PERCPU_SECTION(0x100)
 
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;		/* freed after init ends here */
@@ -225,44 +225,10 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	_end = . ;
 
-	/*
-	 * uncompressed image info used by the decompressor
-	 * it should match struct vmlinux_info
-	 */
-	.vmlinux.info 0 (INFO) : {
-		QUAD(_stext)					/* default_lma */
-		QUAD(startup_continue)				/* entry */
-		QUAD(__bss_start - _stext)			/* image_size */
-		QUAD(__bss_stop - __bss_start)			/* bss_size */
-		QUAD(__boot_data_start)				/* bootdata_off */
-		QUAD(__boot_data_end - __boot_data_start)	/* bootdata_size */
-		QUAD(__boot_data_preserved_start)		/* bootdata_preserved_off */
-		QUAD(__boot_data_preserved_end -
-		     __boot_data_preserved_start)		/* bootdata_preserved_size */
-#ifdef CONFIG_PIE_BUILD
-		QUAD(__dynsym_start)				/* dynsym_start */
-		QUAD(__rela_dyn_start)				/* rela_dyn_start */
-		QUAD(__rela_dyn_end)				/* rela_dyn_end */
-#else
-		QUAD(__got_start)				/* got_start */
-		QUAD(__got_end)					/* got_end */
-#endif
-		QUAD(_eamode31 - _samode31)			/* amode31_size */
-		QUAD(init_mm)
-		QUAD(swapper_pg_dir)
-		QUAD(invalid_pg_dir)
-#ifdef CONFIG_KASAN
-		QUAD(kasan_early_shadow_page)
-		QUAD(kasan_early_shadow_pte)
-		QUAD(kasan_early_shadow_pmd)
-		QUAD(kasan_early_shadow_pud)
-		QUAD(kasan_early_shadow_p4d)
-#endif
-	} :NONE
-
 	/* Debugging sections.	*/
 	STABS_DEBUG
 	DWARF_DEBUG
+	MODINFO
 	ELF_DETAILS
 
 	/*
@@ -282,12 +248,44 @@ SECTIONS
 		*(.plt) *(.plt.*) *(.iplt) *(.igot .igot.plt)
 	}
 	ASSERT(SIZEOF(.plt) == 0, "Unexpected run-time procedure linkages detected!")
-#ifndef CONFIG_PIE_BUILD
 	.rela.dyn : {
 		*(.rela.*) *(.rela_*)
 	}
 	ASSERT(SIZEOF(.rela.dyn) == 0, "Unexpected run-time relocations (.rela) detected!")
+
+	/*
+	 * uncompressed image info used by the decompressor
+	 * it should match struct vmlinux_info
+	 */
+	.vmlinux.info 0 (INFO) : {
+		QUAD(startup_continue)				/* entry */
+		QUAD(__bss_start - _stext)			/* image_size */
+		QUAD(__bss_stop - __bss_start)			/* bss_size */
+		QUAD(__boot_data_start)				/* bootdata_off */
+		QUAD(__boot_data_end - __boot_data_start)	/* bootdata_size */
+		QUAD(__boot_data_preserved_start)		/* bootdata_preserved_off */
+		QUAD(__boot_data_preserved_end -
+		     __boot_data_preserved_start)		/* bootdata_preserved_size */
+		QUAD(__got_start)				/* got_start */
+		QUAD(__got_end)					/* got_end */
+		QUAD(_eamode31 - _samode31)			/* amode31_size */
+		QUAD(init_mm)
+		QUAD(swapper_pg_dir)
+		QUAD(invalid_pg_dir)
+		QUAD(__alt_instructions)
+		QUAD(__alt_instructions_end)
+#ifdef CONFIG_STACKPROTECTOR
+		QUAD(__stack_prot_start)
+		QUAD(__stack_prot_end)
 #endif
+#ifdef CONFIG_KASAN
+		QUAD(kasan_early_shadow_page)
+		QUAD(kasan_early_shadow_pte)
+		QUAD(kasan_early_shadow_pmd)
+		QUAD(kasan_early_shadow_pud)
+		QUAD(kasan_early_shadow_p4d)
+#endif
+	} :NONE
 
 	/* Sections to be discarded */
 	DISCARDS

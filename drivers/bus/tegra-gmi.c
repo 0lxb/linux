@@ -213,7 +213,7 @@ static int tegra_gmi_probe(struct platform_device *pdev)
 	struct tegra_gmi *gmi;
 	int err;
 
-	gmi = devm_kzalloc(dev, sizeof(*gmi), GFP_KERNEL);
+	gmi = devm_kzalloc_obj(dev, *gmi);
 	if (!gmi)
 		return -ENOMEM;
 
@@ -303,7 +303,7 @@ MODULE_DEVICE_TABLE(of, tegra_gmi_id_table);
 
 static struct platform_driver tegra_gmi_driver = {
 	.probe = tegra_gmi_probe,
-	.remove_new = tegra_gmi_remove,
+	.remove = tegra_gmi_remove,
 	.driver = {
 		.name		= "tegra-gmi",
 		.of_match_table	= tegra_gmi_id_table,

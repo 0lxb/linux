@@ -3,16 +3,16 @@
  * Copyright (C) 2018-2023 Oracle.  All Rights Reserved.
  * Author: Darrick J. Wong <djwong@kernel.org>
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_mount.h"
+#include "scrub/scrub.h"
 #include "scrub/xfile.h"
 #include "scrub/xfarray.h"
-#include "scrub/scrub.h"
 #include "scrub/trace.h"
 #include <linux/shmem_fs.h>
 
@@ -57,11 +57,12 @@ xfile_create(
 	struct xfile		*xf;
 	int			error;
 
-	xf = kmalloc(sizeof(struct xfile), XCHK_GFP_FLAGS);
+	xf = kmalloc_obj(struct xfile, XCHK_GFP_FLAGS);
 	if (!xf)
 		return -ENOMEM;
 
-	xf->file = shmem_kernel_file_setup(description, isize, VM_NORESERVE);
+	xf->file = shmem_kernel_file_setup(description, isize,
+					   mk_vma_flags(VMA_NORESERVE_BIT));
 	if (IS_ERR(xf->file)) {
 		error = PTR_ERR(xf->file);
 		goto out_xfile;
@@ -126,7 +127,7 @@ xfile_load(
 		unsigned int	len;
 		unsigned int	offset;
 
-		if (shmem_get_folio(inode, pos >> PAGE_SHIFT, &folio,
+		if (shmem_get_folio(inode, pos >> PAGE_SHIFT, 0, &folio,
 				SGP_READ) < 0)
 			break;
 		if (!folio) {
@@ -196,7 +197,7 @@ xfile_store(
 		unsigned int	len;
 		unsigned int	offset;
 
-		if (shmem_get_folio(inode, pos >> PAGE_SHIFT, &folio,
+		if (shmem_get_folio(inode, pos >> PAGE_SHIFT, 0, &folio,
 				SGP_CACHE) < 0)
 			break;
 		if (filemap_check_wb_err(inode->i_mapping, 0)) {
@@ -267,7 +268,7 @@ xfile_get_folio(
 		i_size_write(inode, pos + len);
 
 	pflags = memalloc_nofs_save();
-	error = shmem_get_folio(inode, pos >> PAGE_SHIFT, &folio,
+	error = shmem_get_folio(inode, pos >> PAGE_SHIFT, 0, &folio,
 			(flags & XFILE_ALLOC) ? SGP_CACHE : SGP_READ);
 	memalloc_nofs_restore(pflags);
 	if (error)
@@ -293,7 +294,7 @@ xfile_get_folio(
 	 * (potentially last) reference in xfile_put_folio.
 	 */
 	if (flags & XFILE_ALLOC)
-		folio_set_dirty(folio);
+		folio_mark_dirty(folio);
 	return folio;
 }
 
@@ -309,4 +310,16 @@ xfile_put_folio(
 
 	folio_unlock(folio);
 	folio_put(folio);
+}
+
+/* Discard the page cache that's backing a range of the xfile. */
+void
+xfile_discard(
+	struct xfile		*xf,
+	loff_t			pos,
+	u64			count)
+{
+	trace_xfile_discard(xf, pos, count);
+
+	shmem_truncate_range(file_inode(xf->file), pos, pos + count - 1);
 }

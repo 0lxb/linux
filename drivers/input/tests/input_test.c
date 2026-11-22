@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/input.h>
 
+#include <kunit/device.h>
 #include <kunit/test.h>
 
 #define POLL_INTERVAL 100
@@ -31,7 +32,7 @@ static int input_test_init(struct kunit *test)
 	ret = input_register_device(input_dev);
 	if (ret) {
 		input_free_device(input_dev);
-		KUNIT_ASSERT_FAILURE(test, "Register device failed: %d", ret);
+		KUNIT_FAIL_AND_ABORT(test, "Register device failed: %d", ret);
 	}
 
 	test->priv = input_dev;
@@ -161,11 +162,44 @@ static void input_test_grab(struct kunit *test)
 	input_put_device(input_dev);
 }
 
+static void input_test_managed_parent_override(struct kunit *test)
+{
+	struct device *owner, *other_dev;
+	struct input_dev *input_dev;
+
+	owner = kunit_device_register(test, "input-test-owner");
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, owner);
+
+	other_dev = kunit_device_register(test, "input-test-other");
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, other_dev);
+
+	/* Overriding dev.parent to another device must be rejected */
+	input_dev = devm_input_allocate_device(owner);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, input_dev);
+	input_dev->name = "Managed input device (reparented)";
+	input_dev->dev.parent = other_dev;
+	KUNIT_EXPECT_EQ(test, input_register_device(input_dev), -EINVAL);
+
+	/* Clearing dev.parent to NULL must be rejected */
+	input_dev = devm_input_allocate_device(owner);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, input_dev);
+	input_dev->name = "Managed input device (null parent)";
+	input_dev->dev.parent = NULL;
+	KUNIT_EXPECT_EQ(test, input_register_device(input_dev), -EINVAL);
+
+	/* Preserving original owner as dev.parent succeeds */
+	input_dev = devm_input_allocate_device(owner);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, input_dev);
+	input_dev->name = "Managed input device (valid parent)";
+	KUNIT_EXPECT_EQ(test, input_register_device(input_dev), 0);
+}
+
 static struct kunit_case input_tests[] = {
 	KUNIT_CASE(input_test_polling),
 	KUNIT_CASE(input_test_timestamp),
 	KUNIT_CASE(input_test_match_device_id),
 	KUNIT_CASE(input_test_grab),
+	KUNIT_CASE(input_test_managed_parent_override),
 	{ /* sentinel */ }
 };
 
@@ -179,4 +213,5 @@ static struct kunit_suite input_test_suite = {
 kunit_test_suite(input_test_suite);
 
 MODULE_AUTHOR("Javier Martinez Canillas <javierm@redhat.com>");
+MODULE_DESCRIPTION("KUnit test for the input core");
 MODULE_LICENSE("GPL");

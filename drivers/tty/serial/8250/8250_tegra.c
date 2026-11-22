@@ -9,6 +9,7 @@
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/delay.h>
+#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -20,7 +21,7 @@
 struct tegra_uart {
 	struct clk *clk;
 	struct reset_control *rst;
-	int line;
+	struct uart_8250_port *uport;
 };
 
 static void tegra_uart_handle_break(struct uart_port *p)
@@ -48,7 +49,7 @@ static int tegra_uart_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	uart = devm_kzalloc(&pdev->dev, sizeof(*uart), GFP_KERNEL);
+	uart = devm_kzalloc_obj(&pdev->dev, *uart);
 	if (!uart)
 		return -ENOMEM;
 
@@ -57,24 +58,10 @@ static int tegra_uart_probe(struct platform_device *pdev)
 	port = &port8250.port;
 	spin_lock_init(&port->lock);
 
-	port->flags = UPF_SHARE_IRQ | UPF_BOOT_AUTOCONF | UPF_FIXED_PORT |
-		      UPF_FIXED_TYPE;
-	port->iotype = UPIO_MEM32;
-	port->regshift = 2;
+	port->flags = UPF_BOOT_AUTOCONF | UPF_FIXED_PORT | UPF_FIXED_TYPE;
 	port->type = PORT_TEGRA;
-	port->irqflags |= IRQF_SHARED;
 	port->dev = &pdev->dev;
 	port->handle_break = tegra_uart_handle_break;
-
-	ret = of_alias_get_id(pdev->dev.of_node, "serial");
-	if (ret >= 0)
-		port->line = ret;
-
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		return ret;
-
-	port->irq = ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -88,12 +75,18 @@ static int tegra_uart_probe(struct platform_device *pdev)
 	port->mapbase = res->start;
 	port->mapsize = resource_size(res);
 
+	ret = uart_read_port_properties(port);
+	if (ret)
+		return ret;
+
+	port->iotype = UPIO_MEM32;
+	port->regshift = 2;
+
 	uart->rst = devm_reset_control_get_optional_shared(&pdev->dev, NULL);
 	if (IS_ERR(uart->rst))
 		return PTR_ERR(uart->rst);
 
-	if (device_property_read_u32(&pdev->dev, "clock-frequency",
-				     &port->uartclk)) {
+	if (!port->uartclk) {
 		uart->clk = devm_clk_get(&pdev->dev, NULL);
 		if (IS_ERR(uart->clk)) {
 			dev_err(&pdev->dev, "failed to get clock!\n");
@@ -111,12 +104,13 @@ static int tegra_uart_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_clkdisable;
 
-	ret = serial8250_register_8250_port(&port8250);
-	if (ret < 0)
+	uart->uport = serial8250_register_8250_port(&port8250);
+	if (IS_ERR(uart->uport)) {
+		ret = PTR_ERR(uart->uport);
 		goto err_ctrl_assert;
+	}
 
 	platform_set_drvdata(pdev, uart);
-	uart->line = ret;
 
 	return 0;
 
@@ -132,7 +126,7 @@ static void tegra_uart_remove(struct platform_device *pdev)
 {
 	struct tegra_uart *uart = platform_get_drvdata(pdev);
 
-	serial8250_unregister_port(uart->line);
+	serial8250_unregister_port(uart->uport);
 	reset_control_assert(uart->rst);
 	clk_disable_unprepare(uart->clk);
 }
@@ -141,10 +135,10 @@ static void tegra_uart_remove(struct platform_device *pdev)
 static int tegra_uart_suspend(struct device *dev)
 {
 	struct tegra_uart *uart = dev_get_drvdata(dev);
-	struct uart_8250_port *port8250 = serial8250_get_port(uart->line);
+	struct uart_8250_port *port8250 = uart->uport;
 	struct uart_port *port = &port8250->port;
 
-	serial8250_suspend_port(uart->line);
+	serial8250_suspend_port(port8250);
 
 	if (!uart_console(port) || console_suspend_enabled)
 		clk_disable_unprepare(uart->clk);
@@ -155,13 +149,13 @@ static int tegra_uart_suspend(struct device *dev)
 static int tegra_uart_resume(struct device *dev)
 {
 	struct tegra_uart *uart = dev_get_drvdata(dev);
-	struct uart_8250_port *port8250 = serial8250_get_port(uart->line);
+	struct uart_8250_port *port8250 = uart->uport;
 	struct uart_port *port = &port8250->port;
 
 	if (!uart_console(port) || console_suspend_enabled)
 		clk_prepare_enable(uart->clk);
 
-	serial8250_resume_port(uart->line);
+	serial8250_resume_port(port8250);
 
 	return 0;
 }
@@ -190,7 +184,7 @@ static struct platform_driver tegra_uart_driver = {
 		.acpi_match_table = ACPI_PTR(tegra_uart_acpi_match),
 	},
 	.probe = tegra_uart_probe,
-	.remove_new = tegra_uart_remove,
+	.remove = tegra_uart_remove,
 };
 
 module_platform_driver(tegra_uart_driver);

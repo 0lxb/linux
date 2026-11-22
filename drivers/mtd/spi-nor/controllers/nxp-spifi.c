@@ -382,7 +382,7 @@ static int nxp_spifi_probe(struct platform_device *pdev)
 	struct nxp_spifi *spifi;
 	int ret;
 
-	spifi = devm_kzalloc(&pdev->dev, sizeof(*spifi), GFP_KERNEL);
+	spifi = devm_kzalloc_obj(&pdev->dev, *spifi);
 	if (!spifi)
 		return -ENOMEM;
 
@@ -446,7 +446,7 @@ MODULE_DEVICE_TABLE(of, nxp_spifi_match);
 
 static struct platform_driver nxp_spifi_driver = {
 	.probe	= nxp_spifi_probe,
-	.remove_new = nxp_spifi_remove,
+	.remove = nxp_spifi_remove,
 	.driver	= {
 		.name = "nxp-spifi",
 		.of_match_table = nxp_spifi_match,

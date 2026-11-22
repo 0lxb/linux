@@ -126,6 +126,7 @@ static int sl28vpd_add_cells(struct nvmem_layout *layout)
 
 		ret = nvmem_add_one_cell(nvmem, &info);
 		if (ret) {
+			of_node_put(info.np);
 			of_node_put(layout_np);
 			return ret;
 		}
@@ -156,7 +157,6 @@ MODULE_DEVICE_TABLE(of, sl28vpd_of_match_table);
 
 static struct nvmem_layout_driver sl28vpd_layout = {
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "kontron-sl28vpd-layout",
 		.of_match_table = sl28vpd_of_match_table,
 	},

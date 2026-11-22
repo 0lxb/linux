@@ -7,6 +7,7 @@
  * Aneesh V <aneesh@ti.com>
  * Santosh Shilimkar <santosh.shilimkar@ti.com>
  */
+#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/reboot.h>
@@ -38,6 +39,7 @@
  *				are two devices attached to this EMIF, this
  *				value is the maximum of the two temperature
  *				levels.
+ * @lpmode:			Chosen low power mode
  * @node:			node in the device list
  * @base:			base address of memory-mapped IO registers.
  * @dev:			device pointer.
@@ -57,7 +59,6 @@ struct emif_data {
 	u8				temperature_level;
 	u8				lpmode;
 	struct list_head		node;
-	unsigned long			irq_state;
 	void __iomem			*base;
 	struct device			*dev;
 	struct emif_regs		*regs_cache[EMIF_MAX_NUM_FREQUENCIES];
@@ -69,7 +70,6 @@ struct emif_data {
 
 static struct emif_data *emif1;
 static DEFINE_SPINLOCK(emif_lock);
-static unsigned long	irq_state;
 static LIST_HEAD(device_list);
 
 static void do_emif_regdump_show(struct seq_file *s, struct emif_data *emif,
@@ -523,18 +523,18 @@ out:
 static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 {
 	u32		old_temp_level;
-	irqreturn_t	ret = IRQ_HANDLED;
+	irqreturn_t	ret;
 	struct emif_custom_configs *custom_configs;
 
-	spin_lock_irqsave(&emif_lock, irq_state);
+	guard(spinlock_irqsave)(&emif_lock);
 	old_temp_level = emif->temperature_level;
 	get_temperature_level(emif);
 
 	if (unlikely(emif->temperature_level == old_temp_level)) {
-		goto out;
+		return IRQ_HANDLED;
 	} else if (!emif->curr_regs) {
 		dev_err(emif->dev, "temperature alert before registers are calculated, not de-rating timings\n");
-		goto out;
+		return IRQ_HANDLED;
 	}
 
 	custom_configs = emif->plat_data->custom_configs;
@@ -554,8 +554,7 @@ static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 			 * from thread context
 			 */
 			emif->temperature_level = SDRAM_TEMP_VERY_HIGH_SHUTDOWN;
-			ret = IRQ_WAKE_THREAD;
-			goto out;
+			return IRQ_WAKE_THREAD;
 		}
 	}
 
@@ -571,10 +570,9 @@ static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 		/* Temperature is going up - handle immediately */
 		setup_temperature_sensitive_regs(emif, emif->curr_regs);
 		do_freq_update();
+		ret = IRQ_HANDLED;
 	}
 
-out:
-	spin_unlock_irqrestore(&emif_lock, irq_state);
 	return ret;
 }
 
@@ -617,6 +615,7 @@ static irqreturn_t emif_interrupt_handler(int irq, void *dev_id)
 static irqreturn_t emif_threaded_isr(int irq, void *dev_id)
 {
 	struct emif_data	*emif = dev_id;
+	unsigned long		irq_state;
 
 	if (emif->temperature_level == SDRAM_TEMP_VERY_HIGH_SHUTDOWN) {
 		dev_emerg(emif->dev, "SDRAM temperature exceeds operating limit.. Needs shut down!!!\n");
@@ -837,8 +836,7 @@ static void of_get_custom_configs(struct device_node *np_emif,
 	poll_intvl = of_get_property(np_emif, "temp-alert-poll-interval", &len);
 
 	if (lpmode || poll_intvl)
-		cust_cfgs = devm_kzalloc(emif->dev, sizeof(*cust_cfgs),
-			GFP_KERNEL);
+		cust_cfgs = devm_kzalloc_obj(emif->dev, *cust_cfgs);
 
 	if (!cust_cfgs)
 		return;
@@ -864,7 +862,7 @@ static void of_get_custom_configs(struct device_node *np_emif,
 						be32_to_cpup(poll_intvl);
 	}
 
-	if (of_find_property(np_emif, "extended-temp-part", &len))
+	if (of_property_read_bool(np_emif, "extended-temp-part"))
 		cust_cfgs->mask |= EMIF_CUSTOM_CONFIG_EXTENDED_TEMP_PART;
 
 	if (!is_custom_config_valid(cust_cfgs, emif->dev)) {
@@ -880,13 +878,9 @@ static void of_get_ddr_info(struct device_node *np_emif,
 		struct ddr_device_info *dev_info)
 {
 	u32 density = 0, io_width = 0;
-	int len;
 
-	if (of_find_property(np_emif, "cs1-used", &len))
-		dev_info->cs1_used = true;
-
-	if (of_find_property(np_emif, "cal-resistor-per-cs", &len))
-		dev_info->cal_resistors_per_cs = true;
+	dev_info->cs1_used = of_property_read_bool(np_emif, "cs1-used");
+	dev_info->cal_resistors_per_cs = of_property_read_bool(np_emif, "cal-resistor-per-cs");
 
 	if (of_device_is_compatible(np_ddr, "jedec,lpddr2-s4"))
 		dev_info->type = DDR_TYPE_LPDDR2_S4;
@@ -916,18 +910,18 @@ static struct emif_data *of_get_memory_device_details(
 	struct ddr_device_info		*dev_info = NULL;
 	struct emif_platform_data	*pd = NULL;
 	struct device_node		*np_ddr;
-	int				len;
 
 	np_ddr = of_parse_phandle(np_emif, "device-handle", 0);
 	if (!np_ddr)
 		goto error;
-	emif	= devm_kzalloc(dev, sizeof(struct emif_data), GFP_KERNEL);
-	pd	= devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
-	dev_info = devm_kzalloc(dev, sizeof(*dev_info), GFP_KERNEL);
+	emif	= devm_kzalloc_obj(dev, struct emif_data);
+	pd = devm_kzalloc_obj(dev, *pd);
+	dev_info = devm_kzalloc_obj(dev, *dev_info);
 
 	if (!emif || !pd || !dev_info) {
 		dev_err(dev, "%s: Out of memory!!\n",
 			__func__);
+		of_node_put(np_ddr);
 		goto error;
 	}
 
@@ -944,7 +938,7 @@ static struct emif_data *of_get_memory_device_details(
 
 	of_property_read_u32(np_emif, "phy-type", &pd->phy_type);
 
-	if (of_find_property(np_emif, "hw-caps-ll-interface", &len))
+	if (of_property_read_bool(np_emif, "hw-caps-ll-interface"))
 		pd->hw_caps |= EMIF_HW_CAPS_LL_INTERFACE;
 
 	of_get_ddr_info(np_emif, np_ddr, dev_info);
@@ -952,6 +946,7 @@ static struct emif_data *of_get_memory_device_details(
 			pd->device_info->io_width, pd->phy_type, pd->ip_rev,
 			emif->dev)) {
 		dev_err(dev, "%s: invalid device data!!\n", __func__);
+		of_node_put(np_ddr);
 		goto error;
 	}
 	/*
@@ -1003,9 +998,9 @@ static struct emif_data *get_device_details(
 		goto error;
 	}
 
-	emif	= devm_kzalloc(dev, sizeof(*emif), GFP_KERNEL);
-	temp	= devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
-	dev_info = devm_kzalloc(dev, sizeof(*dev_info), GFP_KERNEL);
+	emif = devm_kzalloc_obj(dev, *emif);
+	temp	= devm_kzalloc_obj(dev, *pd);
+	dev_info = devm_kzalloc_obj(dev, *dev_info);
 
 	if (!emif || !temp || !dev_info)
 		goto error;
@@ -1044,7 +1039,7 @@ static struct emif_data *get_device_details(
 	 */
 	cust_cfgs = pd->custom_configs;
 	if (cust_cfgs && is_custom_config_valid(cust_cfgs, dev)) {
-		temp = devm_kzalloc(dev, sizeof(*cust_cfgs), GFP_KERNEL);
+		temp = devm_kzalloc_obj(dev, *cust_cfgs);
 		if (temp)
 			memcpy(temp, cust_cfgs, sizeof(*cust_cfgs));
 		pd->custom_configs = temp;
@@ -1068,7 +1063,7 @@ static struct emif_data *get_device_details(
 	}
 
 	if (pd->min_tck) {
-		temp = devm_kzalloc(dev, sizeof(*pd->min_tck), GFP_KERNEL);
+		temp = devm_kzalloc_obj(dev, struct lpddr2_min_tck);
 		if (temp) {
 			memcpy(temp, pd->min_tck, sizeof(*pd->min_tck));
 			pd->min_tck = temp;
@@ -1146,6 +1141,7 @@ static void emif_remove(struct platform_device *pdev)
 	struct emif_data *emif = platform_get_drvdata(pdev);
 
 	emif_debugfs_exit(emif);
+	of_node_put(emif->np_ddr);
 }
 
 static void emif_shutdown(struct platform_device *pdev)
@@ -1166,7 +1162,7 @@ MODULE_DEVICE_TABLE(of, emif_of_match);
 
 static struct platform_driver emif_driver = {
 	.probe		= emif_probe,
-	.remove_new	= emif_remove,
+	.remove		= emif_remove,
 	.shutdown	= emif_shutdown,
 	.driver = {
 		.name = "emif",

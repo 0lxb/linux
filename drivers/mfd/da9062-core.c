@@ -25,7 +25,7 @@
 #define	DA9062_IRQ_LOW	0
 #define	DA9062_IRQ_HIGH	1
 
-static struct regmap_irq da9061_irqs[] = {
+static const struct regmap_irq da9061_irqs[] = {
 	/* EVENT A */
 	[DA9061_IRQ_ONKEY] = {
 		.reg_offset = DA9062_REG_EVENT_A_OFFSET,
@@ -79,7 +79,7 @@ static struct regmap_irq da9061_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip da9061_irq_chip = {
+static const struct regmap_irq_chip da9061_irq_chip = {
 	.name = "da9061-irq",
 	.irqs = da9061_irqs,
 	.num_irqs = DA9061_NUM_IRQ,
@@ -89,7 +89,7 @@ static struct regmap_irq_chip da9061_irq_chip = {
 	.ack_base = DA9062AA_EVENT_A,
 };
 
-static struct regmap_irq da9062_irqs[] = {
+static const struct regmap_irq da9062_irqs[] = {
 	/* EVENT A */
 	[DA9062_IRQ_ONKEY] = {
 		.reg_offset = DA9062_REG_EVENT_A_OFFSET,
@@ -151,7 +151,7 @@ static struct regmap_irq da9062_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip da9062_irq_chip = {
+static const struct regmap_irq_chip da9062_irq_chip = {
 	.name = "da9062-irq",
 	.irqs = da9062_irqs,
 	.num_irqs = DA9062_NUM_IRQ,
@@ -203,36 +203,36 @@ static const struct mfd_cell da9061_devs_noirq[] = {
 };
 
 static const struct resource da9062_core_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_VDD_WARN, 1, "VDD_WARN", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_VDD_WARN, "VDD_WARN"),
 };
 
 static const struct resource da9062_regulators_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_LDO_LIM, 1, "LDO_LIM", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_LDO_LIM, "LDO_LIM"),
 };
 
 static const struct resource da9062_thermal_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_TEMP, 1, "THERMAL", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_TEMP, "THERMAL"),
 };
 
 static const struct resource da9062_wdt_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_WDG_WARN, 1, "WD_WARN", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_WDG_WARN, "WD_WARN"),
 };
 
 static const struct resource da9062_rtc_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_ALARM, 1, "ALARM", IORESOURCE_IRQ),
-	DEFINE_RES_NAMED(DA9062_IRQ_TICK, 1, "TICK", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_ALARM, "ALARM"),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_TICK, "TICK"),
 };
 
 static const struct resource da9062_onkey_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_ONKEY, 1, "ONKEY", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_ONKEY, "ONKEY"),
 };
 
 static const struct resource da9062_gpio_resources[] = {
-	DEFINE_RES_NAMED(DA9062_IRQ_GPI0, 1, "GPI0", IORESOURCE_IRQ),
-	DEFINE_RES_NAMED(DA9062_IRQ_GPI1, 1, "GPI1", IORESOURCE_IRQ),
-	DEFINE_RES_NAMED(DA9062_IRQ_GPI2, 1, "GPI2", IORESOURCE_IRQ),
-	DEFINE_RES_NAMED(DA9062_IRQ_GPI3, 1, "GPI3", IORESOURCE_IRQ),
-	DEFINE_RES_NAMED(DA9062_IRQ_GPI4, 1, "GPI4", IORESOURCE_IRQ),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_GPI0, "GPI0"),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_GPI1, "GPI1"),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_GPI2, "GPI2"),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_GPI3, "GPI3"),
+	DEFINE_RES_IRQ_NAMED(DA9062_IRQ_GPI4, "GPI4"),
 };
 
 static const struct mfd_cell da9062_devs_irq[] = {
@@ -470,7 +470,7 @@ static const struct regmap_range_cfg da9061_range_cfg[] = {
 	}
 };
 
-static struct regmap_config da9061_regmap_config = {
+static const struct regmap_config da9061_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.ranges = da9061_range_cfg,
@@ -576,7 +576,7 @@ static const struct regmap_range_cfg da9062_range_cfg[] = {
 	}
 };
 
-static struct regmap_config da9062_regmap_config = {
+static const struct regmap_config da9062_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.ranges = da9062_range_cfg,
@@ -599,7 +599,7 @@ static int da9062_i2c_probe(struct i2c_client *i2c)
 	u32 trigger_type = 0;
 	int ret;
 
-	chip = devm_kzalloc(&i2c->dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(&i2c->dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 

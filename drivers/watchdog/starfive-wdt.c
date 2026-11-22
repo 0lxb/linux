@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
+#include <linux/stringify.h>
 #include <linux/watchdog.h>
 
 /* JH7100 Watchdog register define */
@@ -72,15 +73,15 @@ module_param(early_enable, bool, 0);
 module_param(nowayout, bool, 0);
 
 MODULE_PARM_DESC(heartbeat, "Watchdog heartbeat in seconds. (default="
-		 __MODULE_STRING(STARFIVE_WDT_DEFAULT_TIME) ")");
+		 __stringify(STARFIVE_WDT_DEFAULT_TIME) ")");
 MODULE_PARM_DESC(early_enable,
 		 "Watchdog is started at boot time if set to 1, default="
-		 __MODULE_STRING(STARFIVE_WDT_EARLY_ENA));
+		 __stringify(STARFIVE_WDT_EARLY_ENA));
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+		 __stringify(WATCHDOG_NOWAYOUT) ")");
 
 struct starfive_wdt_variant {
-	unsigned int control;		/* Watchdog Control Resgister for reset enable */
+	unsigned int control;		/* Watchdog Control Register for reset enable */
 	unsigned int load;		/* Watchdog Load register */
 	unsigned int reload;		/* Watchdog Reload Control register */
 	unsigned int enable;		/* Watchdog Enable Register */
@@ -152,8 +153,10 @@ static int starfive_wdt_enable_clock(struct starfive_wdt *wdt)
 		return dev_err_probe(wdt->wdd.parent, ret, "failed to enable apb clock\n");
 
 	ret = clk_prepare_enable(wdt->core_clk);
-	if (ret)
+	if (ret) {
+		clk_disable_unprepare(wdt->apb_clk);
 		return dev_err_probe(wdt->wdd.parent, ret, "failed to enable core clock\n");
+	}
 
 	return 0;
 }
@@ -369,7 +372,7 @@ static void starfive_wdt_stop(struct starfive_wdt *wdt)
 static int starfive_wdt_pm_start(struct watchdog_device *wdd)
 {
 	struct starfive_wdt *wdt = watchdog_get_drvdata(wdd);
-	int ret = pm_runtime_get_sync(wdd->parent);
+	int ret = pm_runtime_resume_and_get(wdd->parent);
 
 	if (ret < 0)
 		return ret;
@@ -428,7 +431,7 @@ static int starfive_wdt_probe(struct platform_device *pdev)
 	struct starfive_wdt *wdt;
 	int ret;
 
-	wdt = devm_kzalloc(&pdev->dev, sizeof(*wdt), GFP_KERNEL);
+	wdt = devm_kzalloc_obj(&pdev->dev, *wdt);
 	if (!wdt)
 		return -ENOMEM;
 
@@ -444,7 +447,7 @@ static int starfive_wdt_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, wdt);
 	pm_runtime_enable(&pdev->dev);
 	if (pm_runtime_enabled(&pdev->dev)) {
-		ret = pm_runtime_get_sync(&pdev->dev);
+		ret = pm_runtime_resume_and_get(&pdev->dev);
 		if (ret < 0)
 			return ret;
 	} else {
@@ -494,11 +497,18 @@ static int starfive_wdt_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_exit;
 
-	if (!early_enable)
-		pm_runtime_put_sync(&pdev->dev);
+	if (!early_enable) {
+		if (pm_runtime_enabled(&pdev->dev)) {
+			ret = pm_runtime_put_sync(&pdev->dev);
+			if (ret)
+				goto err_unregister_wdt;
+		}
+	}
 
 	return 0;
 
+err_unregister_wdt:
+	watchdog_unregister_device(&wdt->wdd);
 err_exit:
 	starfive_wdt_disable_clock(wdt);
 	pm_runtime_disable(&pdev->dev);
@@ -554,7 +564,10 @@ static int starfive_wdt_resume(struct device *dev)
 	starfive_wdt_set_reload_count(wdt, wdt->reload);
 	starfive_wdt_lock(wdt);
 
-	return starfive_wdt_start(wdt);
+	if (watchdog_active(&wdt->wdd))
+		return starfive_wdt_start(wdt);
+
+	return 0;
 }
 
 static int starfive_wdt_runtime_suspend(struct device *dev)
@@ -587,7 +600,7 @@ MODULE_DEVICE_TABLE(of, starfive_wdt_match);
 
 static struct platform_driver starfive_wdt_driver = {
 	.probe = starfive_wdt_probe,
-	.remove_new = starfive_wdt_remove,
+	.remove = starfive_wdt_remove,
 	.shutdown = starfive_wdt_shutdown,
 	.driver = {
 		.name = "starfive-wdt",

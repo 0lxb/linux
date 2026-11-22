@@ -52,10 +52,6 @@
  * buffer objects
  * @mem_size_left: Free memory left in the last page in @page_list
  * @page_address: Kernel virtual address of the last page in @page_list
- * @vm: A pointer to the memory reservation interface or NULL if no
- * memory reservation is needed.
- * @vm_size_left: Amount of reserved memory that so far has not been allocated.
- * @total_mem: Amount of reserved memory.
  */
 struct vmw_validation_context {
 	struct vmw_sw_context *sw_context;
@@ -68,9 +64,6 @@ struct vmw_validation_context {
 	unsigned int merge_dups;
 	unsigned int mem_size_left;
 	u8 *page_address;
-	struct vmw_validation_mem *vm;
-	size_t vm_size_left;
-	size_t total_mem;
 };
 
 struct vmw_bo;
@@ -134,16 +127,23 @@ vmw_validation_bo_reserve(struct vmw_validation_context *ctx,
  * vmw_validation_bo_fence - Unreserve and fence buffer objects registered
  * with a validation context
  * @ctx: The validation context
+ * @fence: Fence with which to fence all buffer objects taking part in the
+ * command submission.
  *
  * This function unreserves the buffer objects previously reserved using
- * vmw_validation_bo_reserve, and fences them with a fence object.
+ * vmw_validation_bo_reserve, and fences them with a fence object if the
+ * given fence object is not NULL.
  */
 static inline void
 vmw_validation_bo_fence(struct vmw_validation_context *ctx,
 			struct vmw_fence_obj *fence)
 {
-	ttm_eu_fence_buffer_objects(&ctx->ticket, &ctx->bo_list,
-				    (void *) fence);
+	/* fence is able to be NULL if vmw_execbuf_fence_commands() fails */
+	if (fence)
+		ttm_eu_fence_buffer_objects(&ctx->ticket, &ctx->bo_list,
+					    (void *)fence);
+	else
+		ttm_eu_backoff_reservation(&ctx->ticket, &ctx->bo_list);
 }
 
 /**

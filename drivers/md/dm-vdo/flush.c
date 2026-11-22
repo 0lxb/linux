@@ -105,7 +105,7 @@ static void *allocate_flush(gfp_t gfp_mask, void *pool_data)
 	if ((gfp_mask & GFP_NOWAIT) == GFP_NOWAIT) {
 		flush = vdo_allocate_memory_nowait(sizeof(struct vdo_flush), __func__);
 	} else {
-		int result = vdo_allocate(1, struct vdo_flush, __func__, &flush);
+		int result = vdo_allocate(1, __func__, &flush);
 
 		if (result != VDO_SUCCESS)
 			vdo_log_error_strerror(result, "failed to allocate spare flush");
@@ -134,7 +134,7 @@ static void free_flush(void *element, void *pool_data __always_unused)
  */
 int vdo_make_flusher(struct vdo *vdo)
 {
-	int result = vdo_allocate(1, struct flusher, __func__, &vdo->flusher);
+	int result = vdo_allocate(1, __func__, &vdo->flusher);
 
 	if (result != VDO_SUCCESS)
 		return result;
@@ -369,8 +369,7 @@ void vdo_dump_flusher(const struct flusher *flusher)
 static void initialize_flush(struct vdo_flush *flush, struct vdo *vdo)
 {
 	bio_list_init(&flush->bios);
-	bio_list_merge(&flush->bios, &vdo->flusher->waiting_flush_bios);
-	bio_list_init(&vdo->flusher->waiting_flush_bios);
+	bio_list_merge_init(&flush->bios, &vdo->flusher->waiting_flush_bios);
 }
 
 static void launch_flush(struct vdo_flush *flush)
@@ -523,11 +522,7 @@ static void vdo_complete_flush(struct vdo_flush *flush)
 	vdo_enqueue_completion(completion, BIO_Q_FLUSH_PRIORITY);
 }
 
-/**
- * initiate_drain() - Initiate a drain.
- *
- * Implements vdo_admin_initiator_fn.
- */
+/** Implements vdo_admin_initiator_fn. */
 static void initiate_drain(struct admin_state *state)
 {
 	check_for_drain_complete(container_of(state, struct flusher, state));

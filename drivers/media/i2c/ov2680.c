@@ -16,7 +16,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -75,6 +74,8 @@
 #define OV2680_ACTIVE_START_TOP			8
 #define OV2680_MIN_CROP_WIDTH			2
 #define OV2680_MIN_CROP_HEIGHT			2
+#define OV2680_MIN_VBLANK			4
+#define OV2680_MAX_VBLANK			0xffff
 
 /* Fixed pre-div of 1/2 */
 #define OV2680_PLL_PREDIV0			2
@@ -84,10 +85,7 @@
 
 /* 66MHz pixel clock: 66MHz / 1704 * 1294 = 30fps */
 #define OV2680_PIXELS_PER_LINE			1704
-#define OV2680_LINES_PER_FRAME			1294
-
-/* If possible send 16 extra rows / lines to the ISP as padding */
-#define OV2680_END_MARGIN			16
+#define OV2680_LINES_PER_FRAME_30FPS		1294
 
 /* Max exposure time is VTS - 8 */
 #define OV2680_INTEGRATION_TIME_MARGIN		8
@@ -130,6 +128,8 @@ struct ov2680_ctrls {
 	struct v4l2_ctrl *test_pattern;
 	struct v4l2_ctrl *link_freq;
 	struct v4l2_ctrl *pixel_rate;
+	struct v4l2_ctrl *vblank;
+	struct v4l2_ctrl *hblank;
 };
 
 struct ov2680_mode {
@@ -143,8 +143,6 @@ struct ov2680_mode {
 	u16				v_end;
 	u16				h_output_size;
 	u16				v_output_size;
-	u16				hts;
-	u16				vts;
 };
 
 struct ov2680_dev {
@@ -359,15 +357,11 @@ static void ov2680_calc_mode(struct ov2680_dev *sensor)
 	sensor->mode.v_start = (sensor->mode.crop.top +
 				(sensor->mode.crop.height - height) / 2) & ~1;
 	sensor->mode.h_end =
-		min(sensor->mode.h_start + width + OV2680_END_MARGIN - 1,
-		    OV2680_NATIVE_WIDTH - 1);
+		min(sensor->mode.h_start + width - 1, OV2680_NATIVE_WIDTH - 1);
 	sensor->mode.v_end =
-		min(sensor->mode.v_start + height + OV2680_END_MARGIN - 1,
-		    OV2680_NATIVE_HEIGHT - 1);
+		min(sensor->mode.v_start + height - 1, OV2680_NATIVE_HEIGHT - 1);
 	sensor->mode.h_output_size = orig_width;
 	sensor->mode.v_output_size = orig_height;
-	sensor->mode.hts = OV2680_PIXELS_PER_LINE;
-	sensor->mode.vts = OV2680_LINES_PER_FRAME;
 }
 
 static int ov2680_set_mode(struct ov2680_dev *sensor)
@@ -402,9 +396,8 @@ static int ov2680_set_mode(struct ov2680_dev *sensor)
 	cci_write(sensor->regmap, OV2680_REG_VERTICAL_OUTPUT_SIZE,
 		  sensor->mode.v_output_size, &ret);
 	cci_write(sensor->regmap, OV2680_REG_TIMING_HTS,
-		  sensor->mode.hts, &ret);
-	cci_write(sensor->regmap, OV2680_REG_TIMING_VTS,
-		  sensor->mode.vts, &ret);
+		  OV2680_PIXELS_PER_LINE, &ret);
+	/* VTS gets set by the vblank ctrl */
 	cci_write(sensor->regmap, OV2680_REG_ISP_X_WIN, 0, &ret);
 	cci_write(sensor->regmap, OV2680_REG_ISP_Y_WIN, 0, &ret);
 	cci_write(sensor->regmap, OV2680_REG_X_INC, inc, &ret);
@@ -476,6 +469,15 @@ static int ov2680_exposure_set(struct ov2680_dev *sensor, u32 exp)
 {
 	return cci_write(sensor->regmap, OV2680_REG_EXPOSURE_PK, exp << 4,
 			 NULL);
+}
+
+static int ov2680_exposure_update_range(struct ov2680_dev *sensor)
+{
+	int exp_max = sensor->mode.fmt.height + sensor->ctrls.vblank->val -
+		      OV2680_INTEGRATION_TIME_MARGIN;
+
+	return __v4l2_ctrl_modify_range(sensor->ctrls.exposure, 0, exp_max,
+					1, exp_max);
 }
 
 static int ov2680_stream_enable(struct ov2680_dev *sensor)
@@ -637,6 +639,7 @@ static int ov2680_get_fmt(struct v4l2_subdev *sd,
 }
 
 static int ov2680_set_fmt(struct v4l2_subdev *sd,
+			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *format)
 {
@@ -644,7 +647,7 @@ static int ov2680_set_fmt(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *try_fmt;
 	const struct v4l2_rect *crop;
 	unsigned int width, height;
-	int ret = 0;
+	int def, max, ret = 0;
 
 	crop = __ov2680_get_pad_crop(sensor, sd_state, format->pad,
 				     format->which);
@@ -673,6 +676,27 @@ static int ov2680_set_fmt(struct v4l2_subdev *sd,
 	sensor->mode.fmt = format->format;
 	ov2680_calc_mode(sensor);
 
+	/* vblank range is height dependent adjust and reset to default */
+	max = OV2680_MAX_VBLANK - height;
+	def = OV2680_LINES_PER_FRAME_30FPS - height;
+	ret = __v4l2_ctrl_modify_range(sensor->ctrls.vblank, OV2680_MIN_VBLANK,
+				       max, 1, def);
+	if (ret)
+		goto unlock;
+
+	ret = __v4l2_ctrl_s_ctrl(sensor->ctrls.vblank, def);
+	if (ret)
+		goto unlock;
+
+	/* exposure range depends on vts which may have changed */
+	ret = ov2680_exposure_update_range(sensor);
+	if (ret)
+		goto unlock;
+
+	/* adjust hblank value for new width */
+	def = OV2680_PIXELS_PER_LINE - width;
+	ret = __v4l2_ctrl_modify_range(sensor->ctrls.hblank, def, def, 1, def);
+
 unlock:
 	mutex_unlock(&sensor->lock);
 
@@ -680,6 +704,7 @@ unlock:
 }
 
 static int ov2680_get_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -710,6 +735,7 @@ static int ov2680_get_selection(struct v4l2_subdev *sd,
 }
 
 static int ov2680_set_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -842,6 +868,13 @@ static int ov2680_s_ctrl(struct v4l2_ctrl *ctrl)
 	struct ov2680_dev *sensor = to_ov2680_dev(sd);
 	int ret;
 
+	/* Update exposure range on vblank changes */
+	if (ctrl->id == V4L2_CID_VBLANK) {
+		ret = ov2680_exposure_update_range(sensor);
+		if (ret)
+			return ret;
+	}
+
 	/* Only apply changes to the controls if the device is powered up */
 	if (!pm_runtime_get_if_in_use(sensor->sd.dev)) {
 		ov2680_set_bayer_order(sensor, &sensor->mode.fmt);
@@ -863,6 +896,10 @@ static int ov2680_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_TEST_PATTERN:
 		ret = ov2680_test_pattern_set(sensor, ctrl->val);
+		break;
+	case V4L2_CID_VBLANK:
+		ret = cci_write(sensor->regmap, OV2680_REG_TIMING_VTS,
+				sensor->mode.fmt.height + ctrl->val, NULL);
 		break;
 	default:
 		ret = -EINVAL;
@@ -922,8 +959,8 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 	const struct v4l2_ctrl_ops *ops = &ov2680_ctrl_ops;
 	struct ov2680_ctrls *ctrls = &sensor->ctrls;
 	struct v4l2_ctrl_handler *hdl = &ctrls->handler;
-	int exp_max = OV2680_LINES_PER_FRAME - OV2680_INTEGRATION_TIME_MARGIN;
-	int ret = 0;
+	struct v4l2_fwnode_device_properties props;
+	int def, max, ret = 0;
 
 	v4l2_i2c_subdev_init(&sensor->sd, client, &ov2680_subdev_ops);
 	sensor->sd.internal_ops = &ov2680_internal_ops;
@@ -936,7 +973,7 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 	if (ret < 0)
 		return ret;
 
-	v4l2_ctrl_handler_init(hdl, 5);
+	v4l2_ctrl_handler_init(hdl, 11);
 
 	hdl->lock = &sensor->lock;
 
@@ -948,8 +985,9 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 					ARRAY_SIZE(test_pattern_menu) - 1,
 					0, 0, test_pattern_menu);
 
+	max = OV2680_LINES_PER_FRAME_30FPS - OV2680_INTEGRATION_TIME_MARGIN;
 	ctrls->exposure = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_EXPOSURE,
-					    0, exp_max, 1, exp_max);
+					    0, max, 1, max);
 
 	ctrls->gain = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN,
 					0, 1023, 1, 250);
@@ -960,6 +998,21 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 					      0, sensor->pixel_rate,
 					      1, sensor->pixel_rate);
 
+	max = OV2680_MAX_VBLANK - OV2680_DEFAULT_HEIGHT;
+	def = OV2680_LINES_PER_FRAME_30FPS - OV2680_DEFAULT_HEIGHT;
+	ctrls->vblank = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_VBLANK,
+					  OV2680_MIN_VBLANK, max, 1, def);
+
+	def = OV2680_PIXELS_PER_LINE - OV2680_DEFAULT_WIDTH;
+	ctrls->hblank = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_HBLANK,
+					  def, def, 1, def);
+
+	ret = v4l2_fwnode_device_parse(sensor->dev, &props);
+	if (ret)
+		goto cleanup_entity;
+
+	v4l2_ctrl_new_fwnode_properties(hdl, ops, &props);
+
 	if (hdl->error) {
 		ret = hdl->error;
 		goto cleanup_entity;
@@ -968,6 +1021,7 @@ static int ov2680_v4l2_register(struct ov2680_dev *sensor)
 	ctrls->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 	ctrls->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 	ctrls->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	ctrls->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	sensor->sd.ctrl_handler = hdl;
 
@@ -1027,7 +1081,6 @@ static int ov2680_parse_dt(struct ov2680_dev *sensor)
 	struct device *dev = sensor->dev;
 	struct fwnode_handle *ep_fwnode;
 	struct gpio_desc *gpio;
-	unsigned int rate = 0;
 	int i, ret;
 
 	/*
@@ -1062,38 +1115,14 @@ static int ov2680_parse_dt(struct ov2680_dev *sensor)
 
 	sensor->pwdn_gpio = gpio;
 
-	sensor->xvclk = devm_clk_get_optional(dev, "xvclk");
+	sensor->xvclk = devm_v4l2_sensor_clk_get(dev, "xvclk");
 	if (IS_ERR(sensor->xvclk)) {
 		ret = dev_err_probe(dev, PTR_ERR(sensor->xvclk),
 				    "xvclk clock missing or invalid\n");
 		goto out_free_bus_cfg;
 	}
 
-	/*
-	 * We could have either a 24MHz or 19.2MHz clock rate from either DT or
-	 * ACPI... but we also need to support the weird IPU3 case which will
-	 * have an external clock AND a clock-frequency property. Check for the
-	 * clock-frequency property and if found, set that rate if we managed
-	 * to acquire a clock. This should cover the ACPI case. If the system
-	 * uses devicetree then the configured rate should already be set, so
-	 * we can just read it.
-	 */
-	ret = fwnode_property_read_u32(dev_fwnode(dev), "clock-frequency",
-				       &rate);
-	if (ret && !sensor->xvclk) {
-		dev_err_probe(dev, ret, "invalid clock config\n");
-		goto out_free_bus_cfg;
-	}
-
-	if (!ret && sensor->xvclk) {
-		ret = clk_set_rate(sensor->xvclk, rate);
-		if (ret) {
-			dev_err_probe(dev, ret, "failed to set clock rate\n");
-			goto out_free_bus_cfg;
-		}
-	}
-
-	sensor->xvclk_freq = rate ?: clk_get_rate(sensor->xvclk);
+	sensor->xvclk_freq = clk_get_rate(sensor->xvclk);
 
 	for (i = 0; i < ARRAY_SIZE(ov2680_xvclk_freqs); i++) {
 		if (sensor->xvclk_freq == ov2680_xvclk_freqs[i])
@@ -1116,25 +1145,24 @@ static int ov2680_parse_dt(struct ov2680_dev *sensor)
 	sensor->pixel_rate = sensor->link_freq[0] * 2;
 	do_div(sensor->pixel_rate, 10);
 
-	/* Verify bus cfg */
-	if (bus_cfg.bus.mipi_csi2.num_data_lanes != 1) {
-		ret = dev_err_probe(dev, -EINVAL,
-				    "only a 1-lane CSI2 config is supported");
-		goto out_free_bus_cfg;
+	if (!bus_cfg.nr_of_link_frequencies) {
+		dev_warn(dev, "Consider passing 'link-frequencies' in DT\n");
+		goto skip_link_freq_validation;
 	}
 
 	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
 		if (bus_cfg.link_frequencies[i] == sensor->link_freq[0])
 			break;
 
-	if (bus_cfg.nr_of_link_frequencies == 0 ||
-	    bus_cfg.nr_of_link_frequencies == i) {
+	if (bus_cfg.nr_of_link_frequencies == i) {
 		ret = dev_err_probe(dev, -EINVAL,
 				    "supported link freq %lld not found\n",
 				    sensor->link_freq[0]);
 		goto out_free_bus_cfg;
 	}
 
+skip_link_freq_validation:
+	ret = 0;
 out_free_bus_cfg:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
 	return ret;
@@ -1146,7 +1174,7 @@ static int ov2680_probe(struct i2c_client *client)
 	struct ov2680_dev *sensor;
 	int ret;
 
-	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
+	sensor = devm_kzalloc_obj(dev, *sensor);
 	if (!sensor)
 		return -ENOMEM;
 

@@ -16,7 +16,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/power_supply.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "i2c-ccgx-ucsi.h"
 
@@ -163,8 +163,7 @@ static int gpu_i2c_write(struct gpu_i2c_dev *i2cd, u8 data)
 	return gpu_i2c_check_status(i2cd);
 }
 
-static int gpu_i2c_master_xfer(struct i2c_adapter *adap,
-			       struct i2c_msg *msgs, int num)
+static int gpu_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 {
 	struct gpu_i2c_dev *i2cd = i2c_get_adapdata(adap);
 	int status, status2;
@@ -217,7 +216,6 @@ exit:
 		if (status2 < 0)
 			dev_err(i2cd->dev, "i2c stop failed %d\n", status2);
 	}
-	pm_runtime_mark_last_busy(i2cd->dev);
 	pm_runtime_put_autosuspend(i2cd->dev);
 	return status;
 }
@@ -234,8 +232,8 @@ static u32 gpu_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm gpu_i2c_algorithm = {
-	.master_xfer	= gpu_i2c_master_xfer,
-	.functionality	= gpu_i2c_functionality,
+	.xfer = gpu_i2c_xfer,
+	.functionality = gpu_i2c_functionality,
 };
 
 /*
@@ -277,7 +275,7 @@ static int gpu_i2c_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct gpu_i2c_dev *i2cd;
 	int status;
 
-	i2cd = devm_kzalloc(dev, sizeof(*i2cd), GFP_KERNEL);
+	i2cd = devm_kzalloc_obj(dev, *i2cd);
 	if (!i2cd)
 		return -ENOMEM;
 

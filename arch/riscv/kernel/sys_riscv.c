@@ -11,11 +11,20 @@
 
 static long riscv_sys_mmap(unsigned long addr, unsigned long len,
 			   unsigned long prot, unsigned long flags,
-			   unsigned long fd, off_t offset,
+			   unsigned long fd, unsigned long offset,
 			   unsigned long page_shift_offset)
 {
 	if (unlikely(offset & (~PAGE_MASK >> page_shift_offset)))
 		return -EINVAL;
+
+	/*
+	 * If PROT_WRITE is specified then extend that to PROT_READ
+	 * protection_map[VM_WRITE] is now going to select shadow stack encodings.
+	 * So specifying PROT_WRITE actually should select protection_map [VM_WRITE | VM_READ]
+	 * If user wants to create shadow stack then they should use `map_shadow_stack` syscall.
+	 */
+	if (unlikely((prot & PROT_WRITE) && !(prot & PROT_READ)))
+		prot |= PROT_READ;
 
 	return ksys_mmap_pgoff(addr, len, prot, flags, fd,
 			       offset >> (PAGE_SHIFT - page_shift_offset));
@@ -24,7 +33,7 @@ static long riscv_sys_mmap(unsigned long addr, unsigned long len,
 #ifdef CONFIG_64BIT
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 	unsigned long, prot, unsigned long, flags,
-	unsigned long, fd, off_t, offset)
+	unsigned long, fd, unsigned long, offset)
 {
 	return riscv_sys_mmap(addr, len, prot, flags, fd, offset, 0);
 }
@@ -33,7 +42,7 @@ SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 #if defined(CONFIG_32BIT) || defined(CONFIG_COMPAT)
 SYSCALL_DEFINE6(mmap2, unsigned long, addr, unsigned long, len,
 	unsigned long, prot, unsigned long, flags,
-	unsigned long, fd, off_t, offset)
+	unsigned long, fd, unsigned long, offset)
 {
 	/*
 	 * Note that the shift for mmap2 is constant (12),

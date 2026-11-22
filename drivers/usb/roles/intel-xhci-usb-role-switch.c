@@ -156,7 +156,7 @@ static int intel_xhci_usb_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -217,7 +217,7 @@ static struct platform_driver intel_xhci_usb_driver = {
 	},
 	.id_table = intel_xhci_usb_table,
 	.probe = intel_xhci_usb_probe,
-	.remove_new = intel_xhci_usb_remove,
+	.remove = intel_xhci_usb_remove,
 };
 
 module_platform_driver(intel_xhci_usb_driver);

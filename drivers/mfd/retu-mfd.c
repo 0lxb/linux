@@ -65,13 +65,13 @@ static const struct mfd_cell retu_devs[] = {
 	}
 };
 
-static struct regmap_irq retu_irqs[] = {
+static const struct regmap_irq retu_irqs[] = {
 	[RETU_INT_PWR] = {
 		.mask = 1 << RETU_INT_PWR,
 	}
 };
 
-static struct regmap_irq_chip retu_irq_chip = {
+static const struct regmap_irq_chip retu_irq_chip = {
 	.name		= "RETU",
 	.irqs		= retu_irqs,
 	.num_irqs	= ARRAY_SIZE(retu_irqs),
@@ -101,13 +101,13 @@ static const struct mfd_cell tahvo_devs[] = {
 	},
 };
 
-static struct regmap_irq tahvo_irqs[] = {
+static const struct regmap_irq tahvo_irqs[] = {
 	[TAHVO_INT_VBUS] = {
 		.mask = 1 << TAHVO_INT_VBUS,
 	}
 };
 
-static struct regmap_irq_chip tahvo_irq_chip = {
+static const struct regmap_irq_chip tahvo_irq_chip = {
 	.name		= "TAHVO",
 	.irqs		= tahvo_irqs,
 	.num_irqs	= ARRAY_SIZE(tahvo_irqs),
@@ -120,7 +120,7 @@ static struct regmap_irq_chip tahvo_irq_chip = {
 static const struct retu_data {
 	char			*chip_name;
 	char			*companion_name;
-	struct regmap_irq_chip	*irq_chip;
+	const struct regmap_irq_chip	*irq_chip;
 	const struct mfd_cell	*children;
 	int			nchildren;
 } retu_data[] = {
@@ -216,7 +216,7 @@ static int retu_regmap_write(void *context, const void *data, size_t count)
 	return i2c_smbus_write_word_data(i2c, reg, val);
 }
 
-static struct regmap_bus retu_bus = {
+static const struct regmap_bus retu_bus = {
 	.read = retu_regmap_read,
 	.write = retu_regmap_write,
 	.val_format_endian_default = REGMAP_ENDIAN_NATIVE,
@@ -237,7 +237,7 @@ static int retu_probe(struct i2c_client *i2c)
 		return -ENODEV;
 	rdat = &retu_data[i2c->addr - 1];
 
-	rdev = devm_kzalloc(&i2c->dev, sizeof(*rdev), GFP_KERNEL);
+	rdev = devm_kzalloc_obj(&i2c->dev, *rdev);
 	if (rdev == NULL)
 		return -ENOMEM;
 
@@ -300,8 +300,8 @@ static void retu_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id retu_id[] = {
-	{ "retu", 0 },
-	{ "tahvo", 0 },
+	{ "retu" },
+	{ "tahvo" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, retu_id);

@@ -152,7 +152,7 @@ static int max77541_pmic_setup(struct device *dev)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to initialize IRQ\n");
 
-	ret = device_init_wakeup(dev, true);
+	ret = devm_device_init_wakeup(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "Unable to init wakeup\n");
 
@@ -165,7 +165,7 @@ static int max77541_probe(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	struct max77541 *max77541;
 
-	max77541 = devm_kzalloc(dev, sizeof(*max77541), GFP_KERNEL);
+	max77541 = devm_kzalloc_obj(dev, *max77541);
 	if (!max77541)
 		return -ENOMEM;
 

@@ -385,7 +385,7 @@ static int elm_probe(struct platform_device *pdev)
 	struct elm_info *info;
 	int irq;
 
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(&pdev->dev, *info);
 	if (!info)
 		return -ENOMEM;
 
@@ -560,7 +560,7 @@ static struct platform_driver elm_driver = {
 		.pm	= &elm_pm_ops,
 	},
 	.probe	= elm_probe,
-	.remove_new = elm_remove,
+	.remove = elm_remove,
 };
 
 module_platform_driver(elm_driver);

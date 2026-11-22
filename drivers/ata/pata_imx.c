@@ -17,7 +17,6 @@
 #include <linux/clk.h>
 #include <linux/libata.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
 #define DRV_NAME "pata_imx"
@@ -136,8 +135,7 @@ static int pata_imx_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	priv = devm_kzalloc(&pdev->dev,
-				sizeof(struct pata_imx_priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, struct pata_imx_priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -249,7 +247,7 @@ MODULE_DEVICE_TABLE(of, imx_pata_dt_ids);
 
 static struct platform_driver pata_imx_driver = {
 	.probe		= pata_imx_probe,
-	.remove_new	= pata_imx_remove,
+	.remove		= pata_imx_remove,
 	.driver = {
 		.name		= DRV_NAME,
 		.of_match_table	= imx_pata_dt_ids,

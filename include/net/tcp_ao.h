@@ -2,8 +2,7 @@
 #ifndef _TCP_AO_H
 #define _TCP_AO_H
 
-#define TCP_AO_KEY_ALIGN	1
-#define __tcp_ao_key_align __aligned(TCP_AO_KEY_ALIGN)
+#include <crypto/sha2.h> /* for SHA256_DIGEST_SIZE */
 
 union tcp_ao_addr {
 	struct in_addr  a4;
@@ -19,6 +18,11 @@ struct tcp_ao_hdr {
 	u8	rnext_keyid;
 };
 
+static inline u8 tcp_ao_hdr_maclen(const struct tcp_ao_hdr *aoh)
+{
+	return aoh->length - sizeof(struct tcp_ao_hdr);
+}
+
 struct tcp_ao_counters {
 	atomic64_t	pkt_good;
 	atomic64_t	pkt_bad;
@@ -27,11 +31,27 @@ struct tcp_ao_counters {
 	atomic64_t	dropped_icmp;
 };
 
+enum tcp_ao_algo_id {
+	TCP_AO_ALGO_HMAC_SHA1 = 1, /* specified by RFC 5926 */
+	TCP_AO_ALGO_HMAC_SHA256, /* Linux extension */
+	TCP_AO_ALGO_AES_128_CMAC, /* specified by RFC 5926 */
+};
+
+/*
+ * This is the maximum untruncated MAC length, in bytes.  Note that the MACs
+ * actually get truncated to 20 or fewer bytes to fit in the TCP options space.
+ */
+#define TCP_AO_MAX_MAC_LEN		SHA256_DIGEST_SIZE
+
+#define TCP_AO_MAX_TRAFFIC_KEY_LEN	SHA256_DIGEST_SIZE
+
+struct tcp_ao_mac_ctx;
+
 struct tcp_ao_key {
 	struct hlist_node	node;
 	union tcp_ao_addr	addr;
-	u8			key[TCP_AO_MAXKEYLEN] __tcp_ao_key_align;
-	unsigned int		tcp_sigpool_id;
+	u8			key[TCP_AO_MAXKEYLEN];
+	enum tcp_ao_algo_id	algo;
 	unsigned int		digest_size;
 	int			l3index;
 	u8			prefixlen;
@@ -86,7 +106,8 @@ static inline int tcp_ao_sizeof_key(const struct tcp_ao_key *key)
 struct tcp_ao_info {
 	/* List of tcp_ao_key's */
 	struct hlist_head	head;
-	/* current_key and rnext_key aren't maintained on listen sockets.
+	/* current_key and rnext_key are maintained on sockets
+	 * in TCP_AO_ESTABLISHED states.
 	 * Their purpose is to cache keys on established connections,
 	 * saving needless lookups. Never dereference any of them from
 	 * listen sockets.
@@ -143,43 +164,6 @@ extern struct static_key_false_deferred tcp_ao_needed;
 #define static_branch_tcp_ao()	false
 #endif
 
-static inline bool tcp_hash_should_produce_warnings(void)
-{
-	return static_branch_tcp_md5() || static_branch_tcp_ao();
-}
-
-#define tcp_hash_fail(msg, family, skb, fmt, ...)			\
-do {									\
-	const struct tcphdr *th = tcp_hdr(skb);				\
-	char hdr_flags[6];						\
-	char *f = hdr_flags;						\
-									\
-	if (!tcp_hash_should_produce_warnings())			\
-		break;							\
-	if (th->fin)							\
-		*f++ = 'F';						\
-	if (th->syn)							\
-		*f++ = 'S';						\
-	if (th->rst)							\
-		*f++ = 'R';						\
-	if (th->psh)							\
-		*f++ = 'P';						\
-	if (th->ack)							\
-		*f++ = '.';						\
-	*f = 0;								\
-	if ((family) == AF_INET) {					\
-		net_info_ratelimited("%s for %pI4.%d->%pI4.%d [%s] " fmt "\n", \
-				msg, &ip_hdr(skb)->saddr, ntohs(th->source), \
-				&ip_hdr(skb)->daddr, ntohs(th->dest),	\
-				hdr_flags, ##__VA_ARGS__);		\
-	} else {							\
-		net_info_ratelimited("%s for [%pI6c].%d->[%pI6c].%d [%s]" fmt "\n", \
-				msg, &ipv6_hdr(skb)->saddr, ntohs(th->source), \
-				&ipv6_hdr(skb)->daddr, ntohs(th->dest),	\
-				hdr_flags, ##__VA_ARGS__);		\
-	}								\
-} while (0)
-
 #ifdef CONFIG_TCP_AO
 /* TCP-AO structures and functions */
 struct tcp4_ao_context {
@@ -200,27 +184,29 @@ struct tcp6_ao_context {
 	__be32		disn;
 };
 
-struct tcp_sigpool;
+/* Established states are fast-path and there always is current_key/rnext_key */
 #define TCP_AO_ESTABLISHED (TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | \
-			    TCPF_CLOSE | TCPF_CLOSE_WAIT | \
-			    TCPF_LAST_ACK | TCPF_CLOSING)
+			    TCPF_CLOSE_WAIT | TCPF_LAST_ACK | TCPF_CLOSING)
 
-int tcp_ao_transmit_skb(struct sock *sk, struct sk_buff *skb,
-			struct tcp_ao_key *key, struct tcphdr *th,
-			__u8 *hash_location);
+void tcp_ao_transmit_skb(struct sock *sk, struct sk_buff *skb,
+			 struct tcp_ao_key *key, struct tcphdr *th,
+			 __u8 *hash_location);
+void tcp_ao_mac_update(struct tcp_ao_mac_ctx *mac_ctx, const void *data,
+		       size_t data_len);
 int tcp_ao_hash_skb(unsigned short int family,
 		    char *ao_hash, struct tcp_ao_key *key,
 		    const struct sock *sk, const struct sk_buff *skb,
 		    const u8 *tkey, int hash_offset, u32 sne);
 int tcp_parse_ao(struct sock *sk, int cmd, unsigned short int family,
 		 sockptr_t optval, int optlen);
-struct tcp_ao_key *tcp_ao_established_key(struct tcp_ao_info *ao,
+struct tcp_ao_key *tcp_ao_established_key(const struct sock *sk,
+					  struct tcp_ao_info *ao,
 					  int sndid, int rcvid);
 int tcp_ao_copy_all_matching(const struct sock *sk, struct sock *newsk,
 			     struct request_sock *req, struct sk_buff *skb,
 			     int family);
-int tcp_ao_calc_traffic_key(struct tcp_ao_key *mkt, u8 *key, void *ctx,
-			    unsigned int len, struct tcp_sigpool *hp);
+void tcp_ao_calc_traffic_key(const struct tcp_ao_key *mkt, u8 *traffic_key,
+			     const void *input, unsigned int input_len);
 void tcp_ao_destroy_sock(struct sock *sk, bool twsk);
 void tcp_ao_time_wait(struct tcp_timewait_sock *tcptw, struct tcp_sock *tp);
 bool tcp_ao_ignore_icmp(const struct sock *sk, int family, int type, int code);
@@ -253,11 +239,11 @@ struct tcp_ao_key *tcp_v4_ao_lookup(const struct sock *sk, struct sock *addr_sk,
 int tcp_v4_ao_synack_hash(char *ao_hash, struct tcp_ao_key *mkt,
 			  struct request_sock *req, const struct sk_buff *skb,
 			  int hash_offset, u32 sne);
-int tcp_v4_ao_calc_key_sk(struct tcp_ao_key *mkt, u8 *key,
-			  const struct sock *sk,
-			  __be32 sisn, __be32 disn, bool send);
-int tcp_v4_ao_calc_key_rsk(struct tcp_ao_key *mkt, u8 *key,
-			   struct request_sock *req);
+void tcp_v4_ao_calc_key_sk(struct tcp_ao_key *mkt, u8 *key,
+			   const struct sock *sk,
+			   __be32 sisn, __be32 disn, bool send);
+void tcp_v4_ao_calc_key_rsk(struct tcp_ao_key *mkt, u8 *key,
+			    struct request_sock *req);
 struct tcp_ao_key *tcp_v4_ao_lookup_rsk(const struct sock *sk,
 					struct request_sock *req,
 					int sndid, int rcvid);
@@ -265,16 +251,17 @@ int tcp_v4_ao_hash_skb(char *ao_hash, struct tcp_ao_key *key,
 		       const struct sock *sk, const struct sk_buff *skb,
 		       const u8 *tkey, int hash_offset, u32 sne);
 /* ipv6 specific functions */
-int tcp_v6_ao_hash_pseudoheader(struct tcp_sigpool *hp,
-				const struct in6_addr *daddr,
-				const struct in6_addr *saddr, int nbytes);
-int tcp_v6_ao_calc_key_skb(struct tcp_ao_key *mkt, u8 *key,
-			   const struct sk_buff *skb, __be32 sisn, __be32 disn);
-int tcp_v6_ao_calc_key_sk(struct tcp_ao_key *mkt, u8 *key,
-			  const struct sock *sk, __be32 sisn,
-			  __be32 disn, bool send);
-int tcp_v6_ao_calc_key_rsk(struct tcp_ao_key *mkt, u8 *key,
-			   struct request_sock *req);
+void tcp_v6_ao_hash_pseudoheader(struct tcp_ao_mac_ctx *mac_ctx,
+				 const struct in6_addr *daddr,
+				 const struct in6_addr *saddr, int nbytes);
+void tcp_v6_ao_calc_key_skb(struct tcp_ao_key *mkt, u8 *key,
+			    const struct sk_buff *skb, __be32 sisn,
+			    __be32 disn);
+void tcp_v6_ao_calc_key_sk(struct tcp_ao_key *mkt, u8 *key,
+			   const struct sock *sk, __be32 sisn,
+			   __be32 disn, bool send);
+void tcp_v6_ao_calc_key_rsk(struct tcp_ao_key *mkt, u8 *key,
+			    struct request_sock *req);
 struct tcp_ao_key *tcp_v6_ao_lookup(const struct sock *sk,
 				    struct sock *addr_sk, int sndid, int rcvid);
 struct tcp_ao_key *tcp_v6_ao_lookup_rsk(const struct sock *sk,
@@ -294,11 +281,10 @@ void tcp_ao_syncookie(struct sock *sk, const struct sk_buff *skb,
 		      struct request_sock *req, unsigned short int family);
 #else /* CONFIG_TCP_AO */
 
-static inline int tcp_ao_transmit_skb(struct sock *sk, struct sk_buff *skb,
-				      struct tcp_ao_key *key, struct tcphdr *th,
-				      __u8 *hash_location)
+static inline void tcp_ao_transmit_skb(struct sock *sk, struct sk_buff *skb,
+				       struct tcp_ao_key *key,
+				       struct tcphdr *th, __u8 *hash_location)
 {
-	return 0;
 }
 
 static inline void tcp_ao_syncookie(struct sock *sk, const struct sk_buff *skb,
@@ -317,7 +303,8 @@ static inline enum skb_drop_reason tcp_inbound_ao_hash(struct sock *sk,
 		const struct request_sock *req, int l3index,
 		const struct tcp_ao_hdr *aoh)
 {
-	return SKB_NOT_DROPPED_YET;
+	NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPAOKEYNOTFOUND);
+	return SKB_DROP_REASON_TCP_AOUNEXPECTED;
 }
 
 static inline struct tcp_ao_key *tcp_ao_do_lookup(const struct sock *sk,

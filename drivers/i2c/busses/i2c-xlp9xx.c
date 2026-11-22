@@ -452,7 +452,7 @@ static u32 xlp9xx_i2c_functionality(struct i2c_adapter *adapter)
 }
 
 static const struct i2c_algorithm xlp9xx_i2c_algo = {
-	.master_xfer = xlp9xx_i2c_xfer,
+	.xfer = xlp9xx_i2c_xfer,
 	.functionality = xlp9xx_i2c_functionality,
 };
 
@@ -508,7 +508,7 @@ static int xlp9xx_i2c_probe(struct platform_device *pdev)
 	struct xlp9xx_i2c_dev *priv;
 	int err = 0;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -530,7 +530,7 @@ static int xlp9xx_i2c_probe(struct platform_device *pdev)
 	err = devm_request_irq(&pdev->dev, priv->irq, xlp9xx_i2c_isr, 0,
 			       pdev->name, priv);
 	if (err)
-		return dev_err_probe(&pdev->dev, err, "IRQ request failed!\n");
+		return err;
 
 	init_completion(&priv->msg_complete);
 	priv->adapter.dev.parent = &pdev->dev;
@@ -570,16 +570,16 @@ static void xlp9xx_i2c_remove(struct platform_device *pdev)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id xlp9xx_i2c_acpi_ids[] = {
-	{"BRCM9007", 0},
-	{"CAV9007",  0},
-	{}
+	{ .id = "BRCM9007" },
+	{ .id = "CAV9007" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, xlp9xx_i2c_acpi_ids);
 #endif
 
 static struct platform_driver xlp9xx_i2c_driver = {
 	.probe = xlp9xx_i2c_probe,
-	.remove_new = xlp9xx_i2c_remove,
+	.remove = xlp9xx_i2c_remove,
 	.driver = {
 		.name = "xlp9xx-i2c",
 		.acpi_match_table = ACPI_PTR(xlp9xx_i2c_acpi_ids),

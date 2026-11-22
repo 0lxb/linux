@@ -15,7 +15,7 @@
  * 09/2002 Helge Deller    <deller@gmx.de>
  *	(enable driver on big-endian machines (hppa), ioctl fixes)
  * 12/2002 Helge Deller    <deller@gmx.de>
- *	(port driver to new frambuffer infrastructure)
+ *	(port driver to new framebuffer infrastructure)
  * 01/2003 Helge Deller    <deller@gmx.de>
  *	(initial work on fb hardware acceleration for voodoo2)
  * 08/2006 Alan Cox 	   <alan@redhat.com>
@@ -358,6 +358,9 @@ static int sstfb_check_var(struct fb_var_screeninfo *var,
 	int vSyncOn    = var->vsync_len;
 	int tiles_in_X, real_length;
 	unsigned int freq;
+
+	if (!var->pixclock)
+		return -EINVAL;
 
 	if (sst_calc_pll(PICOS2KHZ(var->pixclock), &freq, &par->pll)) {
 		printk(KERN_ERR "sstfb: Pixclock at %ld KHZ out of range\n",
@@ -716,6 +719,7 @@ static void sstfb_setvgapass( struct fb_info *info, int enable )
 	pci_write_config_dword(sst_dev, PCI_INIT_ENABLE, tmp);
 }
 
+#ifdef CONFIG_FB_DEVICE
 static ssize_t store_vgapass(struct device *device, struct device_attribute *attr,
 			const char *buf, size_t count)
 {
@@ -739,7 +743,8 @@ static ssize_t show_vgapass(struct device *device, struct device_attribute *attr
 
 static struct device_attribute device_attrs[] = {
 	__ATTR(vgapass, S_IRUGO|S_IWUSR, show_vgapass, store_vgapass)
-	};
+};
+#endif
 
 static int sstfb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg)
@@ -1330,7 +1335,8 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return err;
 
 	/* Enable device in PCI config. */
-	if ((err=pci_enable_device(pdev))) {
+	err = pcim_enable_device(pdev);
+	if (err) {
 		printk(KERN_ERR "cannot enable device\n");
 		return err;
 	}
@@ -1436,9 +1442,10 @@ static int sstfb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	sstfb_clear_screen(info);
 
+#ifdef CONFIG_FB_DEVICE
 	if (device_create_file(info->dev, &device_attrs[0]))
 		printk(KERN_WARNING "sstfb: can't create sysfs entry.\n");
-
+#endif
 
 	fb_info(info, "%s frame buffer device at 0x%p\n",
 		fix->id, info->screen_base);
@@ -1468,7 +1475,9 @@ static void sstfb_remove(struct pci_dev *pdev)
 	info = pci_get_drvdata(pdev);
 	par = info->par;
 
+#ifdef CONFIG_FB_DEVICE
 	device_remove_file(info->dev, &device_attrs[0]);
+#endif
 	sst_shutdown(info);
 	iounmap(info->screen_base);
 	iounmap(par->mmio_vbase);
@@ -1487,6 +1496,7 @@ static const struct pci_device_id sstfb_id_tbl[] = {
 		.driver_data = ID_VOODOO2, },
 	{ 0 },
 };
+MODULE_DEVICE_TABLE(pci, sstfb_id_tbl);
 
 static struct pci_driver sstfb_driver = {
 	.name		= "sstfb",

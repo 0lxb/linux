@@ -21,7 +21,7 @@
 
 static void mwifiex_sdio_work(struct work_struct *work);
 
-static struct mwifiex_if_ops sdio_ops;
+static const struct mwifiex_if_ops sdio_ops;
 
 static const struct mwifiex_sdio_card_reg mwifiex_reg_sd87xx = {
 	.start_rd_port = 1,
@@ -332,6 +332,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8786 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = false,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8787 = {
@@ -348,6 +349,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8787 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8797 = {
@@ -364,6 +366,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8797 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8897 = {
@@ -380,6 +383,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8897 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8977 = {
@@ -397,6 +401,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8977 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8978 = {
@@ -414,6 +419,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8978 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = true,
+	.host_mlme = true,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8997 = {
@@ -432,6 +438,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8997 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = true,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8887 = {
@@ -448,6 +455,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8887 = {
 	.can_auto_tdls = true,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8987 = {
@@ -465,6 +473,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8987 = {
 	.can_auto_tdls = true,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static const struct mwifiex_sdio_device mwifiex_sdio_sd8801 = {
@@ -481,6 +490,7 @@ static const struct mwifiex_sdio_device mwifiex_sdio_sd8801 = {
 	.can_auto_tdls = false,
 	.can_ext_scan = true,
 	.fw_ready_extra_delay = false,
+	.host_mlme = false,
 };
 
 static struct memory_type_mapping generic_mem_type_map[] = {
@@ -546,7 +556,7 @@ mwifiex_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
 	pr_debug("info: vendor=0x%4.04X device=0x%4.04X class=%d function=%d\n",
 		 func->vendor, func->device, func->class, func->num);
 
-	card = devm_kzalloc(&func->dev, sizeof(*card), GFP_KERNEL);
+	card = devm_kzalloc_obj(&func->dev, *card);
 	if (!card)
 		return -ENOMEM;
 
@@ -574,6 +584,7 @@ mwifiex_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
 		card->can_auto_tdls = data->can_auto_tdls;
 		card->can_ext_scan = data->can_ext_scan;
 		card->fw_ready_extra_delay = data->fw_ready_extra_delay;
+		card->host_mlme = data->host_mlme;
 		INIT_WORK(&card->work, mwifiex_sdio_work);
 	}
 
@@ -979,7 +990,6 @@ static struct sdio_driver mwifiex_sdio = {
 	.probe = mwifiex_sdio_probe,
 	.remove = mwifiex_sdio_remove,
 	.drv = {
-		.owner = THIS_MODULE,
 		.coredump = mwifiex_sdio_coredump,
 		.pm = &mwifiex_sdio_pm_ops,
 	}
@@ -2512,6 +2522,8 @@ static int mwifiex_register_dev(struct mwifiex_adapter *adapter)
 		adapter->num_mem_types = ARRAY_SIZE(mem_type_mapping_tbl);
 	}
 
+	adapter->host_mlme_enabled = card->host_mlme;
+
 	return 0;
 }
 
@@ -2574,9 +2586,8 @@ static int mwifiex_init_sdio(struct mwifiex_adapter *adapter)
 	if (!card->mp_regs)
 		return -ENOMEM;
 
-	card->mpa_rx.len_arr = kcalloc(card->mp_agg_pkt_limit,
-				       sizeof(*card->mpa_rx.len_arr),
-				       GFP_KERNEL);
+	card->mpa_rx.len_arr = kzalloc_objs(*card->mpa_rx.len_arr,
+					    card->mp_agg_pkt_limit);
 	if (!card->mpa_rx.len_arr) {
 		kfree(card->mp_regs);
 		return -ENOMEM;
@@ -2783,6 +2794,9 @@ static void mwifiex_sdio_fw_dump(struct mwifiex_adapter *adapter)
 		mwifiex_dbg(adapter, ERROR, "SDIO read memory length err\n");
 		goto done;
 	}
+	/* Limit the dump count to the memory table size */
+	if (dump_num > ARRAY_SIZE(mem_type_mapping_tbl))
+		dump_num = ARRAY_SIZE(mem_type_mapping_tbl);
 
 	/* Read the length of every memory which will dump */
 	for (idx = 0; idx < dump_num; idx++) {
@@ -3155,7 +3169,7 @@ static void mwifiex_sdio_up_dev(struct mwifiex_adapter *adapter)
 		dev_err(&card->func->dev, "error enabling SDIO port\n");
 }
 
-static struct mwifiex_if_ops sdio_ops = {
+static const struct mwifiex_if_ops sdio_ops = {
 	.init_if = mwifiex_init_sdio,
 	.cleanup_if = mwifiex_cleanup_sdio,
 	.check_fw_status = mwifiex_check_fw_status,
@@ -3183,7 +3197,7 @@ static struct mwifiex_if_ops sdio_ops = {
 	.up_dev = mwifiex_sdio_up_dev,
 };
 
-module_driver(mwifiex_sdio, sdio_register_driver, sdio_unregister_driver);
+module_sdio_driver(mwifiex_sdio);
 
 MODULE_AUTHOR("Marvell International Ltd.");
 MODULE_DESCRIPTION("Marvell WiFi-Ex SDIO Driver version " SDIO_VERSION);
@@ -3192,6 +3206,7 @@ MODULE_LICENSE("GPL v2");
 MODULE_FIRMWARE(SD8786_DEFAULT_FW_NAME);
 MODULE_FIRMWARE(SD8787_DEFAULT_FW_NAME);
 MODULE_FIRMWARE(SD8797_DEFAULT_FW_NAME);
+MODULE_FIRMWARE(SD8801_DEFAULT_FW_NAME);
 MODULE_FIRMWARE(SD8897_DEFAULT_FW_NAME);
 MODULE_FIRMWARE(SD8887_DEFAULT_FW_NAME);
 MODULE_FIRMWARE(SD8977_DEFAULT_FW_NAME);

@@ -12,6 +12,7 @@
 #include <../selftests/kselftest.h>
 
 #define MEM_SIZE		SZ_32K
+#define PHYS_MEM_SIZE		SZ_16M
 #define NUMA_NODES		8
 
 #define INIT_MEMBLOCK_REGIONS			128
@@ -22,8 +23,6 @@ enum test_flags {
 	TEST_F_NONE = 0x0,
 	/* Perform raw allocations (no zeroing of memory). */
 	TEST_F_RAW = 0x1,
-	/* Perform allocations on the exact node specified. */
-	TEST_F_EXACT = 0x2
 };
 
 /**
@@ -38,6 +37,9 @@ enum test_flags {
 		test_fail(); \
 	assert((_expected) == (_seen)); \
 } while (0)
+
+#define ASSERT_TRUE(_seen) ASSERT_EQ(true, _seen)
+#define ASSERT_FALSE(_seen) ASSERT_EQ(false, _seen)
 
 /**
  * ASSERT_NE():

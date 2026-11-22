@@ -48,13 +48,16 @@ properties:
           - const: renesas,rcar_sound-gen3
       # for Gen4 SoC
       - items:
-          - const: renesas,rcar_sound-r8a779g0  # R-Car V4H
+          - enum:
+              - renesas,rcar_sound-r8a779g0  # R-Car V4H
+              - renesas,rcar_sound-r8a779h0  # R-Car V4M
           - const: renesas,rcar_sound-gen4
       # for Generic
       - enum:
           - renesas,rcar_sound-gen1
           - renesas,rcar_sound-gen2
           - renesas,rcar_sound-gen3
+          - renesas,rcar_sound-gen4
 
   reg:
     minItems: 1
@@ -293,7 +296,7 @@ allOf:
         reg-names:
           items:
             enum:
-              - scu
+              - sru
               - ssi
               - adg
   # for Gen2/Gen3
@@ -429,14 +432,14 @@ examples:
                       "ssi.1", "ssi.0";
 
         rcar_sound,dvc {
-               dvc0: dvc-0 {
-                    dmas = <&audma0 0xbc>;
-                    dma-names = "tx";
-               };
-               dvc1: dvc-1 {
-                    dmas = <&audma0 0xbe>;
-                    dma-names = "tx";
-               };
+            dvc0: dvc-0 {
+                dmas = <&audma0 0xbc>;
+                dma-names = "tx";
+            };
+            dvc1: dvc-1 {
+                dmas = <&audma0 0xbe>;
+                dma-names = "tx";
+            };
         };
 
         rcar_sound,mix {

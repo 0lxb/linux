@@ -15,7 +15,7 @@
 #include "pmbus.h"
 
 static const struct regulator_desc __maybe_unused tda38640_reg_desc[] = {
-	PMBUS_REGULATOR_ONE("vout"),
+	PMBUS_REGULATOR_ONE_NODE("vout"),
 };
 
 struct tda38640_data {
@@ -164,7 +164,7 @@ static int tda38640_probe(struct i2c_client *client)
 	struct tda38640_data *data;
 	int svid;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, *data);
 	if (!data)
 		return -ENOMEM;
 	memcpy(&data->info, &tda38640_info, sizeof(tda38640_info));
@@ -195,8 +195,8 @@ static int tda38640_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tda38640_id[] = {
-	{"tda38640", 0},
-	{}
+	{ .name = "tda38640" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tda38640_id);
 
@@ -221,4 +221,4 @@ module_i2c_driver(tda38640_driver);
 MODULE_AUTHOR("Patrick Rudolph <patrick.rudolph@9elements.com>");
 MODULE_DESCRIPTION("PMBus driver for Infineon TDA38640");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(PMBUS);
+MODULE_IMPORT_NS("PMBUS");

@@ -234,15 +234,14 @@ static int bcm_omega_probe(struct phy_device *phydev)
 {
 	struct bcm_omega_phy_priv *priv;
 
-	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&phydev->mdio.dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
 	phydev->priv = priv;
 
-	priv->stats = devm_kcalloc(&phydev->mdio.dev,
-				   bcm_phy_get_sset_count(phydev), sizeof(u64),
-				   GFP_KERNEL);
+	priv->stats = devm_kzalloc_objs(&phydev->mdio.dev, u64,
+					bcm_phy_get_sset_count(phydev));
 	if (!priv->stats)
 		return -ENOMEM;
 
@@ -278,7 +277,7 @@ static struct phy_driver bcm_cygnus_phy_driver[] = {
 }
 };
 
-static struct mdio_device_id __maybe_unused bcm_cygnus_phy_tbl[] = {
+static const struct mdio_device_id __maybe_unused bcm_cygnus_phy_tbl[] = {
 	{ PHY_ID_BCM_CYGNUS, 0xfffffff0, },
 	{ PHY_ID_BCM_OMEGA, 0xfffffff0, },
 	{ }

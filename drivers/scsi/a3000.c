@@ -41,9 +41,9 @@ static irqreturn_t a3000_intr(int irq, void *data)
 	if (!(status & ISTR_INT_P))
 		return IRQ_NONE;
 	if (status & ISTR_INTS) {
-		spin_lock_irqsave(instance->host_lock, flags);
+		spin_lock_irqsave(&instance->host_lock, flags);
 		wd33c93_intr(instance);
-		spin_unlock_irqrestore(instance->host_lock, flags);
+		spin_unlock_irqrestore(&instance->host_lock, flags);
 		return IRQ_HANDLED;
 	}
 	pr_warn("Non-serviced A3000 SCSI-interrupt? ISTR = %02x\n", status);
@@ -295,10 +295,16 @@ static void __exit amiga_a3000_scsi_remove(struct platform_device *pdev)
 	release_mem_region(res->start, resource_size(res));
 }
 
-static struct platform_driver amiga_a3000_scsi_driver = {
-	.remove_new = __exit_p(amiga_a3000_scsi_remove),
-	.driver   = {
-		.name	= "amiga-a3000-scsi",
+/*
+ * amiga_a3000_scsi_remove() lives in .exit.text. For drivers registered via
+ * module_platform_driver_probe() this is ok because they cannot get unbound at
+ * runtime. So mark the driver struct with __refdata to prevent modpost
+ * triggering a section mismatch warning.
+ */
+static struct platform_driver amiga_a3000_scsi_driver __refdata = {
+	.remove = __exit_p(amiga_a3000_scsi_remove),
+	.driver = {
+		.name = "amiga-a3000-scsi",
 	},
 };
 

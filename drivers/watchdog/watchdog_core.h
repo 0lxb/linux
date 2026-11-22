@@ -24,8 +24,14 @@
  *	This material is provided "AS-IS" and at no charge.
  */
 
-#include <linux/hrtimer.h>
+#include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/hrtimer_types.h>
+#include <linux/init.h>
 #include <linux/kthread.h>
+#include <linux/mutex_types.h>
+#include <linux/types.h>
+#include <linux/watchdog.h>
 
 #define MAX_DOGS	32	/* Maximum number of watchdog devices */
 
@@ -54,6 +60,7 @@ struct watchdog_core_data {
 #define _WDOG_DEV_OPEN		0	/* Opened ? */
 #define _WDOG_ALLOW_RELEASE	1	/* Did we receive the magic char ? */
 #define _WDOG_KEEPALIVE		2	/* Did we receive a keepalive ? */
+#define _WDOG_SUSPENDED		3	/* Suspended ? */
 };
 
 /*

@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2017 Intel Corporation. All rights reserved.
+ * Copyright(c) 2017 Intel Corporation
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -11,6 +11,7 @@
 #ifndef __SOF_INTEL_HDA_H
 #define __SOF_INTEL_HDA_H
 
+#include <linux/completion.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_intel.h>
 #include <sound/compress_driver.h>
@@ -417,10 +418,10 @@
 	(HDA_DSP_BDL_SIZE / sizeof(struct sof_intel_dsp_bdl))
 
 /* Number of DAIs */
-#define SOF_SKL_NUM_DAIS_NOCODEC	8
+#define SOF_SKL_NUM_DAIS_NOCODEC	9
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_AUDIO_CODEC)
-#define SOF_SKL_NUM_DAIS		15
+#define SOF_SKL_NUM_DAIS		16
 #else
 #define SOF_SKL_NUM_DAIS		SOF_SKL_NUM_DAIS_NOCODEC
 #endif
@@ -453,6 +454,8 @@
 #define SSP_SET_SFRM_CONSUMER	BIT(24)
 #define SSP_SET_CBP_CFP		(SSP_SET_SCLK_CONSUMER | SSP_SET_SFRM_CONSUMER)
 
+#define HDA_EXT_ADDR		0
+#define HDA_EXT_CODEC(x) ((x) & BIT(HDA_EXT_ADDR))
 #define HDA_IDISP_ADDR		2
 #define HDA_IDISP_CODEC(x) ((x) & BIT(HDA_IDISP_ADDR))
 
@@ -484,6 +487,11 @@ enum sof_hda_D0_substate {
 	SOF_HDA_DSP_PM_D0I3,	/* low power D0 substate */
 };
 
+struct sof_ace3_mic_privacy {
+	bool active;
+	struct work_struct work;
+};
+
 /* represents DSP HDA controller frontend - i.e. host facing control */
 struct sof_intel_hda_dev {
 	bool imrboot_supported;
@@ -491,6 +499,15 @@ struct sof_intel_hda_dev {
 	bool booted_from_imr;
 
 	int boot_iteration;
+
+	/*
+	 * DMA buffers for base firmware download. By default the buffers are
+	 * allocated once and kept through the lifetime of the driver.
+	 * See module parameter: persistent_cl_buffer
+	 */
+	struct snd_dma_buffer cl_dmab;
+	bool cl_dmab_contains_basefw;
+	struct snd_dma_buffer iccmax_dmab;
 
 	struct hda_bus hbus;
 
@@ -505,6 +522,29 @@ struct sof_intel_hda_dev {
 
 	/* the maximum number of streams (playback + capture) supported */
 	u32 stream_max;
+
+	/*
+	 * ACE2+ link DMA stream allocation constraints (stream index =
+	 * stream_tag - 1, shared between input and output directions). All
+	 * masks are cleared by hda_dsp_ctrl_init_chip() on controller reset
+	 * (CRST#).
+	 *
+	 * - Concurrent (cross-direction) constraint: a SoundWire stream and
+	 *   a HDA/iDisp/UAOL stream cannot share a physical stream index
+	 *   across directions, the resulting LLP/timestamp values are wrong.
+	 *   link_dma_active_sdw_mask and link_dma_active_multi_mask
+	 *   (indexed by SNDRV_PCM_STREAM_*) track currently allocated
+	 *   streams per direction in each of the conflicting groups; SSP
+	 *   and DMIC do not participate. Bits are cleared on stream release.
+	 *
+	 * - Sequential (playback only) constraint: once a HDA/iDisp link
+	 *   has used a playback stream index, that index cannot drive a
+	 *   non-HDA/iDisp link in the same direction until the next CRST#.
+	 *   link_dma_out_hda_used_mask records this.
+	 */
+	u32 link_dma_active_sdw_mask[SNDRV_PCM_STREAM_LAST + 1];
+	u32 link_dma_active_multi_mask[SNDRV_PCM_STREAM_LAST + 1];
+	u32 link_dma_out_hda_used_mask;
 
 	/* PM related */
 	bool l1_disabled;/* is DMI link L1 disabled? */
@@ -529,6 +569,9 @@ struct sof_intel_hda_dev {
 
 	/* Intel NHLT information */
 	struct nhlt_acpi_table *nhlt;
+
+	/* work queue for mic privacy state change notification sending */
+	struct sof_ace3_mic_privacy mic_privacy;
 
 	/*
 	 * Pointing to the IPC message if immediate sending was not possible
@@ -559,6 +602,7 @@ struct sof_intel_hda_stream {
 	struct sof_intel_stream sof_intel_stream;
 	int host_reserved; /* reserve host DMA channel */
 	u32 flags;
+	struct completion ioc;
 };
 
 #define hstream_to_sof_hda_stream(hstream) \
@@ -615,6 +659,8 @@ void hda_ipc_dump(struct snd_sof_dev *sdev);
 void hda_ipc_irq_dump(struct snd_sof_dev *sdev);
 void hda_dsp_d0i3_work(struct work_struct *work);
 int hda_dsp_disable_interrupts(struct snd_sof_dev *sdev);
+bool hda_check_ipc_irq(struct snd_sof_dev *sdev);
+u32 hda_get_interface_mask(struct snd_sof_dev *sdev);
 
 /*
  * DSP PCM Operations.
@@ -636,6 +682,21 @@ int hda_dsp_pcm_trigger(struct snd_sof_dev *sdev,
 snd_pcm_uframes_t hda_dsp_pcm_pointer(struct snd_sof_dev *sdev,
 				      struct snd_pcm_substream *substream);
 int hda_dsp_pcm_ack(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream);
+
+int hda_dsp_compr_open(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream);
+int hda_dsp_compr_close(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream);
+int hda_dsp_compr_hw_params(struct snd_sof_dev *sdev,
+			    struct snd_compr_stream *cstream,
+			    struct snd_compr_params *params,
+			    struct snd_sof_platform_stream_params *platform_params);
+int hda_dsp_stream_compr_hw_free(struct snd_sof_dev *sdev,
+				 struct snd_compr_stream *cstream);
+int hda_dsp_compr_trigger(struct snd_sof_dev *sdev,
+			  struct snd_compr_stream *cstream, int cmd);
+int hda_dsp_compr_pointer(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream,
+			  struct snd_compr_tstamp64 *tstamp);
+u64 hda_dsp_compr_get_stream_llp(struct snd_sof_dev *sdev,
+				 struct snd_compr_stream *cstream);
 
 /*
  * DSP Stream Operations.
@@ -662,10 +723,19 @@ bool hda_dsp_check_stream_irq(struct snd_sof_dev *sdev);
 
 snd_pcm_uframes_t hda_dsp_stream_get_position(struct hdac_stream *hstream,
 					      int direction, bool can_sleep);
+u64 hda_dsp_get_stream_llp(struct snd_sof_dev *sdev,
+			   struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream);
+u64 hda_dsp_get_stream_ldp(struct snd_sof_dev *sdev,
+			   struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream);
 
 struct hdac_ext_stream *
 	hda_dsp_stream_get(struct snd_sof_dev *sdev, int direction, u32 flags);
+struct hdac_ext_stream *
+	hda_dsp_stream_pair_get(struct snd_sof_dev *sdev, int direction, u32 flags);
 int hda_dsp_stream_put(struct snd_sof_dev *sdev, int direction, int stream_tag);
+int hda_dsp_stream_pair_put(struct snd_sof_dev *sdev, int direction, int stream_tag);
 int hda_dsp_stream_spib_config(struct snd_sof_dev *sdev,
 			       struct hdac_ext_stream *hext_stream,
 			       int enable, u32 size);
@@ -689,17 +759,25 @@ int hda_dsp_ipc_get_window_offset(struct snd_sof_dev *sdev, u32 id);
 irqreturn_t hda_dsp_ipc_irq_thread(int irq, void *context);
 int hda_dsp_ipc_cmd_done(struct snd_sof_dev *sdev, int dir);
 
+void hda_dsp_get_state(struct snd_sof_dev *sdev, const char *level);
+void hda_dsp_dump_ext_rom_status(struct snd_sof_dev *sdev, const char *level,
+				 u32 flags);
+
 /*
  * DSP Code loader.
  */
 int hda_dsp_cl_boot_firmware(struct snd_sof_dev *sdev);
 int hda_dsp_cl_boot_firmware_iccmax(struct snd_sof_dev *sdev);
 int hda_cl_copy_fw(struct snd_sof_dev *sdev, struct hdac_ext_stream *hext_stream);
-struct hdac_ext_stream *hda_cl_stream_prepare(struct snd_sof_dev *sdev, unsigned int format,
-					      unsigned int size, struct snd_dma_buffer *dmab,
-					      int direction);
-int hda_cl_cleanup(struct snd_sof_dev *sdev, struct snd_dma_buffer *dmab,
-		   struct hdac_ext_stream *hext_stream);
+
+struct hdac_ext_stream *hda_cl_prepare(struct device *dev, unsigned int format,
+				       unsigned int size, struct snd_dma_buffer *dmab,
+				       bool persistent_buffer, int direction,
+				       bool is_iccmax);
+int hda_cl_trigger(struct device *dev, struct hdac_ext_stream *hext_stream, int cmd);
+
+int hda_cl_cleanup(struct device *dev, struct snd_dma_buffer *dmab,
+		   bool persistent_buffer, struct hdac_ext_stream *hext_stream, bool is_iccmax);
 int cl_dsp_init(struct snd_sof_dev *sdev, int stream_tag, bool imr_boot);
 #define HDA_CL_STREAM_FORMAT 0x40
 
@@ -720,7 +798,7 @@ void hda_dsp_ctrl_ppcap_int_enable(struct snd_sof_dev *sdev, bool enable);
 int hda_dsp_ctrl_link_reset(struct snd_sof_dev *sdev, bool reset);
 void hda_dsp_ctrl_misc_clock_gating(struct snd_sof_dev *sdev, bool enable);
 int hda_dsp_ctrl_clock_power_gating(struct snd_sof_dev *sdev, bool enable);
-int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev);
+int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev, bool detect_codec);
 void hda_dsp_ctrl_stop_chip(struct snd_sof_dev *sdev);
 /*
  * HDA bus operations.
@@ -793,10 +871,12 @@ int hda_dsp_trace_trigger(struct snd_sof_dev *sdev, int cmd);
 
 int hda_sdw_check_lcount_common(struct snd_sof_dev *sdev);
 int hda_sdw_check_lcount_ext(struct snd_sof_dev *sdev);
+int hda_sdw_check_lcount(struct snd_sof_dev *sdev);
 int hda_sdw_startup(struct snd_sof_dev *sdev);
 void hda_common_enable_sdw_irq(struct snd_sof_dev *sdev, bool enable);
 void hda_sdw_int_enable(struct snd_sof_dev *sdev, bool enable);
 bool hda_sdw_check_wakeen_irq_common(struct snd_sof_dev *sdev);
+void hda_sdw_process_wakeen_common(struct snd_sof_dev *sdev);
 void hda_sdw_process_wakeen(struct snd_sof_dev *sdev);
 bool hda_common_check_sdw_irq(struct snd_sof_dev *sdev);
 
@@ -808,6 +888,11 @@ static inline int hda_sdw_check_lcount_common(struct snd_sof_dev *sdev)
 }
 
 static inline int hda_sdw_check_lcount_ext(struct snd_sof_dev *sdev)
+{
+	return 0;
+}
+
+static inline int hda_sdw_check_lcount(struct snd_sof_dev *sdev)
 {
 	return 0;
 }
@@ -830,6 +915,10 @@ static inline bool hda_sdw_check_wakeen_irq_common(struct snd_sof_dev *sdev)
 	return false;
 }
 
+static inline void hda_sdw_process_wakeen_common(struct snd_sof_dev *sdev)
+{
+}
+
 static inline void hda_sdw_process_wakeen(struct snd_sof_dev *sdev)
 {
 }
@@ -844,7 +933,8 @@ static inline bool hda_common_check_sdw_irq(struct snd_sof_dev *sdev)
 int sdw_hda_dai_hw_params(struct snd_pcm_substream *substream,
 			  struct snd_pcm_hw_params *params,
 			  struct snd_soc_dai *cpu_dai,
-			  int link_id);
+			  int link_id,
+			  int intel_alh_id);
 
 int sdw_hda_dai_hw_free(struct snd_pcm_substream *substream,
 			struct snd_soc_dai *cpu_dai,
@@ -853,6 +943,15 @@ int sdw_hda_dai_hw_free(struct snd_pcm_substream *substream,
 int sdw_hda_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 			struct snd_soc_dai *cpu_dai);
 
+struct hdac_ext_stream *
+hda_data_stream_prepare(struct device *dev, unsigned int format, unsigned int size,
+			struct snd_dma_buffer *dmab, bool persistent_buffer, int direction,
+			bool is_iccmax, bool pair);
+
+int hda_data_stream_cleanup(struct device *dev, struct snd_dma_buffer *dmab,
+			    bool persistent_buffer, struct hdac_ext_stream *hext_stream,
+			    bool is_iccmax, bool pair);
+
 /* common dai driver */
 extern struct snd_soc_dai_driver skl_dai[];
 int hda_dsp_dais_suspend(struct snd_sof_dev *sdev);
@@ -860,7 +959,7 @@ int hda_dsp_dais_suspend(struct snd_sof_dev *sdev);
 /*
  * Platform Specific HW abstraction Ops.
  */
-extern struct snd_sof_dsp_ops sof_hda_common_ops;
+extern const struct snd_sof_dsp_ops sof_hda_common_ops;
 
 extern struct snd_sof_dsp_ops sof_skl_ops;
 int sof_skl_ops_init(struct snd_sof_dev *sdev);
@@ -872,10 +971,6 @@ extern struct snd_sof_dsp_ops sof_tgl_ops;
 int sof_tgl_ops_init(struct snd_sof_dev *sdev);
 extern struct snd_sof_dsp_ops sof_icl_ops;
 int sof_icl_ops_init(struct snd_sof_dev *sdev);
-extern struct snd_sof_dsp_ops sof_mtl_ops;
-int sof_mtl_ops_init(struct snd_sof_dev *sdev);
-extern struct snd_sof_dsp_ops sof_lnl_ops;
-int sof_lnl_ops_init(struct snd_sof_dev *sdev);
 
 extern const struct sof_intel_dsp_desc skl_chip_info;
 extern const struct sof_intel_dsp_desc apl_chip_info;
@@ -889,6 +984,10 @@ extern const struct sof_intel_dsp_desc adls_chip_info;
 extern const struct sof_intel_dsp_desc mtl_chip_info;
 extern const struct sof_intel_dsp_desc arl_s_chip_info;
 extern const struct sof_intel_dsp_desc lnl_chip_info;
+extern const struct sof_intel_dsp_desc ptl_chip_info;
+extern const struct sof_intel_dsp_desc wcl_chip_info;
+extern const struct sof_intel_dsp_desc nvl_chip_info;
+extern const struct sof_intel_dsp_desc nvl_s_chip_info;
 
 /* Probes support */
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_PROBES)
@@ -970,7 +1069,8 @@ struct hda_dai_widget_dma_ops {
 						   struct snd_pcm_substream *substream);
 	struct hdac_ext_stream *(*assign_hext_stream)(struct snd_sof_dev *sdev,
 						      struct snd_soc_dai *cpu_dai,
-						      struct snd_pcm_substream *substream);
+						      struct snd_pcm_substream *substream,
+						      struct hdac_ext_link *hlink);
 	void (*release_hext_stream)(struct snd_sof_dev *sdev, struct snd_soc_dai *cpu_dai,
 				    struct snd_pcm_substream *substream);
 	void (*setup_hext_stream)(struct snd_sof_dev *sdev, struct hdac_ext_stream *hext_stream,
@@ -996,7 +1096,13 @@ const struct hda_dai_widget_dma_ops *
 hda_select_dai_widget_ops(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget);
 int hda_dai_config(struct snd_soc_dapm_widget *w, unsigned int flags,
 		   struct snd_sof_dai_config_data *data);
-int hda_link_dma_cleanup(struct snd_pcm_substream *substream, struct hdac_ext_stream *hext_stream,
-			 struct snd_soc_dai *cpu_dai);
+
+static inline struct snd_sof_dev *widget_to_sdev(struct snd_soc_dapm_widget *w)
+{
+	struct snd_sof_widget *swidget = w->dobj.private;
+	struct snd_soc_component *component = swidget->scomp;
+
+	return snd_soc_component_get_drvdata(component);
+}
 
 #endif

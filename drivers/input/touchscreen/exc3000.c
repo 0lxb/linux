@@ -22,7 +22,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/sizes.h>
 #include <linux/timer.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define EXC3000_NUM_SLOTS		10
 #define EXC3000_SLOTS_PER_FRAME		5
@@ -53,6 +53,7 @@ enum eeti_dev_id {
 	EETI_EXC3000,
 	EETI_EXC80H60,
 	EETI_EXC80H84,
+	EETI_EXC81W32,
 };
 
 static struct eeti_dev_info exc3000_info[] = {
@@ -66,6 +67,10 @@ static struct eeti_dev_info exc3000_info[] = {
 	},
 	[EETI_EXC80H84] = {
 		.name = "EETI EXC80H84 Touch Screen",
+		.max_xy = SZ_16K - 1,
+	},
+	[EETI_EXC81W32] = {
+		.name = "EETI EXC81W32 Touch Screen",
 		.max_xy = SZ_16K - 1,
 	},
 };
@@ -100,7 +105,7 @@ static void exc3000_report_slots(struct input_dev *input,
 
 static void exc3000_timer(struct timer_list *t)
 {
-	struct exc3000_data *data = from_timer(data, t, timer);
+	struct exc3000_data *data = timer_container_of(data, t, timer);
 
 	input_mt_sync_frame(data->input);
 	input_sync(data->input);
@@ -169,7 +174,7 @@ static int exc3000_handle_mt_event(struct exc3000_data *data)
 	/*
 	 * We read full state successfully, no contacts will be "stuck".
 	 */
-	del_timer_sync(&data->timer);
+	timer_delete_sync(&data->timer);
 
 	while (total_slots > 0) {
 		int slots = min(total_slots, EXC3000_SLOTS_PER_FRAME);
@@ -229,7 +234,7 @@ static int exc3000_vendor_data_request(struct exc3000_data *data, u8 *request,
 	int ret;
 	unsigned long time_left;
 
-	mutex_lock(&data->query_lock);
+	guard(mutex)(&data->query_lock);
 
 	reinit_completion(&data->wait_event);
 
@@ -238,29 +243,18 @@ static int exc3000_vendor_data_request(struct exc3000_data *data, u8 *request,
 
 	ret = i2c_master_send(data->client, buf, EXC3000_LEN_VENDOR_REQUEST);
 	if (ret < 0)
-		goto out_unlock;
+		return ret;
 
-	if (response) {
-		time_left = wait_for_completion_timeout(&data->wait_event,
-							timeout * HZ);
-		if (time_left == 0) {
-			ret = -ETIMEDOUT;
-			goto out_unlock;
-		}
+	time_left = wait_for_completion_timeout(&data->wait_event,
+						timeout * HZ);
+	if (time_left == 0)
+		return -ETIMEDOUT;
 
-		if (data->buf[3] >= EXC3000_LEN_FRAME) {
-			ret = -ENOSPC;
-			goto out_unlock;
-		}
+	if (data->buf[3] >= EXC3000_LEN_FRAME)
+		return -ENOSPC;
 
-		memcpy(response, &data->buf[4], data->buf[3]);
-		ret = data->buf[3];
-	}
-
-out_unlock:
-	mutex_unlock(&data->query_lock);
-
-	return ret;
+	memcpy(response, &data->buf[4], data->buf[3]);
+	return data->buf[3];
 }
 
 static ssize_t fw_version_show(struct device *dev,
@@ -339,7 +333,7 @@ static int exc3000_probe(struct i2c_client *client)
 	struct input_dev *input;
 	int error, max_xy, retry;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -438,9 +432,10 @@ static int exc3000_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id exc3000_id[] = {
-	{ "exc3000", EETI_EXC3000 },
-	{ "exc80h60", EETI_EXC80H60 },
-	{ "exc80h84", EETI_EXC80H84 },
+	{ .name = "exc3000", .driver_data = EETI_EXC3000 },
+	{ .name = "exc80h60", .driver_data = EETI_EXC80H60 },
+	{ .name = "exc80h84", .driver_data = EETI_EXC80H84 },
+	{ .name = "exc81w32", .driver_data = EETI_EXC81W32 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, exc3000_id);
@@ -450,6 +445,7 @@ static const struct of_device_id exc3000_of_match[] = {
 	{ .compatible = "eeti,exc3000", .data = &exc3000_info[EETI_EXC3000] },
 	{ .compatible = "eeti,exc80h60", .data = &exc3000_info[EETI_EXC80H60] },
 	{ .compatible = "eeti,exc80h84", .data = &exc3000_info[EETI_EXC80H84] },
+	{ .compatible = "eeti,exc81w32", .data = &exc3000_info[EETI_EXC81W32] },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, exc3000_of_match);
@@ -457,7 +453,7 @@ MODULE_DEVICE_TABLE(of, exc3000_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id exc3000_acpi_match[] = {
-	{ "EGA00001", .driver_data = (kernel_ulong_t)&exc3000_info[EETI_EXC80H60] },
+	{ .id = "EGA00001", .driver_data = (kernel_ulong_t)&exc3000_info[EETI_EXC80H60] },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, exc3000_acpi_match);

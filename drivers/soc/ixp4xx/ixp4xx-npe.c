@@ -752,6 +752,7 @@ static const struct of_device_id ixp4xx_npe_of_match[] = {
         },
 	{},
 };
+MODULE_DEVICE_TABLE(of, ixp4xx_npe_of_match);
 
 static struct platform_driver ixp4xx_npe_driver = {
 	.driver = {
@@ -759,11 +760,12 @@ static struct platform_driver ixp4xx_npe_driver = {
 		.of_match_table = ixp4xx_npe_of_match,
 	},
 	.probe = ixp4xx_npe_probe,
-	.remove_new = ixp4xx_npe_remove,
+	.remove = ixp4xx_npe_remove,
 };
 module_platform_driver(ixp4xx_npe_driver);
 
 MODULE_AUTHOR("Krzysztof Halasa");
+MODULE_DESCRIPTION("Intel IXP4xx Network Processor Engine driver");
 MODULE_LICENSE("GPL v2");
 MODULE_FIRMWARE(NPE_A_FIRMWARE);
 MODULE_FIRMWARE(NPE_B_FIRMWARE);

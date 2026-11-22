@@ -297,6 +297,7 @@ struct cec_dmi_match {
 static const char *const port_b_conns[] = { "Port B", NULL };
 static const char *const port_db_conns[] = { "Port D", "Port B", NULL };
 static const char *const port_ba_conns[] = { "Port B", "Port A", NULL };
+static const char *const port_ab_conns[] = { "Port A", "Port B", NULL };
 static const char *const port_d_conns[] = { "Port D", NULL };
 
 static const struct cec_dmi_match cec_dmi_match_table[] = {
@@ -328,6 +329,16 @@ static const struct cec_dmi_match cec_dmi_match_table[] = {
 	{ "Google", "Dexi", "0000:00:02.0", port_db_conns },
 	/* Google Dita */
 	{ "Google", "Dita", "0000:00:02.0", port_db_conns },
+	/* Google Dirks */
+	{ "Google", "Dirks", "0000:00:02.0", port_ab_conns },
+	/* Google Moxie */
+	{ "Google", "Moxie", "0000:00:02.0", port_b_conns },
+	/* Google Kulnex */
+	{ "Google", "Kulnex", "0000:00:02.0", port_b_conns },
+	/* Google Moxoe */
+	{ "Google", "Moxoe", "0000:00:02.0", port_b_conns },
+	/* Google Dirkson */
+	{ "Google", "Dirkson", "0000:00:02.0", port_ab_conns },
 };
 
 static struct device *cros_ec_cec_find_hdmi_dev(struct device *dev,
@@ -441,7 +452,7 @@ static int cros_ec_cec_init_port(struct device *dev,
 	struct cros_ec_cec_port *port;
 	int ret;
 
-	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
+	port = devm_kzalloc_obj(dev, *port);
 	if (!port)
 		return -ENOMEM;
 
@@ -496,8 +507,7 @@ static int cros_ec_cec_probe(struct platform_device *pdev)
 	if (IS_ERR(hdmi_dev))
 		return PTR_ERR(hdmi_dev);
 
-	cros_ec_cec = devm_kzalloc(&pdev->dev, sizeof(*cros_ec_cec),
-				   GFP_KERNEL);
+	cros_ec_cec = devm_kzalloc_obj(&pdev->dev, *cros_ec_cec);
 	if (!cros_ec_cec)
 		return -ENOMEM;
 
@@ -573,13 +583,20 @@ static void cros_ec_cec_remove(struct platform_device *pdev)
 	}
 }
 
+static const struct platform_device_id cros_ec_cec_id[] = {
+	{ DRV_NAME, 0 },
+	{}
+};
+MODULE_DEVICE_TABLE(platform, cros_ec_cec_id);
+
 static struct platform_driver cros_ec_cec_driver = {
 	.probe = cros_ec_cec_probe,
-	.remove_new = cros_ec_cec_remove,
+	.remove = cros_ec_cec_remove,
 	.driver = {
 		.name = DRV_NAME,
 		.pm = &cros_ec_cec_pm_ops,
 	},
+	.id_table = cros_ec_cec_id,
 };
 
 module_platform_driver(cros_ec_cec_driver);
@@ -587,4 +604,3 @@ module_platform_driver(cros_ec_cec_driver);
 MODULE_DESCRIPTION("CEC driver for ChromeOS ECs");
 MODULE_AUTHOR("Neil Armstrong <narmstrong@baylibre.com>");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:" DRV_NAME);

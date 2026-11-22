@@ -8,6 +8,8 @@
 #include "../../arch/arm64/include/asm/barrier.h"
 #elif defined(__powerpc__)
 #include "../../arch/powerpc/include/asm/barrier.h"
+#elif defined(__riscv)
+#include "../../arch/riscv/include/asm/barrier.h"
 #elif defined(__s390__)
 #include "../../arch/s390/include/asm/barrier.h"
 #elif defined(__sh__)
@@ -43,6 +45,14 @@
 
 #ifndef smp_mb
 # define smp_mb()	mb()
+#endif
+
+#ifndef dma_rmb
+# define dma_rmb()	rmb()
+#endif
+
+#ifndef dma_wmb
+# define dma_wmb()	wmb()
 #endif
 
 #ifndef smp_store_release

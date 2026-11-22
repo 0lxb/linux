@@ -78,7 +78,6 @@ static const int k3_adc_to_temp[] = {
 
 struct k3_bandgap {
 	void __iomem *base;
-	const struct k3_bandgap_data *conf;
 };
 
 /* common data structures */
@@ -169,7 +168,7 @@ static int k3_bandgap_probe(struct platform_device *pdev)
 						K3_VTM_ADC_BEGIN_VAL))
 		return -EINVAL;
 
-	bgp = devm_kzalloc(&pdev->dev, sizeof(*bgp), GFP_KERNEL);
+	bgp = devm_kzalloc_obj(&pdev->dev, *bgp);
 	if (!bgp)
 		return -ENOMEM;
 
@@ -191,7 +190,7 @@ static int k3_bandgap_probe(struct platform_device *pdev)
 	cnt = val & K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK;
 	cnt >>= __ffs(K3_VTM_DEVINFO_PWR0_TEMPSENS_CT_MASK);
 
-	data = devm_kcalloc(dev, cnt, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_objs(dev, *data, cnt);
 	if (!data) {
 		ret = -ENOMEM;
 		goto err_alloc;
@@ -251,7 +250,7 @@ MODULE_DEVICE_TABLE(of, of_k3_bandgap_match);
 
 static struct platform_driver k3_bandgap_sensor_driver = {
 	.probe = k3_bandgap_probe,
-	.remove_new = k3_bandgap_remove,
+	.remove = k3_bandgap_remove,
 	.driver = {
 		.name = "k3-soc-thermal",
 		.of_match_table	= of_k3_bandgap_match,

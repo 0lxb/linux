@@ -77,7 +77,7 @@ try_again:
 		spin_unlock(&key_user_lock);
 
 		user = NULL;
-		candidate = kmalloc(sizeof(struct key_user), GFP_KERNEL);
+		candidate = kmalloc_obj(struct key_user);
 		if (unlikely(!candidate))
 			goto out;
 
@@ -230,6 +230,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	struct key *key;
 	size_t desclen, quotalen;
 	int ret;
+	unsigned long irqflags;
 
 	key = ERR_PTR(-EINVAL);
 	if (!desc || !*desc)
@@ -244,6 +245,8 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	}
 
 	desclen = strlen(desc);
+	if (desclen >= KEY_MAX_DESC_SIZE)
+		goto error;
 	quotalen = desclen + 1 + type->def_datalen;
 
 	/* get hold of the key tracking for this user */
@@ -259,7 +262,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 		unsigned maxbytes = uid_eq(uid, GLOBAL_ROOT_UID) ?
 			key_quota_root_maxbytes : key_quota_maxbytes;
 
-		spin_lock(&user->lock);
+		spin_lock_irqsave(&user->lock, irqflags);
 		if (!(flags & KEY_ALLOC_QUOTA_OVERRUN)) {
 			if (user->qnkeys + 1 > maxkeys ||
 			    user->qnbytes + quotalen > maxbytes ||
@@ -269,7 +272,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 
 		user->qnkeys++;
 		user->qnbytes += quotalen;
-		spin_unlock(&user->lock);
+		spin_unlock_irqrestore(&user->lock, irqflags);
 	}
 
 	/* allocate and initialise the key and its description */
@@ -297,6 +300,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	key->restrict_link = restrict_link;
 	key->last_used_at = ktime_get_real_seconds();
 
+	key->flags |= 1 << KEY_FLAG_USER_ALIVE;
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA))
 		key->flags |= 1 << KEY_FLAG_IN_QUOTA;
 	if (flags & KEY_ALLOC_BUILT_IN)
@@ -327,10 +331,10 @@ security_error:
 	kfree(key->description);
 	kmem_cache_free(key_jar, key);
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {
-		spin_lock(&user->lock);
+		spin_lock_irqsave(&user->lock, irqflags);
 		user->qnkeys--;
 		user->qnbytes -= quotalen;
-		spin_unlock(&user->lock);
+		spin_unlock_irqrestore(&user->lock, irqflags);
 	}
 	key_user_put(user);
 	key = ERR_PTR(ret);
@@ -340,10 +344,10 @@ no_memory_3:
 	kmem_cache_free(key_jar, key);
 no_memory_2:
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {
-		spin_lock(&user->lock);
+		spin_lock_irqsave(&user->lock, irqflags);
 		user->qnkeys--;
 		user->qnbytes -= quotalen;
-		spin_unlock(&user->lock);
+		spin_unlock_irqrestore(&user->lock, irqflags);
 	}
 	key_user_put(user);
 no_memory_1:
@@ -351,7 +355,7 @@ no_memory_1:
 	goto error;
 
 no_quota:
-	spin_unlock(&user->lock);
+	spin_unlock_irqrestore(&user->lock, irqflags);
 	key_user_put(user);
 	key = ERR_PTR(-EDQUOT);
 	goto error;
@@ -380,8 +384,9 @@ int key_payload_reserve(struct key *key, size_t datalen)
 	if (delta != 0 && test_bit(KEY_FLAG_IN_QUOTA, &key->flags)) {
 		unsigned maxbytes = uid_eq(key->user->uid, GLOBAL_ROOT_UID) ?
 			key_quota_root_maxbytes : key_quota_maxbytes;
+		unsigned long flags;
 
-		spin_lock(&key->user->lock);
+		spin_lock_irqsave(&key->user->lock, flags);
 
 		if (delta > 0 &&
 		    (key->user->qnbytes + delta > maxbytes ||
@@ -392,7 +397,7 @@ int key_payload_reserve(struct key *key, size_t datalen)
 			key->user->qnbytes += delta;
 			key->quotalen += delta;
 		}
-		spin_unlock(&key->user->lock);
+		spin_unlock_irqrestore(&key->user->lock, flags);
 	}
 
 	/* change the recorded data length if that didn't generate an error */
@@ -463,7 +468,8 @@ static int __key_instantiate_and_link(struct key *key,
 			if (authkey)
 				key_invalidate(authkey);
 
-			key_set_expiry(key, prep->expiry);
+			if (prep->expiry != TIME64_MAX)
+				key_set_expiry(key, prep->expiry);
 		}
 	}
 
@@ -584,11 +590,18 @@ int key_reject_and_link(struct key *key,
 	ret = -EBUSY;
 
 	if (keyring) {
-		if (keyring->restrict_link)
-			return -EPERM;
-
 		link_ret = __key_link_lock(keyring, &key->index_key);
 		if (link_ret == 0) {
+			/*
+			 * Check the restriction under the keyring semaphore.
+			 * keyring_restrict() installs it while holding the
+			 * semaphore, so testing it beforehand races with a
+			 * concurrent restriction install.
+			 */
+			if (keyring->restrict_link) {
+				__key_link_end(keyring, &key->index_key, edit);
+				return -EPERM;
+			}
 			link_ret = __key_link_begin(keyring, &key->index_key, &edit);
 			if (link_ret < 0)
 				__key_link_end(keyring, &key->index_key, edit);
@@ -645,8 +658,20 @@ void key_put(struct key *key)
 	if (key) {
 		key_check(key);
 
-		if (refcount_dec_and_test(&key->usage))
+		if (refcount_dec_and_test(&key->usage)) {
+			unsigned long flags;
+
+			/* deal with the user's key tracking and quota */
+			if (test_bit(KEY_FLAG_IN_QUOTA, &key->flags)) {
+				spin_lock_irqsave(&key->user->lock, flags);
+				key->user->qnkeys--;
+				key->user->qnbytes -= key->quotalen;
+				spin_unlock_irqrestore(&key->user->lock, flags);
+			}
+			/* Mark key as safe for GC after key->user done. */
+			clear_bit_unlock(KEY_FLAG_USER_ALIVE, &key->flags);
 			schedule_work(&key_gc_work);
+		}
 	}
 }
 EXPORT_SYMBOL(key_put);
@@ -806,6 +831,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 	key_ref_t key_ref;
 	int ret;
 	struct key_restriction *restrict_link = NULL;
+	size_t desclen;
 
 	/* look up the key type to see if it's one of the registered kernel
 	 * types */
@@ -823,9 +849,6 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 	keyring = key_ref_to_ptr(keyring_ref);
 
 	key_check(keyring);
-
-	if (!(flags & KEY_ALLOC_BYPASS_RESTRICTION))
-		restrict_link = keyring->restrict_link;
 
 	key_ref = ERR_PTR(-ENOTDIR);
 	if (keyring->type != &key_type_keyring)
@@ -849,7 +872,12 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		if (!index_key.description)
 			goto error_free_prep;
 	}
-	index_key.desc_len = strlen(index_key.description);
+	desclen = strlen(index_key.description);
+	if (desclen >= KEY_MAX_DESC_SIZE) {
+		key_ref = ERR_PTR(-EINVAL);
+		goto error_free_prep;
+	}
+	index_key.desc_len = desclen;
 	key_set_index_key(&index_key);
 
 	ret = __key_link_lock(keyring, &index_key);
@@ -863,6 +891,9 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		key_ref = ERR_PTR(ret);
 		goto error_link_end;
 	}
+
+	if (!(flags & KEY_ALLOC_BYPASS_RESTRICTION))
+		restrict_link = keyring->restrict_link;
 
 	if (restrict_link && restrict_link->check) {
 		ret = restrict_link->check(keyring, index_key.type,
@@ -1070,9 +1101,12 @@ int key_update(key_ref_t key_ref, const void *payload, size_t plen)
 	if (ret < 0)
 		return ret;
 
+	down_write(&key->sem);
+
 	/* attempt to update it if supported */
+	ret = -EOPNOTSUPP;
 	if (!key->type->update)
-		return -EOPNOTSUPP;
+		goto out;
 
 	memset(&prep, 0, sizeof(prep));
 	prep.data = payload;
@@ -1082,10 +1116,8 @@ int key_update(key_ref_t key_ref, const void *payload, size_t plen)
 	if (key->type->preparse) {
 		ret = key->type->preparse(&prep);
 		if (ret < 0)
-			goto error;
+			goto out_free_preparse;
 	}
-
-	down_write(&key->sem);
 
 	ret = key->type->update(key, &prep);
 	if (ret == 0) {
@@ -1094,11 +1126,12 @@ int key_update(key_ref_t key_ref, const void *payload, size_t plen)
 		notify_key(key, NOTIFY_KEY_UPDATED, 0);
 	}
 
-	up_write(&key->sem);
-
-error:
+out_free_preparse:
 	if (key->type->preparse)
 		key->type->free_preparse(&prep);
+
+out:
+	up_write(&key->sem);
 	return ret;
 }
 EXPORT_SYMBOL(key_update);
@@ -1259,7 +1292,7 @@ void __init key_init(void)
 {
 	/* allocate a slab in which we can store keys */
 	key_jar = kmem_cache_create("key_jar", sizeof(struct key),
-			0, SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
+			0, SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_NO_MERGE, NULL);
 
 	/* add the special key types */
 	list_add_tail(&key_type_keyring.link, &key_types_list);

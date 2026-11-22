@@ -240,8 +240,7 @@ static int wm831x_ts_probe(struct platform_device *pdev)
 	if (core_pdata)
 		pdata = core_pdata->touch;
 
-	wm831x_ts = devm_kzalloc(&pdev->dev, sizeof(struct wm831x_ts),
-				 GFP_KERNEL);
+	wm831x_ts = devm_kzalloc_obj(&pdev->dev, struct wm831x_ts);
 	input_dev = devm_input_allocate_device(&pdev->dev);
 	if (!wm831x_ts || !input_dev) {
 		error = -ENOMEM;
@@ -356,7 +355,6 @@ static int wm831x_ts_probe(struct platform_device *pdev)
 		input_set_abs_params(input_dev, ABS_PRESSURE, 0, 4095, 5, 0);
 
 	input_set_drvdata(input_dev, wm831x_ts);
-	input_dev->dev.parent = &pdev->dev;
 
 	error = input_register_device(input_dev);
 	if (error)
@@ -387,7 +385,7 @@ static struct platform_driver wm831x_ts_driver = {
 		.name = "wm831x-touch",
 	},
 	.probe = wm831x_ts_probe,
-	.remove_new = wm831x_ts_remove,
+	.remove = wm831x_ts_remove,
 };
 module_platform_driver(wm831x_ts_driver);
 

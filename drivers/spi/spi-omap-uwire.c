@@ -425,7 +425,7 @@ static int uwire_setup(struct spi_device *spi)
 	int status;
 
 	if (ust == NULL) {
-		ust = kzalloc(sizeof(*ust), GFP_KERNEL);
+		ust = kzalloc_obj(*ust);
 		if (ust == NULL)
 			return -ENOMEM;
 		spi->controller_state = ust;
@@ -523,7 +523,7 @@ static struct platform_driver uwire_driver = {
 		.name		= "omap_uwire",
 	},
 	.probe = uwire_probe,
-	.remove_new = uwire_remove,
+	.remove = uwire_remove,
 	// suspend ... unuse ck
 	// resume ... use ck
 };
@@ -541,5 +541,6 @@ static void __exit omap_uwire_exit(void)
 subsys_initcall(omap_uwire_init);
 module_exit(omap_uwire_exit);
 
+MODULE_DESCRIPTION("MicroWire interface driver for OMAP");
 MODULE_LICENSE("GPL");
 

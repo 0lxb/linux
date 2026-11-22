@@ -31,7 +31,7 @@ Linux內核補丁提交檢查單
 
    c) 使用 ``O=builddir`` 時可以成功編譯
 
-   d) 任何 Doucmentation/ 下的變更都能成功構建且不引入新警告/錯誤。
+   d) 任何 Documentation/ 下的變更都能成功構建且不引入新警告/錯誤。
       用 ``make htmldocs`` 或 ``make pdfdocs`` 檢驗構建情況並修復問題。
 
 3) 通過使用本地交叉編譯工具或其他一些構建設施在多個CPU體系結構上構建。
@@ -68,7 +68,7 @@ Linux內核補丁提交檢查單
     :ref:`kernel-doc <kernel_doc_zh>` 並修復任何問題。
 
 12) 通過以下選項同時啓用的測試： ``CONFIG_PREEMPT``, ``CONFIG_DEBUG_PREEMPT``,
-    ``CONFIG_DEBUG_SLAB``, ``CONFIG_DEBUG_PAGEALLOC``, ``CONFIG_DEBUG_MUTEXES``,
+    ``CONFIG_SLUB_DEBUG``, ``CONFIG_DEBUG_PAGEALLOC``, ``CONFIG_DEBUG_MUTEXES``,
     ``CONFIG_DEBUG_SPINLOCK``, ``CONFIG_DEBUG_ATOMIC_SLEEP``,
     ``CONFIG_PROVE_RCU`` 和 ``CONFIG_DEBUG_OBJECTS_RCU_HEAD`` 。
 
@@ -85,8 +85,8 @@ Linux內核補丁提交檢查單
 17) 所有新的模塊參數都記錄在 ``MODULE_PARM_DESC()``
 
 18) 所有新的用戶空間接口都記錄在 ``Documentation/ABI/`` 中。有關詳細信息，
-    請參閱 ``Documentation/ABI/README`` 。更改用戶空間接口的補丁應該抄送
-    linux-api@vger.kernel.org。
+    請參閱 Documentation/admin-guide/abi.rst (或 ``Documentation/ABI/README``)。
+    更改用戶空間接口的補丁應該抄送 linux-api@vger.kernel.org\ 。
 
 19) 已通過至少注入slab和page分配失敗進行檢查。請參閱 ``Documentation/fault-injection/`` 。
     如果新代碼是實質性的，那麼添加子系統特定的故障注入可能是合適的。

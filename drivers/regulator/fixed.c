@@ -20,7 +20,6 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
-#include <linux/reboot.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/fixed.h>
 #include <linux/gpio/consumer.h>
@@ -29,9 +28,7 @@
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
 #include <linux/clk.h>
-
-/* Default time in millisecond to wait for emergency shutdown */
-#define FV_DEF_EMERG_SHUTDWN_TMO	10
+#include <linux/string.h>
 
 struct fixed_voltage_data {
 	struct regulator_desc desc;
@@ -129,7 +126,7 @@ static irqreturn_t reg_fixed_under_voltage_irq_handler(int irq, void *data)
  * If it's an optional IRQ and not found, it returns 0.
  * Otherwise, it attempts to request the threaded IRQ.
  *
- * Return: 0 on success, or error code on failure.
+ * Return: 0 on success, or a negative error number on failure.
  */
 static int reg_fixed_get_irqs(struct device *dev,
 			      struct fixed_voltage_data *priv)
@@ -158,8 +155,10 @@ static int reg_fixed_get_irqs(struct device *dev,
  * @desc: regulator description
  *
  * Populates fixed_voltage_config structure by extracting data from device
- * tree node, returns a pointer to the populated structure of NULL if memory
- * alloc fails.
+ * tree node.
+ *
+ * Return: Pointer to a populated &struct fixed_voltage_config or %NULL if
+ *	   memory allocation fails.
  */
 static struct fixed_voltage_config *
 of_get_fixed_voltage_config(struct device *dev,
@@ -169,8 +168,7 @@ of_get_fixed_voltage_config(struct device *dev,
 	struct device_node *np = dev->of_node;
 	struct regulator_init_data *init_data;
 
-	config = devm_kzalloc(dev, sizeof(struct fixed_voltage_config),
-								 GFP_KERNEL);
+	config = devm_kzalloc_obj(dev, struct fixed_voltage_config);
 	if (!config)
 		return ERR_PTR(-ENOMEM);
 
@@ -227,8 +225,10 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	enum gpiod_flags gflags;
 	int ret;
 
-	drvdata = devm_kzalloc(&pdev->dev, sizeof(struct fixed_voltage_data),
-			       GFP_KERNEL);
+	if (!pdev->dev.of_node && strcmp(pdev->name, "reg-fixed-voltage"))
+		return -ENODEV;
+
+	drvdata = devm_kzalloc_obj(&pdev->dev, struct fixed_voltage_data);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -328,12 +328,10 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 
 	drvdata->dev = devm_regulator_register(&pdev->dev, &drvdata->desc,
 					       &cfg);
-	if (IS_ERR(drvdata->dev)) {
-		ret = dev_err_probe(&pdev->dev, PTR_ERR(drvdata->dev),
-				    "Failed to register regulator: %ld\n",
-				    PTR_ERR(drvdata->dev));
-		return ret;
-	}
+	if (IS_ERR(drvdata->dev))
+		return dev_err_probe(&pdev->dev, PTR_ERR(drvdata->dev),
+				     "Failed to register regulator: %ld\n",
+				     PTR_ERR(drvdata->dev));
 
 	platform_set_drvdata(pdev, drvdata);
 

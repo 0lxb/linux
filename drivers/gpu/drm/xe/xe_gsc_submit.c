@@ -8,14 +8,13 @@
 #include <linux/poison.h>
 
 #include "abi/gsc_command_header_abi.h"
+#include "xe_assert.h"
 #include "xe_bb.h"
 #include "xe_exec_queue.h"
-#include "xe_gt_printk.h"
 #include "xe_gt_types.h"
 #include "xe_map.h"
 #include "xe_sched_job.h"
 #include "instructions/xe_gsc_commands.h"
-#include "regs/xe_gsc_regs.h"
 
 #define GSC_HDR_SIZE (sizeof(struct intel_gsc_mtl_header)) /* shorthand define */
 
@@ -38,6 +37,21 @@ static struct xe_gt *
 gsc_to_gt(struct xe_gsc *gsc)
 {
 	return container_of(gsc, struct xe_gt, uc.gsc);
+}
+
+/**
+ * xe_gsc_create_host_session_id - Creates a random 64 bit host_session id with
+ * bits 56-63 masked.
+ *
+ * Returns: random host_session_id which can be used to send messages to gsc cs
+ */
+u64 xe_gsc_create_host_session_id(void)
+{
+	u64 host_session_id;
+
+	get_random_bytes(&host_session_id, sizeof(u64));
+	host_session_id &= ~HOST_SESSION_CLIENT_MASK;
+	return host_session_id;
 }
 
 /**

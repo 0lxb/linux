@@ -58,6 +58,7 @@ static void jffs2_i_init_once(void *foo)
 	struct jffs2_inode_info *f = foo;
 
 	mutex_init(&f->sem);
+	f->target = NULL;
 	inode_init_once(&f->vfs_inode);
 }
 
@@ -310,7 +311,7 @@ static int jffs2_init_fs_context(struct fs_context *fc)
 {
 	struct jffs2_sb_info *ctx;
 
-	ctx = kzalloc(sizeof(struct jffs2_sb_info), GFP_KERNEL);
+	ctx = kzalloc_obj(struct jffs2_sb_info);
 	if (!ctx)
 		return -ENOMEM;
 

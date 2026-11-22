@@ -29,6 +29,7 @@
 #include <linux/pm_runtime.h>
 
 #include <drm/drm_print.h>
+#include <drm/intel/display_parent_interface.h>
 
 #include "i915_drv.h"
 #include "i915_trace.h"
@@ -59,14 +60,16 @@ static struct drm_i915_private *rpm_to_i915(struct intel_runtime_pm *rpm)
 
 static void init_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 {
-	ref_tracker_dir_init(&rpm->debug, INTEL_REFTRACK_DEAD_COUNT, dev_name(rpm->kdev));
+	if (!rpm->debug.class)
+		ref_tracker_dir_init(&rpm->debug, INTEL_REFTRACK_DEAD_COUNT,
+				     "intel_runtime_pm");
 }
 
 static intel_wakeref_t
 track_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 {
 	if (!rpm->available || rpm->no_wakeref_tracking)
-		return -1;
+		return INTEL_WAKEREF_DEF;
 
 	return intel_ref_tracker_alloc(&rpm->debug);
 }
@@ -114,7 +117,7 @@ static void init_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 static intel_wakeref_t
 track_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm)
 {
-	return -1;
+	return INTEL_WAKEREF_DEF;
 }
 
 static void untrack_intel_runtime_pm_wakeref(struct intel_runtime_pm *rpm,
@@ -174,6 +177,82 @@ static intel_wakeref_t __intel_runtime_pm_get(struct intel_runtime_pm *rpm,
 
 	return track_intel_runtime_pm_wakeref(rpm);
 }
+
+static struct intel_runtime_pm *drm_to_rpm(const struct drm_device *drm)
+{
+	struct drm_i915_private *i915 = to_i915(drm);
+
+	return &i915->runtime_pm;
+}
+
+static struct ref_tracker *i915_display_rpm_get(const struct drm_device *drm)
+{
+	return intel_runtime_pm_get(drm_to_rpm(drm));
+}
+
+static struct ref_tracker *i915_display_rpm_get_raw(const struct drm_device *drm)
+{
+	return intel_runtime_pm_get_raw(drm_to_rpm(drm));
+}
+
+static struct ref_tracker *i915_display_rpm_get_if_in_use(const struct drm_device *drm)
+{
+	return intel_runtime_pm_get_if_in_use(drm_to_rpm(drm));
+}
+
+static struct ref_tracker *i915_display_rpm_get_noresume(const struct drm_device *drm)
+{
+	return intel_runtime_pm_get_noresume(drm_to_rpm(drm));
+}
+
+static void i915_display_rpm_put(const struct drm_device *drm, struct ref_tracker *wakeref)
+{
+	intel_runtime_pm_put(drm_to_rpm(drm), wakeref);
+}
+
+static void i915_display_rpm_put_raw(const struct drm_device *drm, struct ref_tracker *wakeref)
+{
+	intel_runtime_pm_put_raw(drm_to_rpm(drm), wakeref);
+}
+
+static void i915_display_rpm_put_unchecked(const struct drm_device *drm)
+{
+	intel_runtime_pm_put_unchecked(drm_to_rpm(drm));
+}
+
+static bool i915_display_rpm_suspended(const struct drm_device *drm)
+{
+	return intel_runtime_pm_suspended(drm_to_rpm(drm));
+}
+
+static void i915_display_rpm_assert_held(const struct drm_device *drm)
+{
+	assert_rpm_wakelock_held(drm_to_rpm(drm));
+}
+
+static void i915_display_rpm_assert_block(const struct drm_device *drm)
+{
+	disable_rpm_wakeref_asserts(drm_to_rpm(drm));
+}
+
+static void i915_display_rpm_assert_unblock(const struct drm_device *drm)
+{
+	enable_rpm_wakeref_asserts(drm_to_rpm(drm));
+}
+
+const struct intel_display_rpm_interface i915_display_rpm_interface = {
+	.get = i915_display_rpm_get,
+	.get_raw = i915_display_rpm_get_raw,
+	.get_if_in_use = i915_display_rpm_get_if_in_use,
+	.get_noresume = i915_display_rpm_get_noresume,
+	.put = i915_display_rpm_put,
+	.put_raw = i915_display_rpm_put_raw,
+	.put_unchecked = i915_display_rpm_put_unchecked,
+	.suspended = i915_display_rpm_suspended,
+	.assert_held = i915_display_rpm_assert_held,
+	.assert_block = i915_display_rpm_assert_block,
+	.assert_unblock = i915_display_rpm_assert_unblock
+};
 
 /**
  * intel_runtime_pm_get_raw - grab a raw runtime pm reference
@@ -250,7 +329,7 @@ static intel_wakeref_t __intel_runtime_pm_get_if_active(struct intel_runtime_pm 
 		     pm_runtime_get_if_active(rpm->kdev) <= 0) ||
 		    (!ignore_usecount &&
 		     pm_runtime_get_if_in_use(rpm->kdev) <= 0))
-			return 0;
+			return NULL;
 	}
 
 	intel_runtime_pm_acquire(rpm, true);
@@ -272,15 +351,11 @@ intel_wakeref_t intel_runtime_pm_get_if_active(struct intel_runtime_pm *rpm)
  * intel_runtime_pm_get_noresume - grab a runtime pm reference
  * @rpm: the intel_runtime_pm structure
  *
- * This function grabs a device-level runtime pm reference (mostly used for GEM
- * code to ensure the GTT or GT is on).
+ * This function grabs a device-level runtime pm reference.
  *
- * It will _not_ power up the device but instead only check that it's powered
- * on.  Therefore it is only valid to call this functions from contexts where
- * the device is known to be powered up and where trying to power it up would
- * result in hilarity and deadlocks. That pretty much means only the system
- * suspend/resume code where this is used to grab runtime pm references for
- * delayed setup down in work items.
+ * It will _not_ resume the device but instead only get an extra wakeref.
+ * Therefore it is only valid to call this functions from contexts where
+ * the device is known to be active and with another wakeref previously hold.
  *
  * Any runtime pm reference obtained by this function must have a symmetric
  * call to intel_runtime_pm_put() to release the reference again.
@@ -289,7 +364,7 @@ intel_wakeref_t intel_runtime_pm_get_if_active(struct intel_runtime_pm *rpm)
  */
 intel_wakeref_t intel_runtime_pm_get_noresume(struct intel_runtime_pm *rpm)
 {
-	assert_rpm_wakelock_held(rpm);
+	assert_rpm_raw_wakeref_held(rpm);
 	pm_runtime_get_noresume(rpm->kdev);
 
 	intel_runtime_pm_acquire(rpm, true);
@@ -340,7 +415,7 @@ intel_runtime_pm_put_raw(struct intel_runtime_pm *rpm, intel_wakeref_t wref)
  */
 void intel_runtime_pm_put_unchecked(struct intel_runtime_pm *rpm)
 {
-	__intel_runtime_pm_put(rpm, -1, true);
+	__intel_runtime_pm_put(rpm, INTEL_WAKEREF_DEF, true);
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_DEBUG_RUNTIME_PM)
@@ -367,7 +442,7 @@ void intel_runtime_pm_put(struct intel_runtime_pm *rpm, intel_wakeref_t wref)
  *
  * Note that this function does currently not enable runtime pm for the
  * subordinate display power domains. That is done by
- * intel_power_domains_enable().
+ * intel_display_power_enable().
  */
 void intel_runtime_pm_enable(struct intel_runtime_pm *rpm)
 {
@@ -379,7 +454,7 @@ void intel_runtime_pm_enable(struct intel_runtime_pm *rpm)
 	 * leave the device suspended skipping the driver's suspend handlers
 	 * if the device was already runtime suspended. This is needed due to
 	 * the difference in our runtime and system suspend sequence and
-	 * becaue the HDA driver may require us to enable the audio power
+	 * because the HDA driver may require us to enable the audio power
 	 * domain during system suspend.
 	 */
 	dev_pm_set_driver_flags(kdev, DPM_FLAG_NO_DIRECT_COMPLETE);

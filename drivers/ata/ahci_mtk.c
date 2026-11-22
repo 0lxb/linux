@@ -129,7 +129,7 @@ static int mtk_ahci_probe(struct platform_device *pdev)
 	struct ahci_host_priv *hpriv;
 	int err;
 
-	plat = devm_kzalloc(dev, sizeof(*plat), GFP_KERNEL);
+	plat = devm_kzalloc_obj(dev, *plat);
 	if (!plat)
 		return -ENOMEM;
 
@@ -174,7 +174,7 @@ MODULE_DEVICE_TABLE(of, ahci_of_match);
 
 static struct platform_driver mtk_ahci_driver = {
 	.probe = mtk_ahci_probe,
-	.remove_new = ata_platform_remove_one,
+	.remove = ata_platform_remove_one,
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = ahci_of_match,

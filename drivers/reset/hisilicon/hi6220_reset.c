@@ -159,7 +159,7 @@ static int hi6220_reset_probe(struct platform_device *pdev)
 	struct hi6220_reset_data *data;
 	struct regmap *regmap;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -219,4 +219,5 @@ static int __init hi6220_reset_init(void)
 
 postcore_initcall(hi6220_reset_init);
 
+MODULE_DESCRIPTION("Hisilicon Hi6220 reset controller driver");
 MODULE_LICENSE("GPL v2");

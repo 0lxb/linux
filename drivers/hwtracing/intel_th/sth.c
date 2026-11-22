@@ -70,8 +70,8 @@ static ssize_t notrace sth_stm_packet(struct stm_data *stm_data,
 	struct sth_device *sth = container_of(stm_data, struct sth_device, stm);
 	struct intel_th_channel __iomem *out =
 		sth_channel(sth, master, channel);
-	u64 __iomem *outp = &out->Dn;
 	unsigned long reg = REG_STH_TRIG;
+	u64 __iomem *outp;
 
 #ifndef CONFIG_64BIT
 	if (size > 4)
@@ -207,7 +207,7 @@ static int intel_th_sth_probe(struct intel_th_device *thdev)
 	if (!channels)
 		return -ENOMEM;
 
-	sth = devm_kzalloc(dev, sizeof(*sth), GFP_KERNEL);
+	sth = devm_kzalloc_obj(dev, *sth);
 	if (!sth)
 		return -ENOMEM;
 

@@ -13,10 +13,10 @@
 #include <linux/iio/sysfs.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/mod_devicetable.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "adxl367.h"
 
@@ -82,6 +82,7 @@
 #define ADXL367_SAMPLES_L_MASK		GENMASK(7, 0)
 
 #define ADXL367_REG_INT1_MAP		0x2A
+#define ADXL367_REG_INT2_MAP		0x2B
 #define ADXL367_INT_INACT_MASK		BIT(5)
 #define ADXL367_INT_ACT_MASK		BIT(4)
 #define ADXL367_INT_FIFO_WATERMARK_MASK	BIT(2)
@@ -168,6 +169,8 @@ struct adxl367_state {
 
 	enum adxl367_odr	odr;
 	enum adxl367_range	range;
+
+	u8		int_map_reg;
 
 	unsigned int	act_threshold;
 	unsigned int	act_time_ms;
@@ -339,22 +342,17 @@ static int adxl367_set_act_threshold(struct adxl367_state *st,
 {
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = _adxl367_set_act_threshold(st, act, threshold);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return adxl367_set_measure_en(st, true);
 }
 
 static int adxl367_set_act_proc_mode(struct adxl367_state *st,
@@ -372,8 +370,7 @@ static int adxl367_set_act_interrupt_en(struct adxl367_state *st,
 {
 	unsigned int mask = adxl367_act_int_mask_tbl[act];
 
-	return regmap_update_bits(st->regmap, ADXL367_REG_INT1_MAP,
-				  mask, en ? mask : 0);
+	return regmap_assign_bits(st->regmap, st->int_map_reg, mask, en);
 }
 
 static int adxl367_get_act_interrupt_en(struct adxl367_state *st,
@@ -384,7 +381,7 @@ static int adxl367_get_act_interrupt_en(struct adxl367_state *st,
 	unsigned int val;
 	int ret;
 
-	ret = regmap_read(st->regmap, ADXL367_REG_INT1_MAP, &val);
+	ret = regmap_read(st->regmap, st->int_map_reg, &val);
 	if (ret)
 		return ret;
 
@@ -407,9 +404,8 @@ static int adxl367_set_act_en(struct adxl367_state *st,
 static int adxl367_set_fifo_watermark_interrupt_en(struct adxl367_state *st,
 						   bool en)
 {
-	return regmap_update_bits(st->regmap, ADXL367_REG_INT1_MAP,
-				  ADXL367_INT_FIFO_WATERMARK_MASK,
-				  en ? ADXL367_INT_FIFO_WATERMARK_MASK : 0);
+	return regmap_assign_bits(st->regmap, st->int_map_reg,
+				  ADXL367_INT_FIFO_WATERMARK_MASK, en);
 }
 
 static int adxl367_get_fifo_mode(struct adxl367_state *st,
@@ -485,22 +481,18 @@ static int adxl367_set_range(struct iio_dev *indio_dev,
 	struct adxl367_state *st = iio_priv(indio_dev);
 	int ret;
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = regmap_update_bits(st->regmap, ADXL367_REG_FILTER_CTL,
 				 ADXL367_FILTER_CTL_RANGE_MASK,
 				 FIELD_PREP(ADXL367_FILTER_CTL_RANGE_MASK,
 					    range));
 	if (ret)
-		goto out;
+		return ret;
 
 	adxl367_scale_act_thresholds(st, st->range, range);
 
@@ -508,25 +500,20 @@ static int adxl367_set_range(struct iio_dev *indio_dev,
 	ret = _adxl367_set_act_threshold(st, ADXL367_ACTIVITY,
 					 st->act_threshold);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = _adxl367_set_act_threshold(st, ADXL367_INACTIVITY,
 					 st->inact_threshold);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_measure_en(st, true);
 	if (ret)
-		goto out;
+		return ret;
 
 	st->range = range;
 
-out:
-	mutex_unlock(&st->lock);
-
-	iio_device_release_direct_mode(indio_dev);
-
-	return ret;
+	return 0;
 }
 
 static int adxl367_time_ms_to_samples(struct adxl367_state *st, unsigned int ms)
@@ -587,11 +574,11 @@ static int adxl367_set_act_time_ms(struct adxl367_state *st,
 {
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	if (act == ADXL367_ACTIVITY)
 		ret = _adxl367_set_act_time_ms(st, ms);
@@ -599,14 +586,9 @@ static int adxl367_set_act_time_ms(struct adxl367_state *st,
 		ret = _adxl367_set_inact_time_ms(st, ms);
 
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return adxl367_set_measure_en(st, true);
 }
 
 static int _adxl367_set_odr(struct adxl367_state *st, enum adxl367_odr odr)
@@ -620,18 +602,14 @@ static int _adxl367_set_odr(struct adxl367_state *st, enum adxl367_odr odr)
 	if (ret)
 		return ret;
 
+	st->odr = odr;
+
 	/* Activity timers depend on ODR */
 	ret = _adxl367_set_act_time_ms(st, st->act_time_ms);
 	if (ret)
 		return ret;
 
-	ret = _adxl367_set_inact_time_ms(st, st->inact_time_ms);
-	if (ret)
-		return ret;
-
-	st->odr = odr;
-
-	return 0;
+	return _adxl367_set_inact_time_ms(st, st->inact_time_ms);
 }
 
 static int adxl367_set_odr(struct iio_dev *indio_dev, enum adxl367_odr odr)
@@ -639,35 +617,23 @@ static int adxl367_set_odr(struct iio_dev *indio_dev, enum adxl367_odr odr)
 	struct adxl367_state *st = iio_priv(indio_dev);
 	int ret;
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = _adxl367_set_odr(st, odr);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
-
-out:
-	mutex_unlock(&st->lock);
-
-	iio_device_release_direct_mode(indio_dev);
-
-	return ret;
+	return adxl367_set_measure_en(st, true);
 }
 
 static int adxl367_set_temp_adc_en(struct adxl367_state *st, unsigned int reg,
 				   bool en)
 {
-	return regmap_update_bits(st->regmap, reg, ADXL367_ADC_EN_MASK,
-				  en ? ADXL367_ADC_EN_MASK : 0);
+	return regmap_assign_bits(st->regmap, reg, ADXL367_ADC_EN_MASK, en);
 }
 
 static int adxl367_set_temp_adc_reg_en(struct adxl367_state *st,
@@ -753,32 +719,25 @@ static int adxl367_read_sample(struct iio_dev *indio_dev,
 	u16 sample;
 	int ret;
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_temp_adc_reg_en(st, chan->address, true);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = regmap_bulk_read(st->regmap, chan->address, &st->sample_buf,
 			       sizeof(st->sample_buf));
 	if (ret)
-		goto out;
+		return ret;
 
 	sample = FIELD_GET(ADXL367_DATA_MASK, be16_to_cpu(st->sample_buf));
 	*val = sign_extend32(sample, chan->scan_type.realbits - 1);
 
 	ret = adxl367_set_temp_adc_reg_en(st, chan->address, false);
+	if (ret)
+		return ret;
 
-out:
-	mutex_unlock(&st->lock);
-
-	iio_device_release_direct_mode(indio_dev);
-
-	return ret ?: IIO_VAL_INT;
+	return IIO_VAL_INT;
 }
 
 static int adxl367_get_status(struct adxl367_state *st, u8 *status,
@@ -828,6 +787,13 @@ static bool adxl367_push_fifo_data(struct iio_dev *indio_dev, u8 status,
 
 	if (!FIELD_GET(ADXL367_STATUS_FIFO_FULL_MASK, status))
 		return false;
+
+	if (fifo_entries > ADXL367_FIFO_SIZE) {
+		dev_err_ratelimited(st->dev,
+				    "FIFO entry count %u exceeds FIFO size %u\n",
+				    fifo_entries, ADXL367_FIFO_SIZE);
+		return true;
+	}
 
 	fifo_entries -= fifo_entries % st->fifo_set_size;
 
@@ -880,18 +846,23 @@ static int adxl367_read_raw(struct iio_dev *indio_dev,
 			    int *val, int *val2, long info)
 {
 	struct adxl367_state *st = iio_priv(indio_dev);
+	int ret;
 
 	switch (info) {
 	case IIO_CHAN_INFO_RAW:
-		return adxl367_read_sample(indio_dev, chan, val);
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
+		ret = adxl367_read_sample(indio_dev, chan, val);
+		iio_device_release_direct(indio_dev);
+		return ret;
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
-		case IIO_ACCEL:
-			mutex_lock(&st->lock);
+		case IIO_ACCEL: {
+			guard(mutex)(&st->lock);
 			*val = adxl367_range_scale_tbl[st->range][0];
 			*val2 = adxl367_range_scale_tbl[st->range][1];
-			mutex_unlock(&st->lock);
 			return IIO_VAL_INT_PLUS_NANO;
+		}
 		case IIO_TEMP:
 			*val = 1000;
 			*val2 = ADXL367_TEMP_PER_C;
@@ -914,12 +885,12 @@ static int adxl367_read_raw(struct iio_dev *indio_dev,
 		default:
 			return -EINVAL;
 		}
-	case IIO_CHAN_INFO_SAMP_FREQ:
-		mutex_lock(&st->lock);
+	case IIO_CHAN_INFO_SAMP_FREQ: {
+		guard(mutex)(&st->lock);
 		*val = adxl367_samp_freq_tbl[st->odr][0];
 		*val2 = adxl367_samp_freq_tbl[st->odr][1];
-		mutex_unlock(&st->lock);
 		return IIO_VAL_INT_PLUS_MICRO;
+	}
 	default:
 		return -EINVAL;
 	}
@@ -940,7 +911,12 @@ static int adxl367_write_raw(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 
-		return adxl367_set_odr(indio_dev, odr);
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
+
+		ret = adxl367_set_odr(indio_dev, odr);
+		iio_device_release_direct(indio_dev);
+		return ret;
 	}
 	case IIO_CHAN_INFO_SCALE: {
 		enum adxl367_range range;
@@ -949,7 +925,12 @@ static int adxl367_write_raw(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 
-		return adxl367_set_range(indio_dev, range);
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
+
+		ret = adxl367_set_range(indio_dev, range);
+		iio_device_release_direct(indio_dev);
+		return ret;
 	}
 	default:
 		return -EINVAL;
@@ -1004,18 +985,15 @@ static int adxl367_read_event_value(struct iio_dev *indio_dev,
 {
 	struct adxl367_state *st = iio_priv(indio_dev);
 
+	guard(mutex)(&st->lock);
 	switch (info) {
 	case IIO_EV_INFO_VALUE: {
 		switch (dir) {
 		case IIO_EV_DIR_RISING:
-			mutex_lock(&st->lock);
 			*val = st->act_threshold;
-			mutex_unlock(&st->lock);
 			return IIO_VAL_INT;
 		case IIO_EV_DIR_FALLING:
-			mutex_lock(&st->lock);
 			*val = st->inact_threshold;
-			mutex_unlock(&st->lock);
 			return IIO_VAL_INT;
 		default:
 			return -EINVAL;
@@ -1024,15 +1002,11 @@ static int adxl367_read_event_value(struct iio_dev *indio_dev,
 	case IIO_EV_INFO_PERIOD:
 		switch (dir) {
 		case IIO_EV_DIR_RISING:
-			mutex_lock(&st->lock);
 			*val = st->act_time_ms;
-			mutex_unlock(&st->lock);
 			*val2 = 1000;
 			return IIO_VAL_FRACTIONAL;
 		case IIO_EV_DIR_FALLING:
-			mutex_lock(&st->lock);
 			*val = st->inact_time_ms;
-			mutex_unlock(&st->lock);
 			*val2 = 1000;
 			return IIO_VAL_FRACTIONAL;
 		default:
@@ -1104,11 +1078,11 @@ static int adxl367_read_event_config(struct iio_dev *indio_dev,
 	}
 }
 
-static int adxl367_write_event_config(struct iio_dev *indio_dev,
-				      const struct iio_chan_spec *chan,
-				      enum iio_event_type type,
-				      enum iio_event_direction dir,
-				      int state)
+static int __adxl367_write_event_config(struct iio_dev *indio_dev,
+					const struct iio_chan_spec *chan,
+					enum iio_event_type type,
+					enum iio_event_direction dir,
+					bool state)
 {
 	struct adxl367_state *st = iio_priv(indio_dev);
 	enum adxl367_activity_type act;
@@ -1125,32 +1099,37 @@ static int adxl367_write_event_config(struct iio_dev *indio_dev,
 		return -EINVAL;
 	}
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_act_interrupt_en(st, act, state);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_act_en(st, act, state ? ADCL367_ACT_REF_ENABLED
-						: ADXL367_ACT_DISABLED);
+				 : ADXL367_ACT_DISABLED);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
+	return adxl367_set_measure_en(st, true);
+}
 
-out:
-	mutex_unlock(&st->lock);
+static int adxl367_write_event_config(struct iio_dev *indio_dev,
+				      const struct iio_chan_spec *chan,
+				      enum iio_event_type type,
+				      enum iio_event_direction dir,
+				      bool state)
+{
+	int ret;
 
-	iio_device_release_direct_mode(indio_dev);
+	if (!iio_device_claim_direct(indio_dev))
+		return -EBUSY;
 
+	ret = __adxl367_write_event_config(indio_dev, chan, type, dir, state);
+	iio_device_release_direct(indio_dev);
 	return ret;
 }
 
@@ -1176,9 +1155,8 @@ static ssize_t adxl367_get_fifo_watermark(struct device *dev,
 	struct adxl367_state *st = iio_priv(dev_to_iio_dev(dev));
 	unsigned int fifo_watermark;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 	fifo_watermark = st->fifo_watermark;
-	mutex_unlock(&st->lock);
 
 	return sysfs_emit(buf, "%d\n", fifo_watermark);
 }
@@ -1207,22 +1185,17 @@ static int adxl367_set_watermark(struct iio_dev *indio_dev, unsigned int val)
 	if (val > ADXL367_FIFO_MAX_WATERMARK)
 		return -EINVAL;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_watermark(st, val);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return adxl367_set_measure_en(st, true);
 }
 
 static bool adxl367_find_mask_fifo_format(const unsigned long *scan_mask,
@@ -1253,27 +1226,24 @@ static int adxl367_update_scan_mode(struct iio_dev *indio_dev,
 	if (!adxl367_find_mask_fifo_format(active_scan_mask, &fifo_format))
 		return -EINVAL;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_format(st, fifo_format);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_measure_en(st, true);
 	if (ret)
-		goto out;
+		return ret;
 
 	st->fifo_set_size = bitmap_weight(active_scan_mask,
-					  indio_dev->masklength);
+					  iio_get_masklength(indio_dev));
 
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return 0;
 }
 
 static int adxl367_buffer_postenable(struct iio_dev *indio_dev)
@@ -1281,31 +1251,26 @@ static int adxl367_buffer_postenable(struct iio_dev *indio_dev)
 	struct adxl367_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_temp_adc_mask_en(st, indio_dev->active_scan_mask,
 					   true);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_watermark_interrupt_en(st, true);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_mode(st, ADXL367_FIFO_MODE_STREAM);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_measure_en(st, true);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return adxl367_set_measure_en(st, true);
 }
 
 static int adxl367_buffer_predisable(struct iio_dev *indio_dev)
@@ -1313,31 +1278,26 @@ static int adxl367_buffer_predisable(struct iio_dev *indio_dev)
 	struct adxl367_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	ret = adxl367_set_measure_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_mode(st, ADXL367_FIFO_MODE_DISABLED);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_fifo_watermark_interrupt_en(st, false);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = adxl367_set_measure_en(st, true);
 	if (ret)
-		goto out;
+		return ret;
 
-	ret = adxl367_set_temp_adc_mask_en(st, indio_dev->active_scan_mask,
-					   false);
-
-out:
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return adxl367_set_temp_adc_mask_en(st, indio_dev->active_scan_mask,
+					    false);
 }
 
 static const struct iio_buffer_setup_ops adxl367_buffer_ops = {
@@ -1474,6 +1434,36 @@ static int adxl367_setup(struct adxl367_state *st)
 	return adxl367_set_measure_en(st, true);
 }
 
+static int adxl367_set_int_map_reg(struct adxl367_state *st, int irq)
+{
+	int ret;
+
+	/*
+	 * Route the mappings to whichever of INT1/INT2 is named in the
+	 * interrupt-names property. -EINVAL (property absent) and -ENODATA
+	 * (name not listed) are not errors; anything else is.
+	 */
+	ret = fwnode_irq_get_byname(dev_fwnode(st->dev), "INT1");
+	if (ret > 0) {
+		st->int_map_reg = ADXL367_REG_INT1_MAP;
+		return ret;
+	}
+	if (ret != -ENODATA && ret != -EINVAL)
+		return ret;
+
+	ret = fwnode_irq_get_byname(dev_fwnode(st->dev), "INT2");
+	if (ret > 0) {
+		st->int_map_reg = ADXL367_REG_INT2_MAP;
+		return ret;
+	}
+	if (ret != -ENODATA && ret != -EINVAL)
+		return ret;
+
+	/* No INT1/INT2 named: default to INT1 and the bus interrupt. */
+	st->int_map_reg = ADXL367_REG_INT1_MAP;
+	return irq;
+}
+
 int adxl367_probe(struct device *dev, const struct adxl367_ops *ops,
 		  void *context, struct regmap *regmap, int irq)
 {
@@ -1492,7 +1482,9 @@ int adxl367_probe(struct device *dev, const struct adxl367_ops *ops,
 	st->context = context;
 	st->ops = ops;
 
-	mutex_init(&st->lock);
+	ret = devm_mutex_init(dev, &st->lock);
+	if (ret)
+		return ret;
 
 	indio_dev->channels = adxl367_channels;
 	indio_dev->num_channels = ARRAY_SIZE(adxl367_channels);
@@ -1500,6 +1492,11 @@ int adxl367_probe(struct device *dev, const struct adxl367_ops *ops,
 	indio_dev->name = "adxl367";
 	indio_dev->info = &adxl367_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
+
+	ret = adxl367_set_int_map_reg(st, irq);
+	if (ret < 0)
+		return dev_err_probe(st->dev, ret, "Failed to get interrupt\n");
+	irq = ret;
 
 	ret = devm_regulator_bulk_get_enable(st->dev,
 					     ARRAY_SIZE(regulator_names),
@@ -1532,11 +1529,11 @@ int adxl367_probe(struct device *dev, const struct adxl367_ops *ops,
 					adxl367_irq_handler, IRQF_ONESHOT,
 					indio_dev->name, indio_dev);
 	if (ret)
-		return dev_err_probe(st->dev, ret, "Failed to request irq\n");
+		return ret;
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_NS_GPL(adxl367_probe, IIO_ADXL367);
+EXPORT_SYMBOL_NS_GPL(adxl367_probe, "IIO_ADXL367");
 
 MODULE_AUTHOR("Cosmin Tanislav <cosmin.tanislav@analog.com>");
 MODULE_DESCRIPTION("Analog Devices ADXL367 3-axis accelerometer driver");

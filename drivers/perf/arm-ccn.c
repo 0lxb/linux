@@ -10,7 +10,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/perf_event.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -215,18 +214,9 @@ static void arm_ccn_pmu_config_set(u64 *config, u32 node_xp, u32 type, u32 port)
 	*config |= (node_xp << 0) | (type << 8) | (port << 24);
 }
 
-static ssize_t arm_ccn_pmu_format_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct dev_ext_attribute *ea = container_of(attr,
-			struct dev_ext_attribute, attr);
-
-	return sysfs_emit(buf, "%s\n", (char *)ea->var);
-}
-
 #define CCN_FORMAT_ATTR(_name, _config) \
 	struct dev_ext_attribute arm_ccn_pmu_format_attr_##_name = \
-			{ __ATTR(_name, S_IRUGO, arm_ccn_pmu_format_show, \
+			{ __DEVICE_ATTR(_name, S_IRUGO, device_show_string, \
 			NULL), _config }
 
 static CCN_FORMAT_ATTR(node, "config:0-7");
@@ -547,7 +537,7 @@ static ssize_t arm_ccn_pmu_cpumask_show(struct device *dev,
 {
 	struct arm_ccn *ccn = pmu_to_arm_ccn(dev_get_drvdata(dev));
 
-	return cpumap_print_to_pagebuf(true, buf, cpumask_of(ccn->dt.cpu));
+	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(cpumask_of(ccn->dt.cpu)));
 }
 
 static struct device_attribute arm_ccn_pmu_cpumask_attr =
@@ -574,7 +564,7 @@ module_param_named(pmu_poll_period_us, arm_ccn_pmu_poll_period_us, uint,
 
 static ktime_t arm_ccn_pmu_timer_period(void)
 {
-	return ns_to_ktime((u64)arm_ccn_pmu_poll_period_us * 1000);
+	return us_to_ktime((u64)arm_ccn_pmu_poll_period_us);
 }
 
 
@@ -1265,6 +1255,7 @@ static int arm_ccn_pmu_init(struct arm_ccn *ccn)
 	/* Perf driver registration */
 	ccn->dt.pmu = (struct pmu) {
 		.module = THIS_MODULE,
+		.parent = ccn->dev,
 		.attr_groups = arm_ccn_pmu_attr_groups,
 		.task_ctx_nr = perf_invalid_context,
 		.event_init = arm_ccn_pmu_event_init,
@@ -1281,9 +1272,8 @@ static int arm_ccn_pmu_init(struct arm_ccn *ccn)
 	/* No overflow interrupt? Have to use a timer instead. */
 	if (!ccn->irq) {
 		dev_info(ccn->dev, "No access to interrupts, using timer.\n");
-		hrtimer_init(&ccn->dt.hrtimer, CLOCK_MONOTONIC,
-				HRTIMER_MODE_REL);
-		ccn->dt.hrtimer.function = arm_ccn_pmu_timer_handler;
+		hrtimer_setup(&ccn->dt.hrtimer, arm_ccn_pmu_timer_handler, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL);
 	}
 
 	/* Pick one CPU which we will use to collect data from CCN... */
@@ -1463,7 +1453,7 @@ static int arm_ccn_probe(struct platform_device *pdev)
 	int irq;
 	int err;
 
-	ccn = devm_kzalloc(&pdev->dev, sizeof(*ccn), GFP_KERNEL);
+	ccn = devm_kzalloc_obj(&pdev->dev, *ccn);
 	if (!ccn)
 		return -ENOMEM;
 	ccn->dev = &pdev->dev;
@@ -1501,10 +1491,8 @@ static int arm_ccn_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	ccn->node = devm_kcalloc(ccn->dev, ccn->num_nodes, sizeof(*ccn->node),
-				 GFP_KERNEL);
-	ccn->xp = devm_kcalloc(ccn->dev, ccn->num_xps, sizeof(*ccn->node),
-			       GFP_KERNEL);
+	ccn->node = devm_kzalloc_objs(ccn->dev, *ccn->node, ccn->num_nodes);
+	ccn->xp = devm_kzalloc_objs(ccn->dev, *ccn->node, ccn->num_xps);
 	if (!ccn->node || !ccn->xp)
 		return -ENOMEM;
 
@@ -1537,7 +1525,7 @@ static struct platform_driver arm_ccn_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = arm_ccn_probe,
-	.remove_new = arm_ccn_remove,
+	.remove = arm_ccn_remove,
 };
 
 static int __init arm_ccn_init(void)
@@ -1569,4 +1557,5 @@ module_init(arm_ccn_init);
 module_exit(arm_ccn_exit);
 
 MODULE_AUTHOR("Pawel Moll <pawel.moll@arm.com>");
+MODULE_DESCRIPTION("ARM CCN (Cache Coherent Network) Performance Monitor Driver");
 MODULE_LICENSE("GPL v2");

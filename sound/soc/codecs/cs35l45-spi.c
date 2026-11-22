@@ -19,7 +19,7 @@ static int cs35l45_spi_probe(struct spi_device *spi)
 	struct device *dev = &spi->dev;
 	int ret;
 
-	cs35l45 = devm_kzalloc(dev, sizeof(struct cs35l45_private), GFP_KERNEL);
+	cs35l45 = devm_kzalloc_obj(dev, struct cs35l45_private);
 	if (cs35l45 == NULL)
 		return -ENOMEM;
 
@@ -75,4 +75,4 @@ module_spi_driver(cs35l45_spi_driver);
 MODULE_DESCRIPTION("SPI CS35L45 driver");
 MODULE_AUTHOR("James Schulman, Cirrus Logic Inc, <james.schulman@cirrus.com>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(SND_SOC_CS35L45);
+MODULE_IMPORT_NS("SND_SOC_CS35L45");

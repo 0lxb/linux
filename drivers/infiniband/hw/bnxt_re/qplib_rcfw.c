@@ -160,7 +160,7 @@ static int __wait_for_resp(struct bnxt_qplib_rcfw *rcfw, u16 cookie)
 		wait_event_timeout(cmdq->waitq,
 				   !crsqe->is_in_used ||
 				   test_bit(ERR_DEVICE_DETACHED, &cmdq->flags),
-				   msecs_to_jiffies(rcfw->max_timeout * 1000));
+				   secs_to_jiffies(rcfw->max_timeout));
 
 		if (!crsqe->is_in_used)
 			return 0;
@@ -186,7 +186,7 @@ static int __wait_for_resp(struct bnxt_qplib_rcfw *rcfw, u16 cookie)
  * wait for command completion. Maximum holding interval is 8 second.
  *
  * Returns:
- * -ETIMEOUT if command is not completed in specific time interval.
+ * -ETIMEDOUT if command is not completed in specific time interval.
  * 0 if command is completed by firmware.
  */
 static int __block_for_resp(struct bnxt_qplib_rcfw *rcfw, u16 cookie)
@@ -223,7 +223,7 @@ static int __block_for_resp(struct bnxt_qplib_rcfw *rcfw, u16 cookie)
  * Current design of this function is -
  * user must hold the completion queue hwq->lock.
  * user must have used existing completion and free the resources.
- * this function will not check queue full condition.
+ * the command is dropped if the cookie slot is in use or the queue is full.
  * this function will explicitly set is_waiter_alive=false.
  * current use case is - send destroy_ah if create_ah is return
  * after waiter of create_ah is lost. It can be extended for other
@@ -245,8 +245,16 @@ static void __send_message_no_waiter(struct bnxt_qplib_rcfw *rcfw,
 	u8 *preq;
 
 	cookie = cmdq->seq_num & RCFW_MAX_COOKIE_VALUE;
-	__set_cmdq_base_cookie(msg->req, msg->req_sz, cpu_to_le16(cookie));
 	crsqe = &rcfw->crsqe_tbl[cookie];
+
+	if (crsqe->is_in_used ||
+	    bnxt_qplib_get_cmd_slots(msg->req) >= HWQ_FREE_SLOTS(hwq)) {
+		dev_warn_ratelimited(&rcfw->pdev->dev,
+				     "CMDQ cookie %#x busy or CMDQ full, dropping internal command\n",
+				     cookie);
+		return;
+	}
+	__set_cmdq_base_cookie(msg->req, msg->req_sz, cpu_to_le16(cookie));
 
 	/* Set cmd_size in terms of 16B slots in req. */
 	bsize = bnxt_qplib_set_cmd_slots(msg->req);
@@ -255,6 +263,7 @@ static void __send_message_no_waiter(struct bnxt_qplib_rcfw *rcfw,
 	 */
 	crsqe->is_internal_cmd = true;
 	crsqe->is_waiter_alive = false;
+	crsqe->resp = NULL;
 	crsqe->is_in_used = true;
 	crsqe->req_size = __get_cmdq_base_cmd_size(msg->req, msg->req_sz);
 
@@ -290,7 +299,6 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw,
 	struct bnxt_qplib_hwq *hwq;
 	u32 sw_prod, cmdq_prod;
 	struct pci_dev *pdev;
-	unsigned long flags;
 	u16 cookie;
 	u8 *preq;
 
@@ -301,7 +309,7 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw,
 	/* Cmdq are in 16-byte units, each request can consume 1 or more
 	 * cmdqe
 	 */
-	spin_lock_irqsave(&hwq->lock, flags);
+	spin_lock_bh(&hwq->lock);
 	required_slots = bnxt_qplib_get_cmd_slots(msg->req);
 	free_slots = HWQ_FREE_SLOTS(hwq);
 	cookie = cmdq->seq_num & RCFW_MAX_COOKIE_VALUE;
@@ -311,7 +319,13 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw,
 		dev_info_ratelimited(&pdev->dev,
 				     "CMDQ is full req/free %d/%d!",
 				     required_slots, free_slots);
-		spin_unlock_irqrestore(&hwq->lock, flags);
+		spin_unlock_bh(&hwq->lock);
+		return -EAGAIN;
+	}
+	if (crsqe->is_in_used) {
+		dev_info_ratelimited(&pdev->dev,
+				     "CMDQ cookie %#x still in use\n", cookie);
+		spin_unlock_bh(&hwq->lock);
 		return -EAGAIN;
 	}
 	if (msg->block)
@@ -367,7 +381,8 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw,
 	wmb();
 	writel(cmdq_prod, cmdq->cmdq_mbox.prod);
 	writel(RCFW_CMDQ_TRIG_VAL, cmdq->cmdq_mbox.db);
-	spin_unlock_irqrestore(&hwq->lock, flags);
+	print_hex_dump_bytes("req: ", DUMP_PREFIX_OFFSET, msg->req, msg->req_sz);
+	spin_unlock_bh(&hwq->lock);
 	/* Return the CREQ response pointer */
 	return 0;
 }
@@ -382,7 +397,7 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw,
  * This function can not be called from non-sleepable context.
  *
  * Returns:
- * -ETIMEOUT if command is not completed in specific time interval.
+ * -ETIMEDOUT if command is not completed in specific time interval.
  * 0 if command is completed by firmware.
  */
 static int __poll_for_resp(struct bnxt_qplib_rcfw *rcfw, u16 cookie)
@@ -425,7 +440,8 @@ static int __send_message_basic_sanity(struct bnxt_qplib_rcfw *rcfw,
 
 	/* Prevent posting if f/w is not in a state to process */
 	if (test_bit(ERR_DEVICE_DETACHED, &rcfw->cmdq.flags))
-		return bnxt_qplib_map_rc(opcode);
+		return -ENXIO;
+
 	if (test_bit(FIRMWARE_STALL_DETECTED, &cmdq->flags))
 		return -ETIMEDOUT;
 
@@ -486,7 +502,7 @@ static int __bnxt_qplib_rcfw_send_message(struct bnxt_qplib_rcfw *rcfw,
 {
 	struct creq_qp_event *evnt = (struct creq_qp_event *)msg->resp;
 	struct bnxt_qplib_crsqe *crsqe;
-	unsigned long flags;
+	bool pending;
 	u16 cookie;
 	int rc;
 	u8 opcode;
@@ -495,7 +511,7 @@ static int __bnxt_qplib_rcfw_send_message(struct bnxt_qplib_rcfw *rcfw,
 
 	rc = __send_message_basic_sanity(rcfw, msg, opcode);
 	if (rc)
-		return rc;
+		return rc == -ENXIO ? bnxt_qplib_map_rc(opcode) : rc;
 
 	rc = __send_message(rcfw, msg, opcode);
 	if (rc)
@@ -511,21 +527,32 @@ static int __bnxt_qplib_rcfw_send_message(struct bnxt_qplib_rcfw *rcfw,
 	else
 		rc = __poll_for_resp(rcfw, cookie);
 
-	if (rc) {
-		spin_lock_irqsave(&rcfw->cmdq.hwq.lock, flags);
-		crsqe = &rcfw->crsqe_tbl[cookie];
+	spin_lock_bh(&rcfw->cmdq.hwq.lock);
+	crsqe = &rcfw->crsqe_tbl[cookie];
+	pending = false;
+	if (crsqe->resp == evnt) {
+		pending = true;
 		crsqe->is_waiter_alive = false;
-		if (rc == -ENODEV)
-			set_bit(FIRMWARE_STALL_DETECTED, &rcfw->cmdq.flags);
-		spin_unlock_irqrestore(&rcfw->cmdq.hwq.lock, flags);
-		return -ETIMEDOUT;
+		crsqe->resp = NULL;
+	} else if (rc) {
+		/* The completion was processed after the wait gave up but
+		 * before the lock was taken. The response is valid.
+		 */
+		rc = 0;
 	}
+	if (rc == -ENODEV)
+		set_bit(FIRMWARE_STALL_DETECTED, &rcfw->cmdq.flags);
+	spin_unlock_bh(&rcfw->cmdq.hwq.lock);
+	if (rc)
+		return -ETIMEDOUT;
+	if (pending)
+		return 0;
 
 	if (evnt->status) {
 		/* failed with status */
 		dev_err(&rcfw->pdev->dev, "cmdq[%#x]=%#x status %#x\n",
 			cookie, opcode, evnt->status);
-		rc = -EFAULT;
+		rc = -EIO;
 	}
 
 	return rc;
@@ -620,6 +647,7 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 				       struct creq_qp_event *qp_event,
 				       u32 *num_wait)
 {
+	struct creq_cq_error_notification *cq_err_event;
 	struct creq_qp_error_notification *err_event;
 	struct bnxt_qplib_hwq *hwq = &rcfw->cmdq.hwq;
 	struct bnxt_qplib_crsqe *crsqe;
@@ -628,26 +656,41 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 	u16 cookie, blocked = 0;
 	bool is_waiter_alive;
 	struct pci_dev *pdev;
-	unsigned long flags;
 	u32 wait_cmds = 0;
 	int rc = 0;
 
 	pdev = rcfw->pdev;
+	print_hex_dump_bytes("event: ", DUMP_PREFIX_OFFSET, qp_event, sizeof(*qp_event));
 	switch (qp_event->event) {
+	case CREQ_QP_EVENT_EVENT_CQ_ERROR_NOTIFICATION:
+		cq_err_event = (struct creq_cq_error_notification *)qp_event;
+		dev_dbg(&pdev->dev,
+			"Received CQ error notification cqid 0x%x, reason 0x%x\n",
+			le32_to_cpu(cq_err_event->xid),
+			cq_err_event->cq_err_reason);
+		break;
 	case CREQ_QP_EVENT_EVENT_QP_ERROR_NOTIFICATION:
 		err_event = (struct creq_qp_error_notification *)qp_event;
 		qp_id = le32_to_cpu(err_event->xid);
+		spin_lock(&rcfw->tbl_lock);
+		if (!rcfw->qp_tbl) {
+			spin_unlock(&rcfw->tbl_lock);
+			break;
+		}
 		tbl_indx = map_qp_id_to_tbl_indx(qp_id, rcfw);
 		qp = rcfw->qp_tbl[tbl_indx].qp_handle;
+		if (!qp) {
+			spin_unlock(&rcfw->tbl_lock);
+			break;
+		}
+		bnxt_qplib_mark_qp_error(qp);
+		rc = rcfw->creq.aeq_handler(rcfw, qp_event, qp);
+		spin_unlock(&rcfw->tbl_lock);
 		dev_dbg(&pdev->dev, "Received QP error notification\n");
 		dev_dbg(&pdev->dev,
 			"qpid 0x%x, req_err=0x%x, resp_err=0x%x\n",
 			qp_id, err_event->req_err_state_reason,
 			err_event->res_err_state_reason);
-		if (!qp)
-			break;
-		bnxt_qplib_mark_qp_error(qp);
-		rc = rcfw->creq.aeq_handler(rcfw, qp_event, qp);
 		break;
 	default:
 		/*
@@ -659,8 +702,7 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 		 *
 		 */
 
-		spin_lock_irqsave_nested(&hwq->lock, flags,
-					 SINGLE_DEPTH_NESTING);
+		spin_lock_nested(&hwq->lock, SINGLE_DEPTH_NESTING);
 		cookie = le16_to_cpu(qp_event->cookie);
 		blocked = cookie & RCFW_CMD_IS_BLOCKING;
 		cookie &= RCFW_MAX_COOKIE_VALUE;
@@ -672,7 +714,15 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 			dev_info(&pdev->dev,
 				 "rcfw timedout: cookie = %#x, free_slots = %d",
 				 cookie, crsqe->free_slots);
-			spin_unlock_irqrestore(&hwq->lock, flags);
+			spin_unlock(&hwq->lock);
+			return rc;
+		}
+
+		if (!crsqe->is_in_used) {
+			dev_warn_ratelimited(&pdev->dev,
+					     "event %#x for cookie %#x with no outstanding command\n",
+					     qp_event->event, cookie);
+			spin_unlock(&hwq->lock);
 			return rc;
 		}
 
@@ -696,8 +746,8 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 		is_waiter_alive = crsqe->is_waiter_alive;
 
 		crsqe->req_size = 0;
-		if (!is_waiter_alive)
-			crsqe->resp = NULL;
+		crsqe->resp = NULL;
+		crsqe->is_waiter_alive = false;
 
 		crsqe->is_in_used = false;
 
@@ -711,16 +761,18 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 		 * so let's destroy the same address vector since it is
 		 * no more used in stack. We don't care about completion
 		 * in __send_message_no_waiter.
-		 * If destroy_ah is failued by firmware, there will be AH
-		 * resource leak and relatively not critical +  unlikely
-		 * scenario. Current design is not to handle such case.
+		 * If destroy_ah is failed by firmware, or is dropped locally
+		 * because the cookie slot is in use or the CMDQ is full,
+		 * there will be AH resource leak and relatively not
+		 * critical + unlikely scenario. Current design is not to
+		 * handle such case.
 		 */
 		if (!is_waiter_alive && !qp_event->status &&
 		    qp_event->event == CREQ_QP_EVENT_EVENT_CREATE_AH)
 			__destroy_timedout_ah(rcfw,
 					      (struct creq_create_ah_resp *)
 					      qp_event);
-		spin_unlock_irqrestore(&hwq->lock, flags);
+		spin_unlock(&hwq->lock);
 	}
 	*num_wait += wait_cmds;
 	return rc;
@@ -734,12 +786,11 @@ static void bnxt_qplib_service_creq(struct tasklet_struct *t)
 	u32 type, budget = CREQ_ENTRY_POLL_BUDGET;
 	struct bnxt_qplib_hwq *hwq = &creq->hwq;
 	struct creq_base *creqe;
-	unsigned long flags;
 	u32 num_wakeup = 0;
 	u32 hw_polled = 0;
 
 	/* Service the CREQ until budget is over */
-	spin_lock_irqsave(&hwq->lock, flags);
+	spin_lock_bh(&hwq->lock);
 	while (budget > 0) {
 		creqe = bnxt_qplib_get_qe(hwq, hwq->cons, NULL);
 		if (!CREQ_CMP_VALID(creqe, creq->creq_db.dbinfo.flags))
@@ -782,7 +833,7 @@ static void bnxt_qplib_service_creq(struct tasklet_struct *t)
 	if (hw_polled)
 		bnxt_qplib_ring_nq_db(&creq->creq_db.dbinfo,
 				      rcfw->res->cctx, true);
-	spin_unlock_irqrestore(&hwq->lock, flags);
+	spin_unlock_bh(&hwq->lock);
 	if (num_wakeup)
 		wake_up_nr(&rcfw->cmdq.waitq, num_wakeup);
 }
@@ -832,6 +883,7 @@ int bnxt_qplib_init_rcfw(struct bnxt_qplib_rcfw *rcfw,
 	struct creq_initialize_fw_resp resp = {};
 	struct cmdq_initialize_fw req = {};
 	struct bnxt_qplib_cmdqmsg msg = {};
+	u16 flags = 0;
 	u8 pgsz, lvl;
 	int rc;
 
@@ -850,10 +902,8 @@ int bnxt_qplib_init_rcfw(struct bnxt_qplib_rcfw *rcfw,
 	 * shall setup this area for VF. Skipping the
 	 * HW programming
 	 */
-	if (is_virtfn)
+	if (is_virtfn || bnxt_qplib_is_chip_gen_p5_p7(rcfw->res->cctx))
 		goto skip_ctx_setup;
-	if (bnxt_qplib_is_chip_gen_p5_p7(rcfw->res->cctx))
-		goto config_vf_res;
 
 	lvl = ctx->qpc_tbl.level;
 	pgsz = bnxt_qplib_base_pg_size(&ctx->qpc_tbl);
@@ -897,16 +947,18 @@ int bnxt_qplib_init_rcfw(struct bnxt_qplib_rcfw *rcfw,
 	req.number_of_srq = cpu_to_le32(ctx->srqc_tbl.max_elements);
 	req.number_of_cq = cpu_to_le32(ctx->cq_tbl.max_elements);
 
-config_vf_res:
-	req.max_qp_per_vf = cpu_to_le32(ctx->vf_res.max_qp_per_vf);
-	req.max_mrw_per_vf = cpu_to_le32(ctx->vf_res.max_mrw_per_vf);
-	req.max_srq_per_vf = cpu_to_le32(ctx->vf_res.max_srq_per_vf);
-	req.max_cq_per_vf = cpu_to_le32(ctx->vf_res.max_cq_per_vf);
-	req.max_gid_per_vf = cpu_to_le32(ctx->vf_res.max_gid_per_vf);
-
 skip_ctx_setup:
 	if (BNXT_RE_HW_RETX(rcfw->res->dattr->dev_cap_flags))
-		req.flags |= cpu_to_le16(CMDQ_INITIALIZE_FW_FLAGS_HW_REQUESTER_RETX_SUPPORTED);
+		flags |= CMDQ_INITIALIZE_FW_FLAGS_HW_REQUESTER_RETX_SUPPORTED;
+	if (_is_optimize_modify_qp_supported(rcfw->res->dattr->dev_cap_flags2))
+		flags |= CMDQ_INITIALIZE_FW_FLAGS_OPTIMIZE_MODIFY_QP_SUPPORTED;
+	if (rcfw->res->en_dev->flags & BNXT_EN_FLAG_ROCE_VF_RES_MGMT)
+		flags |= CMDQ_INITIALIZE_FW_FLAGS_L2_VF_RESOURCE_MGMT;
+	if (bnxt_qplib_roce_mirror_supported(rcfw->res->cctx)) {
+		flags |= CMDQ_INITIALIZE_FW_FLAGS_MIRROR_ON_ROCE_SUPPORTED;
+		rcfw->roce_mirror = true;
+	}
+	req.flags |= cpu_to_le16(flags);
 	req.stat_ctx_id = cpu_to_le32(ctx->stats.fw_id);
 	bnxt_qplib_fill_cmdqmsg(&msg, &req, &resp, NULL, sizeof(req), sizeof(resp), 0);
 	rc = bnxt_qplib_rcfw_send_message(rcfw, &msg);
@@ -918,7 +970,6 @@ skip_ctx_setup:
 
 void bnxt_qplib_free_rcfw_channel(struct bnxt_qplib_rcfw *rcfw)
 {
-	kfree(rcfw->qp_tbl);
 	kfree(rcfw->crsqe_tbl);
 	bnxt_qplib_free_hwq(rcfw->res, &rcfw->cmdq.hwq);
 	bnxt_qplib_free_hwq(rcfw->res, &rcfw->creq.hwq);
@@ -927,8 +978,7 @@ void bnxt_qplib_free_rcfw_channel(struct bnxt_qplib_rcfw *rcfw)
 
 int bnxt_qplib_alloc_rcfw_channel(struct bnxt_qplib_res *res,
 				  struct bnxt_qplib_rcfw *rcfw,
-				  struct bnxt_qplib_ctx *ctx,
-				  int qp_tbl_sz)
+				  struct bnxt_qplib_ctx *ctx)
 {
 	struct bnxt_qplib_hwq_attr hwq_attr = {};
 	struct bnxt_qplib_sg_info sginfo = {};
@@ -967,17 +1017,11 @@ int bnxt_qplib_alloc_rcfw_channel(struct bnxt_qplib_res *res,
 		goto fail;
 	}
 
-	rcfw->crsqe_tbl = kcalloc(cmdq->hwq.max_elements,
-				  sizeof(*rcfw->crsqe_tbl), GFP_KERNEL);
+	rcfw->crsqe_tbl = kzalloc_objs(*rcfw->crsqe_tbl, cmdq->hwq.max_elements);
 	if (!rcfw->crsqe_tbl)
 		goto fail;
 
-	/* Allocate one extra to hold the QP1 entries */
-	rcfw->qp_tbl_size = qp_tbl_sz + 1;
-	rcfw->qp_tbl = kcalloc(rcfw->qp_tbl_size, sizeof(struct bnxt_qplib_qp_node),
-			       GFP_KERNEL);
-	if (!rcfw->qp_tbl)
-		goto fail;
+	spin_lock_init(&rcfw->tbl_lock);
 
 	rcfw->max_timeout = res->cctx->hwrm_cmd_max_timeout;
 
@@ -1116,7 +1160,7 @@ static int bnxt_qplib_map_creq_db(struct bnxt_qplib_rcfw *rcfw, u32 reg_offt)
 	creq_db->dbinfo.flags = 0;
 	creq_db->reg.bar_id = RCFW_COMM_CONS_PCI_BAR_REGION;
 	creq_db->reg.bar_base = pci_resource_start(pdev, creq_db->reg.bar_id);
-	if (!creq_db->reg.bar_id)
+	if (!creq_db->reg.bar_base)
 		dev_err(&pdev->dev,
 			"QPLIB: CREQ BAR region %d resc start is 0!",
 			creq_db->reg.bar_id);

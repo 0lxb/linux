@@ -91,8 +91,7 @@ static acpi_status parse_csi2_resource(struct acpi_resource *res, void *context)
 		return AE_OK;
 	}
 
-	conn = kmalloc(struct_size(conn, remote_name, csi2_res_src_length + 1),
-		       GFP_KERNEL);
+	conn = kmalloc_flex(*conn, remote_name, csi2_res_src_length + 1);
 	if (!conn)
 		return AE_OK;
 
@@ -111,7 +110,7 @@ static struct crs_csi2 *acpi_mipi_add_crs_csi2(acpi_handle handle,
 {
 	struct crs_csi2 *csi2;
 
-	csi2 = kzalloc(sizeof(*csi2), GFP_KERNEL);
+	csi2 = kzalloc_obj(*csi2);
 	if (!csi2)
 		return NULL;
 
@@ -624,8 +623,7 @@ static void init_crs_csi2_swnodes(struct crs_csi2 *csi2)
 	if (!fwnode_property_present(adev_fwnode, "rotation")) {
 		struct acpi_pld_info *pld;
 
-		status = acpi_get_physical_device_location(handle, &pld);
-		if (ACPI_SUCCESS(status)) {
+		if (acpi_get_physical_device_location(handle, &pld)) {
 			swnodes->dev_props[NEXT_PROPERTY(prop_index, DEV_ROTATION)] =
 					PROPERTY_ENTRY_U32("rotation",
 							   pld->rotation * 45U);
@@ -725,14 +723,20 @@ void acpi_mipi_crs_csi2_cleanup(void)
 		acpi_mipi_del_crs_csi2(csi2);
 }
 
-static const struct dmi_system_id dmi_ignore_port_nodes[] = {
-	{
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "XPS 9315"),
-		},
-	},
-	{ }
+#ifdef CONFIG_X86
+#include <asm/cpu_device_id.h>
+#include <asm/intel-family.h>
+
+/* CPU matches for Dell generations with broken ACPI MIPI DISCO info */
+static const struct x86_cpu_id dell_broken_mipi_disco_cpu_gens[] = {
+	X86_MATCH_VFM(INTEL_TIGERLAKE, NULL),
+	X86_MATCH_VFM(INTEL_TIGERLAKE_L, NULL),
+	X86_MATCH_VFM(INTEL_ALDERLAKE, NULL),
+	X86_MATCH_VFM(INTEL_ALDERLAKE_L, NULL),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE, NULL),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE_P, NULL),
+	X86_MATCH_VFM(INTEL_RAPTORLAKE_S, NULL),
+	{}
 };
 
 static const char *strnext(const char *s1, const char *s2)
@@ -761,7 +765,10 @@ bool acpi_graph_ignore_port(acpi_handle handle)
 	static bool dmi_tested, ignore_port;
 
 	if (!dmi_tested) {
-		ignore_port = dmi_first_match(dmi_ignore_port_nodes);
+		if (dmi_name_in_vendors("Dell Inc.") &&
+		    x86_match_cpu(dell_broken_mipi_disco_cpu_gens))
+			ignore_port = true;
+
 		dmi_tested = true;
 	}
 
@@ -794,3 +801,4 @@ out_free:
 	kfree(orig_path);
 	return false;
 }
+#endif

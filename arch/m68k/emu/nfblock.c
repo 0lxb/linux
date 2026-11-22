@@ -71,15 +71,15 @@ static void nfhd_submit_bio(struct bio *bio)
 		len = bvec.bv_len;
 		len >>= 9;
 		nfhd_read_write(dev->id, 0, dir, sec >> shift, len >> shift,
-				page_to_phys(bvec.bv_page) + bvec.bv_offset);
+				bvec_phys(&bvec));
 		sec += len;
 	}
 	bio_endio(bio);
 }
 
-static int nfhd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int nfhd_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct nfhd_device *dev = bdev->bd_disk->private_data;
+	struct nfhd_device *dev = disk->private_data;
 
 	geo->cylinders = dev->blocks >> (6 - dev->bshift);
 	geo->heads = 4;
@@ -98,6 +98,7 @@ static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 {
 	struct queue_limits lim = {
 		.logical_block_size	= bsize,
+		.features		= BLK_FEAT_ROTATIONAL,
 	};
 	struct nfhd_device *dev;
 	int dev_id = id - NFHD_DEV_OFFSET;
@@ -111,7 +112,7 @@ static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 		return -EINVAL;
 	}
 
-	dev = kmalloc(sizeof(struct nfhd_device), GFP_KERNEL);
+	dev = kmalloc_obj(struct nfhd_device);
 	if (!dev)
 		goto out;
 
@@ -131,7 +132,8 @@ static int __init nfhd_init_one(int id, u32 blocks, u32 bsize)
 	dev->disk->minors = 16;
 	dev->disk->fops = &nfhd_ops;
 	dev->disk->private_data = dev;
-	sprintf(dev->disk->disk_name, "nfhd%u", dev_id);
+	snprintf(dev->disk->disk_name, sizeof(dev->disk->disk_name), "nfhd%u",
+		 dev_id);
 	set_capacity(dev->disk, (sector_t)blocks * (bsize / 512));
 	err = add_disk(dev->disk);
 	if (err)
@@ -193,4 +195,5 @@ static void __exit nfhd_exit(void)
 module_init(nfhd_init);
 module_exit(nfhd_exit);
 
+MODULE_DESCRIPTION("Atari NatFeat block device driver");
 MODULE_LICENSE("GPL");

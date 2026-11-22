@@ -34,12 +34,6 @@ KBUILD_AFLAGS := $(KBUILD_AFLAGS) -D__ASSEMBLY__ \
 	-DBOOT_HEAP_SIZE=$(BOOT_HEAP_SIZE) \
 	-DKERNEL_ENTRY=$(VMLINUX_ENTRY_ADDRESS)
 
-# Prevents link failures: __sanitizer_cov_trace_pc() is not linked in.
-KCOV_INSTRUMENT		:= n
-GCOV_PROFILE := n
-UBSAN_SANITIZE := n
-KCSAN_SANITIZE			:= n
-
 # decompressor objects (linked with vmlinuz)
 vmlinuzobjs-y := $(obj)/head.o $(obj)/decompress.o $(obj)/string.o $(obj)/bswapsi.o
 
@@ -75,7 +69,7 @@ tool_$(CONFIG_KERNEL_ZSTD)    = zstd22_with_size
 targets += vmlinux.bin.z
 
 $(obj)/vmlinux.bin.z: $(obj)/vmlinux.bin FORCE
-	$(call if_changed,$(tool_y))
+	+$(call if_changed,$(tool_y))
 
 targets += piggy.o dummy.o
 
@@ -102,12 +96,20 @@ VMLINUZ_LOAD_ADDRESS = $(shell $(obj)/calc_vmlinuz_load_addr \
 endif
 UIMAGE_LOADADDR = $(VMLINUZ_LOAD_ADDRESS)
 
+# Like LINKER_LOAD_ADDRESS in arch/mips/Makefile: ld.lld cannot link a
+# 32-bit executable at a sign-extended address, so drop the upper 32 bits.
+ifdef CONFIG_64BIT
+VMLINUZ_LINK_ADDRESS = $(VMLINUZ_LOAD_ADDRESS)
+else
+VMLINUZ_LINK_ADDRESS = $(subst 0xffffffff,0x,$(VMLINUZ_LOAD_ADDRESS))
+endif
+
 vmlinuzobjs-y += $(obj)/piggy.o
 
 targets += ../../../../vmlinuz
 
 quiet_cmd_zld = LD      $@
-      cmd_zld = $(LD) $(KBUILD_LDFLAGS) -Ttext $(VMLINUZ_LOAD_ADDRESS) -T $< $(vmlinuzobjs-y) -o $@
+      cmd_zld = $(LD) $(KBUILD_LDFLAGS) -Ttext $(VMLINUZ_LINK_ADDRESS) -T $< $(vmlinuzobjs-y) -o $@
 quiet_cmd_strip = STRIP   $@
       cmd_strip = $(STRIP) -s $@
 

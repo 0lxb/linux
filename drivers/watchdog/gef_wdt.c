@@ -34,6 +34,7 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/uaccess.h>
+#include <linux/stringify.h>
 
 #include <sysdev/fsl_soc.h>
 
@@ -70,7 +71,7 @@ static DEFINE_SPINLOCK(gef_wdt_spinlock);
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
-	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+	__stringify(WATCHDOG_NOWAYOUT) ")");
 
 
 static int gef_wdt_toggle_wdc(int enabled_predicate, int field_shift)
@@ -245,7 +246,6 @@ static int gef_wdt_release(struct inode *inode, struct file *file)
 
 static const struct file_operations gef_wdt_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.write = gef_wdt_write,
 	.unlocked_ioctl = gef_wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -306,7 +306,7 @@ static struct platform_driver gef_wdt_driver = {
 		.of_match_table = gef_wdt_ids,
 	},
 	.probe		= gef_wdt_probe,
-	.remove_new	= gef_wdt_remove,
+	.remove		= gef_wdt_remove,
 };
 
 static int __init gef_wdt_init(void)

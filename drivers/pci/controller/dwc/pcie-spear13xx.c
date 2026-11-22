@@ -110,15 +110,12 @@ static void spear13xx_pcie_enable_interrupts(struct spear13xx_pcie *spear13xx_pc
 				MSI_CTRL_INT, &app_reg->int_mask);
 }
 
-static int spear13xx_pcie_link_up(struct dw_pcie *pci)
+static bool spear13xx_pcie_link_up(struct dw_pcie *pci)
 {
 	struct spear13xx_pcie *spear13xx_pcie = to_spear13xx_pcie(pci);
 	struct pcie_app_reg __iomem *app_reg = spear13xx_pcie->app_base;
 
-	if (readl(&app_reg->app_status_1) & XMLH_LINK_UP)
-		return 1;
-
-	return 0;
+	return readl(&app_reg->app_status_1) & XMLH_LINK_UP;
 }
 
 static int spear13xx_pcie_host_init(struct dw_pcie_rp *pp)
@@ -196,11 +193,11 @@ static int spear13xx_pcie_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	int ret;
 
-	spear13xx_pcie = devm_kzalloc(dev, sizeof(*spear13xx_pcie), GFP_KERNEL);
+	spear13xx_pcie = devm_kzalloc_obj(dev, *spear13xx_pcie);
 	if (!spear13xx_pcie)
 		return -ENOMEM;
 
-	pci = devm_kzalloc(dev, sizeof(*pci), GFP_KERNEL);
+	pci = devm_kzalloc_obj(dev, *pci);
 	if (!pci)
 		return -ENOMEM;
 
@@ -233,7 +230,7 @@ static int spear13xx_pcie_probe(struct platform_device *pdev)
 	}
 
 	if (of_property_read_bool(np, "st,pcie-is-gen1"))
-		pci->link_gen = 1;
+		pci->max_link_speed = 1;
 
 	platform_set_drvdata(pdev, spear13xx_pcie);
 

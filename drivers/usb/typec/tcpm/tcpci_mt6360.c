@@ -141,7 +141,7 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 	struct mt6360_tcpc_info *mti;
 	int ret;
 
-	mti = devm_kzalloc(&pdev->dev, sizeof(*mti), GFP_KERNEL);
+	mti = devm_kzalloc_obj(&pdev->dev, *mti);
 	if (!mti)
 		return -ENOMEM;
 
@@ -167,7 +167,6 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 	ret = devm_request_threaded_irq(mti->dev, mti->irq, NULL, mt6360_irq, IRQF_ONESHOT,
 					dev_name(&pdev->dev), mti);
 	if (ret) {
-		dev_err(mti->dev, "Failed to register irq\n");
 		tcpci_unregister_port(mti->tcpci);
 		return ret;
 	}
@@ -221,7 +220,7 @@ static struct platform_driver mt6360_tcpc_driver = {
 		.of_match_table = mt6360_tcpc_of_id,
 	},
 	.probe = mt6360_tcpc_probe,
-	.remove_new = mt6360_tcpc_remove,
+	.remove = mt6360_tcpc_remove,
 };
 module_platform_driver(mt6360_tcpc_driver);
 

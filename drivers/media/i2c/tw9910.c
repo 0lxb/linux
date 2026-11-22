@@ -212,11 +212,6 @@
  * structure
  */
 
-struct regval_list {
-	unsigned char reg_num;
-	unsigned char value;
-};
-
 struct tw9910_scale_ctrl {
 	char           *name;
 	unsigned short  width;
@@ -720,6 +715,7 @@ tw9910_set_fmt_error:
 }
 
 static int tw9910_get_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -797,6 +793,7 @@ static int tw9910_s_fmt(struct v4l2_subdev *sd,
 }
 
 static int tw9910_set_fmt(struct v4l2_subdev *sd,
+			  const struct v4l2_subdev_client_info *ci,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *format)
 {
@@ -947,7 +944,7 @@ static int tw9910_probe(struct i2c_client *client)
 		return -EIO;
 	}
 
-	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&client->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -1001,7 +998,7 @@ static void tw9910_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tw9910_id[] = {
-	{ "tw9910", 0 },
+	{ .name = "tw9910" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tw9910_id);

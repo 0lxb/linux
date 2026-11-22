@@ -2,6 +2,8 @@
 /* Copyright (c) 2019, Intel Corporation. */
 
 #include <linux/filter.h>
+#include <linux/net/intel/libie/rx.h>
+#include <net/libeth/xdp.h>
 
 #include "ice_txrx_lib.h"
 #include "ice_eswitch.h"
@@ -18,9 +20,6 @@ void ice_release_rx_desc(struct ice_rx_ring *rx_ring, u16 val)
 
 	rx_ring->next_to_use = val;
 
-	/* update next to alloc since we have filled the ring */
-	rx_ring->next_to_alloc = val;
-
 	/* QRX_TAIL will be updated with any tail value, but hardware ignores
 	 * the lower 3 bits. This makes it so we only bump tail on meaningful
 	 * boundaries. Also, this allows us to bump tail on intervals of 8 up to
@@ -36,30 +35,6 @@ void ice_release_rx_desc(struct ice_rx_ring *rx_ring, u16 val)
 		wmb();
 		writel(val, rx_ring->tail);
 	}
-}
-
-/**
- * ice_ptype_to_htype - get a hash type
- * @ptype: the ptype value from the descriptor
- *
- * Returns appropriate hash type (such as PKT_HASH_TYPE_L2/L3/L4) to be used by
- * skb_set_hash based on PTYPE as parsed by HW Rx pipeline and is part of
- * Rx desc.
- */
-static enum pkt_hash_types ice_ptype_to_htype(u16 ptype)
-{
-	struct ice_rx_ptype_decoded decoded = ice_decode_rx_desc_ptype(ptype);
-
-	if (!decoded.known)
-		return PKT_HASH_TYPE_NONE;
-	if (decoded.payload_layer == ICE_RX_PTYPE_PAYLOAD_LAYER_PAY4)
-		return PKT_HASH_TYPE_L4;
-	if (decoded.payload_layer == ICE_RX_PTYPE_PAYLOAD_LAYER_PAY3)
-		return PKT_HASH_TYPE_L3;
-	if (decoded.outer_ip == ICE_RX_PTYPE_OUTER_L2)
-		return PKT_HASH_TYPE_L2;
-
-	return PKT_HASH_TYPE_NONE;
 }
 
 /**
@@ -91,14 +66,33 @@ ice_rx_hash_to_skb(const struct ice_rx_ring *rx_ring,
 		   const union ice_32b_rx_flex_desc *rx_desc,
 		   struct sk_buff *skb, u16 rx_ptype)
 {
+	struct libeth_rx_pt decoded;
 	u32 hash;
 
-	if (!(rx_ring->netdev->features & NETIF_F_RXHASH))
+	decoded = libie_rx_pt_parse(rx_ptype);
+	if (!libeth_rx_pt_has_hash(rx_ring->netdev, decoded))
 		return;
 
 	hash = ice_get_rx_hash(rx_desc);
 	if (likely(hash))
-		skb_set_hash(skb, hash, ice_ptype_to_htype(rx_ptype));
+		libeth_rx_pt_set_hash(skb, hash, decoded);
+}
+
+/**
+ * ice_rx_gcs - Set generic checksum in skb
+ * @skb: skb currently being received and modified
+ * @rx_desc: receive descriptor
+ */
+static void ice_rx_gcs(struct sk_buff *skb,
+		       const union ice_32b_rx_flex_desc *rx_desc)
+{
+	const struct ice_32b_rx_flex_desc_nic *desc;
+	u16 csum;
+
+	desc = (struct ice_32b_rx_flex_desc_nic *)rx_desc;
+	skb->ip_summed = CHECKSUM_COMPLETE;
+	csum = (__force u16)desc->raw_csum;
+	skb->csum = csum_unfold((__force __sum16)swab16(csum));
 }
 
 /**
@@ -114,34 +108,35 @@ static void
 ice_rx_csum(struct ice_rx_ring *ring, struct sk_buff *skb,
 	    union ice_32b_rx_flex_desc *rx_desc, u16 ptype)
 {
-	struct ice_rx_ptype_decoded decoded;
+	struct libeth_rx_pt decoded;
 	u16 rx_status0, rx_status1;
 	bool ipv4, ipv6;
+
+	/* Start with CHECKSUM_NONE and by default csum_level = 0 */
+	skb->ip_summed = CHECKSUM_NONE;
+
+	decoded = libie_rx_pt_parse(ptype);
+	if (!libeth_rx_pt_has_checksum(ring->netdev, decoded))
+		return;
 
 	rx_status0 = le16_to_cpu(rx_desc->wb.status_error0);
 	rx_status1 = le16_to_cpu(rx_desc->wb.status_error1);
 
-	decoded = ice_decode_rx_desc_ptype(ptype);
-
-	/* Start with CHECKSUM_NONE and by default csum_level = 0 */
-	skb->ip_summed = CHECKSUM_NONE;
-	skb_checksum_none_assert(skb);
-
-	/* check if Rx checksum is enabled */
-	if (!(ring->netdev->features & NETIF_F_RXCSUM))
+	if ((ring->flags & ICE_RX_FLAGS_RING_GCS) &&
+	    rx_desc->wb.rxdid == ICE_RXDID_FLEX_NIC &&
+	    (decoded.inner_prot == LIBETH_RX_PT_INNER_TCP ||
+	     decoded.inner_prot == LIBETH_RX_PT_INNER_UDP ||
+	     decoded.inner_prot == LIBETH_RX_PT_INNER_ICMP)) {
+		ice_rx_gcs(skb, rx_desc);
 		return;
+	}
 
 	/* check if HW has decoded the packet and checksum */
 	if (!(rx_status0 & BIT(ICE_RX_FLEX_DESC_STATUS0_L3L4P_S)))
 		return;
 
-	if (!(decoded.known && decoded.outer_ip))
-		return;
-
-	ipv4 = (decoded.outer_ip == ICE_RX_PTYPE_OUTER_IP) &&
-	       (decoded.outer_ip_ver == ICE_RX_PTYPE_OUTER_IPV4);
-	ipv6 = (decoded.outer_ip == ICE_RX_PTYPE_OUTER_IP) &&
-	       (decoded.outer_ip_ver == ICE_RX_PTYPE_OUTER_IPV6);
+	ipv4 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV4;
+	ipv6 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV6;
 
 	if (ipv4 && (rx_status0 & (BIT(ICE_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S)))) {
 		ring->vsi->back->hw_rx_eipe_error++;
@@ -169,19 +164,10 @@ ice_rx_csum(struct ice_rx_ring *ring, struct sk_buff *skb,
 	 * we need to bump the checksum level by 1 to reflect the fact that
 	 * we are indicating we validated the inner checksum.
 	 */
-	if (decoded.tunnel_type >= ICE_RX_PTYPE_TUNNEL_IP_GRENAT)
+	if (decoded.tunnel_type >= LIBETH_RX_PT_TUNNEL_IP_GRENAT)
 		skb->csum_level = 1;
 
-	/* Only report checksum unnecessary for TCP, UDP, or SCTP */
-	switch (decoded.inner_prot) {
-	case ICE_RX_PTYPE_INNER_PROT_TCP:
-	case ICE_RX_PTYPE_INNER_PROT_UDP:
-	case ICE_RX_PTYPE_INNER_PROT_SCTP:
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
-		break;
-	default:
-		break;
-	}
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
 	return;
 
 checksum_fail:
@@ -236,7 +222,19 @@ ice_process_skb_fields(struct ice_rx_ring *rx_ring,
 	ice_rx_hash_to_skb(rx_ring, rx_desc, skb, ptype);
 
 	/* modifies the skb - consumes the enet header */
-	skb->protocol = eth_type_trans(skb, rx_ring->netdev);
+	if (unlikely(rx_ring->flags & ICE_RX_FLAGS_MULTIDEV)) {
+		struct net_device *netdev = ice_eswitch_get_target(rx_ring,
+								   rx_desc);
+
+		if (ice_is_port_repr_netdev(netdev))
+			ice_repr_inc_rx_stats(netdev, skb->len);
+
+		/* __skb_push() is needed because xdp_build_skb_from_buff()
+		 * calls eth_type_trans()
+		 */
+		__skb_push(skb, ETH_HLEN);
+		skb->protocol = eth_type_trans(skb, netdev);
+	}
 
 	ice_rx_csum(rx_ring, skb, rx_desc, ptype);
 
@@ -273,19 +271,18 @@ static void
 ice_clean_xdp_tx_buf(struct device *dev, struct ice_tx_buf *tx_buf,
 		     struct xdp_frame_bulk *bq)
 {
-	dma_unmap_single(dev, dma_unmap_addr(tx_buf, dma),
-			 dma_unmap_len(tx_buf, len), DMA_TO_DEVICE);
-	dma_unmap_len_set(tx_buf, len, 0);
-
 	switch (tx_buf->type) {
 	case ICE_TX_BUF_XDP_TX:
-		page_frag_free(tx_buf->raw_buf);
+		libeth_xdp_return_va(tx_buf->raw_buf, true);
 		break;
 	case ICE_TX_BUF_XDP_XMIT:
+		dma_unmap_single(dev, dma_unmap_addr(tx_buf, dma),
+				 dma_unmap_len(tx_buf, len), DMA_TO_DEVICE);
 		xdp_return_frame_bulk(tx_buf->xdpf, bq);
 		break;
 	}
 
+	dma_unmap_len_set(tx_buf, len, 0);
 	tx_buf->type = ICE_TX_BUF_EMPTY;
 }
 
@@ -380,9 +377,11 @@ int __ice_xmit_xdp_ring(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring,
 	struct ice_tx_buf *tx_buf;
 	u32 cnt = xdp_ring->count;
 	void *data = xdp->data;
+	struct page *page;
 	u32 nr_frags = 0;
 	u32 free_space;
 	u32 frag = 0;
+	u32 offset;
 
 	free_space = ICE_DESC_UNUSED(xdp_ring);
 	if (free_space < ICE_RING_QUARTER(xdp_ring))
@@ -402,23 +401,27 @@ int __ice_xmit_xdp_ring(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring,
 	tx_head = &xdp_ring->tx_buf[ntu];
 	tx_buf = tx_head;
 
+	page = virt_to_page(data);
+	offset = offset_in_page(xdp->data);
+
 	for (;;) {
 		dma_addr_t dma;
 
-		dma = dma_map_single(dev, data, size, DMA_TO_DEVICE);
-		if (dma_mapping_error(dev, dma))
-			goto dma_unmap;
+		if (frame) {
+			dma = dma_map_single(dev, data, size, DMA_TO_DEVICE);
+			if (dma_mapping_error(dev, dma))
+				goto dma_unmap;
+			tx_buf->type = ICE_TX_BUF_FRAG;
+		} else {
+			dma = page_pool_get_dma_addr(page) + offset;
+			dma_sync_single_for_device(dev, dma, size, DMA_BIDIRECTIONAL);
+			tx_buf->type = ICE_TX_BUF_XDP_TX;
+			tx_buf->raw_buf = data;
+		}
 
 		/* record length, and DMA address */
 		dma_unmap_len_set(tx_buf, len, size);
 		dma_unmap_addr_set(tx_buf, dma, dma);
-
-		if (frame) {
-			tx_buf->type = ICE_TX_BUF_FRAG;
-		} else {
-			tx_buf->type = ICE_TX_BUF_XDP_TX;
-			tx_buf->raw_buf = data;
-		}
 
 		tx_desc->buf_addr = cpu_to_le64(dma);
 		tx_desc->cmd_type_offset_bsz = ice_build_ctob(0, 0, size, 0);
@@ -433,6 +436,8 @@ int __ice_xmit_xdp_ring(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring,
 		tx_desc = ICE_TX_DESC(xdp_ring, ntu);
 		tx_buf = &xdp_ring->tx_buf[ntu];
 
+		page = skb_frag_page(&sinfo->frags[frag]);
+		offset = skb_frag_off(&sinfo->frags[frag]);
 		data = skb_frag_address(&sinfo->frags[frag]);
 		size = skb_frag_size(&sinfo->frags[frag]);
 		frag++;
@@ -472,7 +477,7 @@ dma_unmap:
 	return ICE_XDP_CONSUMED;
 
 busy:
-	xdp_ring->ring_stats->tx_stats.tx_busy++;
+	ice_stats_inc(xdp_ring->ring_stats, tx_busy);
 
 	return ICE_XDP_CONSUMED;
 }
@@ -517,51 +522,18 @@ void ice_finalize_xdp_rx(struct ice_tx_ring *xdp_ring, unsigned int xdp_res,
  */
 static int ice_xdp_rx_hw_ts(const struct xdp_md *ctx, u64 *ts_ns)
 {
-	const struct ice_xdp_buff *xdp_ext = (void *)ctx;
+	const struct libeth_xdp_buff *xdp_ext = (void *)ctx;
+	struct ice_rx_ring *rx_ring;
 
-	*ts_ns = ice_ptp_get_rx_hwts(xdp_ext->eop_desc,
-				     xdp_ext->pkt_ctx);
+	rx_ring = libeth_xdp_buff_to_rq(xdp_ext, typeof(*rx_ring), xdp_rxq);
+
+	*ts_ns = ice_ptp_get_rx_hwts(xdp_ext->desc,
+				     &rx_ring->pkt_ctx);
 	if (!*ts_ns)
 		return -ENODATA;
 
 	return 0;
 }
-
-/* Define a ptype index -> XDP hash type lookup table.
- * It uses the same ptype definitions as ice_decode_rx_desc_ptype[],
- * avoiding possible copy-paste errors.
- */
-#undef ICE_PTT
-#undef ICE_PTT_UNUSED_ENTRY
-
-#define ICE_PTT(PTYPE, OUTER_IP, OUTER_IP_VER, OUTER_FRAG, T, TE, TEF, I, PL)\
-	[PTYPE] = XDP_RSS_L3_##OUTER_IP_VER | XDP_RSS_L4_##I | XDP_RSS_TYPE_##PL
-
-#define ICE_PTT_UNUSED_ENTRY(PTYPE) [PTYPE] = 0
-
-/* A few supplementary definitions for when XDP hash types do not coincide
- * with what can be generated from ptype definitions
- * by means of preprocessor concatenation.
- */
-#define XDP_RSS_L3_NONE		XDP_RSS_TYPE_NONE
-#define XDP_RSS_L4_NONE		XDP_RSS_TYPE_NONE
-#define XDP_RSS_TYPE_PAY2	XDP_RSS_TYPE_L2
-#define XDP_RSS_TYPE_PAY3	XDP_RSS_TYPE_NONE
-#define XDP_RSS_TYPE_PAY4	XDP_RSS_L4
-
-static const enum xdp_rss_hash_type
-ice_ptype_to_xdp_hash[ICE_NUM_DEFINED_PTYPES] = {
-	ICE_PTYPES
-};
-
-#undef XDP_RSS_L3_NONE
-#undef XDP_RSS_L4_NONE
-#undef XDP_RSS_TYPE_PAY2
-#undef XDP_RSS_TYPE_PAY3
-#undef XDP_RSS_TYPE_PAY4
-
-#undef ICE_PTT
-#undef ICE_PTT_UNUSED_ENTRY
 
 /**
  * ice_xdp_rx_hash_type - Get XDP-specific hash type from the RX descriptor
@@ -570,12 +542,7 @@ ice_ptype_to_xdp_hash[ICE_NUM_DEFINED_PTYPES] = {
 static enum xdp_rss_hash_type
 ice_xdp_rx_hash_type(const union ice_32b_rx_flex_desc *eop_desc)
 {
-	u16 ptype = ice_get_ptype(eop_desc);
-
-	if (unlikely(ptype >= ICE_NUM_DEFINED_PTYPES))
-		return 0;
-
-	return ice_ptype_to_xdp_hash[ptype];
+	return libie_rx_pt_parse(ice_get_ptype(eop_desc)).hash_type;
 }
 
 /**
@@ -589,10 +556,10 @@ ice_xdp_rx_hash_type(const union ice_32b_rx_flex_desc *eop_desc)
 static int ice_xdp_rx_hash(const struct xdp_md *ctx, u32 *hash,
 			   enum xdp_rss_hash_type *rss_type)
 {
-	const struct ice_xdp_buff *xdp_ext = (void *)ctx;
+	const struct libeth_xdp_buff *xdp_ext = (void *)ctx;
 
-	*hash = ice_get_rx_hash(xdp_ext->eop_desc);
-	*rss_type = ice_xdp_rx_hash_type(xdp_ext->eop_desc);
+	*hash = ice_get_rx_hash(xdp_ext->desc);
+	*rss_type = ice_xdp_rx_hash_type(xdp_ext->desc);
 	if (!likely(*hash))
 		return -ENODATA;
 
@@ -611,13 +578,16 @@ static int ice_xdp_rx_hash(const struct xdp_md *ctx, u32 *hash,
 static int ice_xdp_rx_vlan_tag(const struct xdp_md *ctx, __be16 *vlan_proto,
 			       u16 *vlan_tci)
 {
-	const struct ice_xdp_buff *xdp_ext = (void *)ctx;
+	const struct libeth_xdp_buff *xdp_ext = (void *)ctx;
+	struct ice_rx_ring *rx_ring;
 
-	*vlan_proto = xdp_ext->pkt_ctx->vlan_proto;
+	rx_ring = libeth_xdp_buff_to_rq(xdp_ext, typeof(*rx_ring), xdp_rxq);
+
+	*vlan_proto = rx_ring->pkt_ctx.vlan_proto;
 	if (!*vlan_proto)
 		return -ENODATA;
 
-	*vlan_tci = ice_get_vlan_tci(xdp_ext->eop_desc);
+	*vlan_tci = ice_get_vlan_tci(xdp_ext->desc);
 	if (!*vlan_tci)
 		return -ENODATA;
 

@@ -44,7 +44,7 @@ nf_conntrack_events - BOOLEAN
 
 nf_conntrack_expect_max - INTEGER
 	Maximum size of expectation table.  Default value is
-	nf_conntrack_buckets / 256. Minimum is 1.
+	nf_conntrack_buckets / 64. Minimum is 1.
 
 nf_conntrack_frag6_high_thresh - INTEGER
 	default 262144
@@ -85,7 +85,6 @@ nf_conntrack_log_invalid - INTEGER
 	- 1   - log ICMP packets
 	- 6   - log TCP packets
 	- 17  - log UDP packets
-	- 33  - log DCCP packets
 	- 41  - log ICMPv6 packets
 	- 136 - log UDPLITE packets
 	- 255 - log packets of any protocol
@@ -222,11 +221,11 @@ nf_flowtable_tcp_timeout - INTEGER (seconds)
 
         Control offload timeout for tcp connections.
         TCP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack with tcp pickup timeout.
+        Once aged, the connection is returned to nf conntrack.
 
 nf_flowtable_udp_timeout - INTEGER (seconds)
         default 30
 
         Control offload timeout for udp connections.
         UDP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack with udp pickup timeout.
+        Once aged, the connection is returned to nf conntrack.

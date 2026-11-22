@@ -54,7 +54,7 @@
 
 static void gic_check_cpu_features(void)
 {
-	WARN_TAINT_ONCE(this_cpu_has_cap(ARM64_HAS_GIC_CPUIF_SYSREGS),
+	WARN_TAINT_ONCE(this_cpu_has_cap(ARM64_HAS_GICV3_CPUIF),
 			TAINT_CPU_OUT_OF_SPEC,
 			"GICv3 system registers enabled, broken firmware!\n");
 }
@@ -64,7 +64,7 @@ static void gic_check_cpu_features(void)
 
 union gic_base {
 	void __iomem *common_base;
-	void __percpu * __iomem *percpu_base;
+	void __iomem * __percpu *percpu_base;
 };
 
 struct gic_chip_data {
@@ -178,14 +178,14 @@ static inline bool cascading_gic_irq(struct irq_data *d)
  */
 static void gic_poke_irq(struct irq_data *d, u32 offset)
 {
-	u32 mask = 1 << (irqd_to_hwirq(d) % 32);
+	u32 mask = BIT(irqd_to_hwirq(d) % 32);
 
 	writel_relaxed(mask, gic_dist_base(d) + offset + (irqd_to_hwirq(d) / 32) * 4);
 }
 
 static int gic_peek_irq(struct irq_data *d, u32 offset)
 {
-	u32 mask = 1 << (irqd_to_hwirq(d) % 32);
+	u32 mask = BIT(irqd_to_hwirq(d) % 32);
 
 	return !!(readl_relaxed(gic_dist_base(d) + offset + (irqd_to_hwirq(d) / 32) * 4) & mask);
 }
@@ -303,7 +303,7 @@ static int gic_set_type(struct irq_data *d, unsigned int type)
 			    type != IRQ_TYPE_EDGE_RISING)
 		return -EINVAL;
 
-	ret = gic_configure_irq(gicirq, type, base + GIC_DIST_CONFIG, NULL);
+	ret = gic_configure_irq(gicirq, type, base + GIC_DIST_CONFIG);
 	if (ret && gicirq < 32) {
 		/* Misconfigured PPIs are usually not fatal */
 		pr_warn("GIC: PPI%ld is secure or misconfigured\n", gicirq - 16);
@@ -400,7 +400,7 @@ static void gic_irq_print_chip(struct irq_data *d, struct seq_file *p)
 	struct gic_chip_data *gic = irq_data_get_irq_chip_data(d);
 
 	if (gic->domain->pm_dev)
-		seq_printf(p, gic->domain->pm_dev->of_node->name);
+		seq_puts(p, gic->domain->pm_dev->of_node->name);
 	else
 		seq_printf(p, "GIC-%d", (int)(gic - &gic_data[0]));
 }
@@ -479,7 +479,7 @@ static void gic_dist_init(struct gic_chip_data *gic)
 	for (i = 32; i < gic_irqs; i += 4)
 		writel_relaxed(cpumask, base + GIC_DIST_TARGET + i * 4 / 4);
 
-	gic_dist_config(base, gic_irqs, NULL);
+	gic_dist_config(base, gic_irqs, GICD_INT_DEF_PRI);
 
 	writel_relaxed(GICD_ENABLE, base + GIC_DIST_CTRL);
 }
@@ -516,7 +516,7 @@ static int gic_cpu_init(struct gic_chip_data *gic)
 				gic_cpu_map[i] &= ~cpu_mask;
 	}
 
-	gic_cpu_config(dist_base, 32, NULL);
+	gic_cpu_config(dist_base, 32, GICD_INT_DEF_PRI);
 
 	writel_relaxed(GICC_INT_PRI_THRESHOLD, base + GIC_CPU_PRIMASK);
 	gic_cpu_if_up(gic);
@@ -608,7 +608,7 @@ void gic_dist_restore(struct gic_chip_data *gic)
 			dist_base + GIC_DIST_CONFIG + i * 4);
 
 	for (i = 0; i < DIV_ROUND_UP(gic_irqs, 4); i++)
-		writel_relaxed(GICD_INT_DEF_PRI_X4,
+		writel_relaxed(REPEAT_BYTE_U32(GICD_INT_DEF_PRI),
 			dist_base + GIC_DIST_PRI + i * 4);
 
 	for (i = 0; i < DIV_ROUND_UP(gic_irqs, 4); i++)
@@ -697,7 +697,7 @@ void gic_cpu_restore(struct gic_chip_data *gic)
 		writel_relaxed(ptr[i], dist_base + GIC_DIST_CONFIG + i * 4);
 
 	for (i = 0; i < DIV_ROUND_UP(32, 4); i++)
-		writel_relaxed(GICD_INT_DEF_PRI_X4,
+		writel_relaxed(REPEAT_BYTE_U32(GICD_INT_DEF_PRI),
 					dist_base + GIC_DIST_PRI + i * 4);
 
 	writel_relaxed(GICC_INT_PRI_THRESHOLD, cpu_base + GIC_CPU_PRIMASK);
@@ -1419,7 +1419,7 @@ int gic_of_init_child(struct device *dev, struct gic_chip_data **gic, int irq)
 	if (!dev || !dev->of_node || !gic || !irq)
 		return -EINVAL;
 
-	*gic = devm_kzalloc(dev, sizeof(**gic), GFP_KERNEL);
+	*gic = devm_kzalloc_obj(dev, **gic);
 	if (!*gic)
 		return -ENOMEM;
 
@@ -1458,6 +1458,8 @@ static void __init gic_of_setup_kvm_info(struct device_node *node)
 	ret = of_address_to_resource(node, 3, vcpu_res);
 	if (ret)
 		return;
+
+	gic_v2_kvm_info.gicc_base = gic_data[0].cpu_base.common_base;
 
 	if (static_branch_likely(&supports_deactivate_key))
 		vgic_set_kvm_info(&gic_v2_kvm_info);
@@ -1525,7 +1527,6 @@ static struct
 {
 	phys_addr_t cpu_phys_base;
 	u32 maint_irq;
-	int maint_irq_mode;
 	phys_addr_t vctrl_base;
 	phys_addr_t vcpu_base;
 } acpi_data __initdata;
@@ -1551,10 +1552,11 @@ gic_acpi_parse_madt_cpu(union acpi_subtable_headers *header,
 	if (cpu_base_assigned && gic_cpu_base != acpi_data.cpu_phys_base)
 		return -EINVAL;
 
+	if (processor->flags & ACPI_MADT_VGIC_IRQ_MODE)
+		pr_warn_once(FW_BUG "MI wrongly advertised as Edge-triggered\n");
+
 	acpi_data.cpu_phys_base = gic_cpu_base;
 	acpi_data.maint_irq = processor->vgic_interrupt;
-	acpi_data.maint_irq_mode = (processor->flags & ACPI_MADT_VGIC_IRQ_MODE) ?
-				    ACPI_EDGE_SENSITIVE : ACPI_LEVEL_SENSITIVE;
 	acpi_data.vctrl_base = processor->gich_base_address;
 	acpi_data.vcpu_base = processor->gicv_base_address;
 
@@ -1614,12 +1616,13 @@ static void __init gic_acpi_setup_kvm_info(void)
 	vcpu_res->end = vcpu_res->start + ACPI_GICV2_VCPU_MEM_SIZE - 1;
 
 	irq = acpi_register_gsi(NULL, acpi_data.maint_irq,
-				acpi_data.maint_irq_mode,
+				ACPI_LEVEL_SENSITIVE,
 				ACPI_ACTIVE_HIGH);
 	if (irq <= 0)
 		return;
 
 	gic_v2_kvm_info.maint_irq = irq;
+	gic_v2_kvm_info.gicc_base = gic_data[0].cpu_base.common_base;
 
 	vgic_set_kvm_info(&gic_v2_kvm_info);
 }
@@ -1687,7 +1690,7 @@ static int __init gic_v2_acpi_init(union acpi_subtable_headers *header,
 		return ret;
 	}
 
-	acpi_set_irq_model(ACPI_IRQ_MODEL_GIC, gic_v2_get_gsi_domain_id);
+	acpi_set_irq_model(ACPI_IRQ_MODEL_GIC, gic_v2_get_gsi_domain_id, NULL);
 
 	if (IS_ENABLED(CONFIG_ARM_GIC_V2M))
 		gicv2m_init(NULL, gic_data[0].domain);

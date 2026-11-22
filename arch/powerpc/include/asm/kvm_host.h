@@ -29,8 +29,13 @@
 
 #define __KVM_HAVE_ARCH_VCPU_DEBUGFS
 
+#if defined(CONFIG_KVM_BOOK3S_HV_POSSIBLE) && !defined(CONFIG_KVM_BOOK3S_PR_POSSIBLE)
+#define __KVM_NO_MMIO
+#endif
+
 #define KVM_MAX_VCPUS		NR_CPUS
 #define KVM_MAX_VCORES		NR_CPUS
+#define KVM_MAX_VCPU_IDS_NESTEDv2	2048	/* PAPR H_GUEST_CREATE_VCPU vcpuId */
 
 #include <asm/cputhreads.h>
 
@@ -49,6 +54,9 @@
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
+#ifdef CONFIG_KVM_MPIC
+#define __KVM_HAVE_MSI
+#endif
 
 #define KVM_HALT_POLL_NS_DEFAULT 10000	/* 10 us */
 
@@ -599,6 +607,9 @@ struct kvm_vcpu_arch {
 	ulong dawrx0;
 	ulong dawr1;
 	ulong dawrx1;
+	ulong dexcr;
+	ulong hashkeyr;
+	ulong hashpkeyr;
 	ulong ciabr;
 	ulong cfar;
 	ulong ppr;
@@ -735,6 +746,7 @@ struct kvm_vcpu_arch {
 	pgd_t *pgdir;
 
 	u16 io_gpr; /* GPR used as IO source/target */
+	u8 mmio_len; /* kernel-private copy of mmio.len, immune to TOCTOU */
 	u8 mmio_host_swabbed;
 	u8 mmio_sign_extend;
 	/* conversion between single and double precision */
@@ -868,6 +880,11 @@ struct kvm_vcpu_arch {
 	struct kvmhv_tb_accumulator cede_time;	/* time napping inside guest */
 #endif
 #endif /* CONFIG_KVM_BOOK3S_HV_EXIT_TIMING */
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	u64 l1_to_l2_cs;
+	u64 l2_to_l1_cs;
+	u64 l2_runtime_agg;
+#endif
 };
 
 #define VCPU_FPR(vcpu, i)	(vcpu)->arch.fp.fpr[i][TS_FPROFFSET]
@@ -894,10 +911,8 @@ struct kvm_vcpu_arch {
 #define __KVM_HAVE_ARCH_WQP
 #define __KVM_HAVE_CREATE_DEVICE
 
-static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 static inline void kvm_arch_memslots_updated(struct kvm *kvm, u64 gen) {}
 static inline void kvm_arch_flush_shadow_all(struct kvm *kvm) {}
-static inline void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu) {}
 static inline void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu) {}
 static inline void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu) {}
 

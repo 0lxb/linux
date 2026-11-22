@@ -22,7 +22,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/units.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define EBU_CLC			0x000
 #define EBU_CLC_RST		0x00000000u
@@ -290,12 +290,13 @@ static int ebu_dma_start(struct ebu_nand_controller *ebu_host, u32 dir,
 	struct dma_async_tx_descriptor *tx;
 	struct completion *dma_completion;
 	dma_async_tx_callback callback;
+	struct device *dma_dev;
 	struct dma_chan *chan;
 	dma_cookie_t cookie;
 	unsigned long flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
 	dma_addr_t buf_dma;
 	int ret;
-	u32 timeout;
+	unsigned long time_left;
 
 	if (dir == DMA_DEV_TO_MEM) {
 		chan = ebu_host->dma_rx;
@@ -307,8 +308,9 @@ static int ebu_dma_start(struct ebu_nand_controller *ebu_host, u32 dir,
 		callback = ebu_dma_tx_callback;
 	}
 
-	buf_dma = dma_map_single(chan->device->dev, (void *)buf, len, dir);
-	if (dma_mapping_error(chan->device->dev, buf_dma)) {
+	dma_dev = dmaengine_get_dma_device(chan);
+	buf_dma = dma_map_single(dma_dev, (void *)buf, len, dir);
+	if (dma_mapping_error(dma_dev, buf_dma)) {
 		dev_err(ebu_host->dev, "Failed to map DMA buffer\n");
 		ret = -EIO;
 		goto err_unmap;
@@ -322,7 +324,7 @@ static int ebu_dma_start(struct ebu_nand_controller *ebu_host, u32 dir,
 
 	tx->callback = callback;
 	tx->callback_param = ebu_host;
-	cookie = tx->tx_submit(tx);
+	cookie = dmaengine_submit(tx);
 
 	ret = dma_submit_error(cookie);
 	if (ret) {
@@ -335,8 +337,8 @@ static int ebu_dma_start(struct ebu_nand_controller *ebu_host, u32 dir,
 	dma_async_issue_pending(chan);
 
 	/* Wait DMA to finish the data transfer.*/
-	timeout = wait_for_completion_timeout(dma_completion, msecs_to_jiffies(1000));
-	if (!timeout) {
+	time_left = wait_for_completion_timeout(dma_completion, msecs_to_jiffies(1000));
+	if (!time_left) {
 		dev_err(ebu_host->dev, "I/O Error in DMA RX (status %d)\n",
 			dmaengine_tx_status(chan, cookie, NULL));
 		dmaengine_terminate_sync(chan);
@@ -585,7 +587,7 @@ static int ebu_nand_probe(struct platform_device *pdev)
 	int ret;
 	u32 cs;
 
-	ebu_host = devm_kzalloc(dev, sizeof(*ebu_host), GFP_KERNEL);
+	ebu_host = devm_kzalloc_obj(dev, *ebu_host);
 	if (!ebu_host)
 		return -ENOMEM;
 
@@ -728,7 +730,7 @@ MODULE_DEVICE_TABLE(of, ebu_nand_match);
 
 static struct platform_driver ebu_nand_driver = {
 	.probe = ebu_nand_probe,
-	.remove_new = ebu_nand_remove,
+	.remove = ebu_nand_remove,
 	.driver = {
 		.name = "intel-nand-controller",
 		.of_match_table = ebu_nand_match,

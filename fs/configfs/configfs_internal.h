@@ -55,6 +55,8 @@ struct configfs_dirent {
 #define CONFIGFS_USET_IN_MKDIR	0x0200
 #define CONFIGFS_USET_CREATING	0x0400
 #define CONFIGFS_NOT_PINNED	(CONFIGFS_ITEM_ATTR | CONFIGFS_ITEM_BIN_ATTR)
+#define CONFIGFS_PINNED \
+	(CONFIGFS_ROOT | CONFIGFS_DIR | CONFIGFS_ITEM_LINK)
 
 extern struct mutex configfs_symlink_mutex;
 extern spinlock_t configfs_dirent_lock;
@@ -73,11 +75,8 @@ extern int configfs_make_dirent(struct configfs_dirent *, struct dentry *,
 				void *, umode_t, int, struct configfs_fragment *);
 extern int configfs_dirent_is_ready(struct configfs_dirent *);
 
-extern void configfs_hash_and_remove(struct dentry * dir, const char * name);
-
 extern const unsigned char * configfs_get_name(struct configfs_dirent *sd);
-extern void configfs_drop_dentry(struct configfs_dirent *sd, struct dentry *parent);
-extern int configfs_setattr(struct mnt_idmap *idmap,
+extern int configfs_setattr(const struct mnt_idmap *idmap,
 			    struct dentry *dentry, struct iattr *iattr);
 
 extern struct dentry *configfs_pin_fs(void);
@@ -91,7 +90,7 @@ extern const struct inode_operations configfs_root_inode_operations;
 extern const struct inode_operations configfs_symlink_inode_operations;
 extern const struct dentry_operations configfs_dentry_ops;
 
-extern int configfs_symlink(struct mnt_idmap *idmap,
+extern int configfs_symlink(const struct mnt_idmap *idmap,
 			    struct inode *dir, struct dentry *dentry,
 			    const char *symname);
 extern int configfs_unlink(struct inode *dir, struct dentry *dentry);
@@ -105,17 +104,17 @@ static inline struct config_item * to_item(struct dentry * dentry)
 	return ((struct config_item *) sd->s_element);
 }
 
-static inline struct configfs_attribute * to_attr(struct dentry * dentry)
+static inline const struct configfs_attribute * to_attr(struct dentry * dentry)
 {
 	struct configfs_dirent * sd = dentry->d_fsdata;
-	return ((struct configfs_attribute *) sd->s_element);
+	return ((const struct configfs_attribute *) sd->s_element);
 }
 
-static inline struct configfs_bin_attribute *to_bin_attr(struct dentry *dentry)
+static inline const struct configfs_bin_attribute *to_bin_attr(struct dentry *dentry)
 {
-	struct configfs_attribute *attr = to_attr(dentry);
+	const struct configfs_attribute *attr = to_attr(dentry);
 
-	return container_of(attr, struct configfs_bin_attribute, cb_attr);
+	return container_of_const(attr, struct configfs_bin_attribute, cb_attr);
 }
 
 static inline struct config_item *configfs_get_config_item(struct dentry *dentry)

@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2018 Intel Corporation. All rights reserved.
+ * Copyright(c) 2018 Intel Corporation
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <sound/compress_driver.h>
 #include <sound/pcm.h>
 #include "sof-priv.h"
 
@@ -287,16 +288,12 @@ static inline int
 snd_sof_dsp_set_power_state(struct snd_sof_dev *sdev,
 			    const struct sof_dsp_power_state *target_state)
 {
-	int ret = 0;
-
-	mutex_lock(&sdev->power_state_access);
+	guard(mutex)(&sdev->power_state_access);
 
 	if (sof_ops(sdev)->set_power_state)
-		ret = sof_ops(sdev)->set_power_state(sdev, target_state);
+		return sof_ops(sdev)->set_power_state(sdev, target_state);
 
-	mutex_unlock(&sdev->power_state_access);
-
-	return ret;
+	return 0;
 }
 
 /* debug */
@@ -452,6 +449,79 @@ snd_sof_pcm_platform_hw_params(struct snd_sof_dev *sdev,
 	return 0;
 }
 
+static inline int
+snd_sof_compr_platform_open(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_open)
+		return sof_ops(sdev)->compr_open(sdev, cstream);
+
+	return 0;
+}
+
+/* disconnect pcm substream to a host stream */
+static inline int
+snd_sof_compr_platform_close(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_close)
+		return sof_ops(sdev)->compr_close(sdev, cstream);
+
+	return 0;
+}
+
+/* host stream hw params */
+static inline int
+snd_sof_compr_platform_hw_params(struct snd_sof_dev *sdev,
+				 struct snd_compr_stream *cstream,
+				 struct snd_compr_params *params,
+				 struct snd_sof_platform_stream_params *platform_params)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_hw_params)
+		return sof_ops(sdev)->compr_hw_params(sdev, cstream, params, platform_params);
+
+	return 0;
+}
+
+static inline int
+snd_sof_compr_platform_hw_free(struct snd_sof_dev *sdev,
+			       struct snd_compr_stream *cstream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_hw_free)
+		return sof_ops(sdev)->compr_hw_free(sdev, cstream);
+
+	return 0;
+}
+
+static inline int
+snd_sof_compr_platform_trigger(struct snd_sof_dev *sdev,
+			       struct snd_compr_stream *cstream, int cmd)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_trigger)
+		return sof_ops(sdev)->compr_trigger(sdev, cstream, cmd);
+
+	return 0;
+}
+
+static inline int
+snd_sof_compr_platform_pointer(struct snd_sof_dev *sdev,
+			       struct snd_compr_stream *cstream,
+			       struct snd_compr_tstamp64 *tstamp)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_pointer)
+		return sof_ops(sdev)->compr_pointer(sdev, cstream, tstamp);
+
+	return 0;
+}
+
+static inline u64
+snd_sof_compr_get_dai_frame_counter(struct snd_sof_dev *sdev,
+				    struct snd_compr_stream *cstream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->compr_get_dai_frame_counter)
+		return sof_ops(sdev)->compr_get_dai_frame_counter(sdev, cstream);
+
+	return 0;
+}
+
 /* host stream hw free */
 static inline int
 snd_sof_pcm_platform_hw_free(struct snd_sof_dev *sdev,
@@ -523,12 +593,26 @@ static inline int snd_sof_pcm_platform_ack(struct snd_sof_dev *sdev,
 	return 0;
 }
 
-static inline u64 snd_sof_pcm_get_stream_position(struct snd_sof_dev *sdev,
-						  struct snd_soc_component *component,
-						  struct snd_pcm_substream *substream)
+static inline u64
+snd_sof_pcm_get_dai_frame_counter(struct snd_sof_dev *sdev,
+				  struct snd_soc_component *component,
+				  struct snd_pcm_substream *substream)
 {
-	if (sof_ops(sdev) && sof_ops(sdev)->get_stream_position)
-		return sof_ops(sdev)->get_stream_position(sdev, component, substream);
+	if (sof_ops(sdev) && sof_ops(sdev)->get_dai_frame_counter)
+		return sof_ops(sdev)->get_dai_frame_counter(sdev, component,
+							    substream);
+
+	return 0;
+}
+
+static inline u64
+snd_sof_pcm_get_host_byte_counter(struct snd_sof_dev *sdev,
+				  struct snd_soc_component *component,
+				  struct snd_pcm_substream *substream)
+{
+	if (sof_ops(sdev) && sof_ops(sdev)->get_host_byte_counter)
+		return sof_ops(sdev)->get_host_byte_counter(sdev, component,
+							    substream);
 
 	return 0;
 }
@@ -583,12 +667,12 @@ snd_sof_is_chain_dma_supported(struct snd_sof_dev *sdev, u32 dai_type)
  * @addr: Address to poll
  * @val: Variable to read the value into
  * @cond: Break condition (usually involving @val)
- * @sleep_us: Maximum time to sleep between reads in us (0
- *            tight-loops).  Should be less than ~20ms since usleep_range
- *            is used (see Documentation/timers/timers-howto.rst).
+ * @sleep_us: Maximum time to sleep between reads in us (0 tight-loops). Please
+ *            read usleep_range() function description for details and
+ *            limitations.
  * @timeout_us: Timeout in us, 0 means never timeout
  *
- * Returns 0 on success and -ETIMEDOUT upon a timeout. In either
+ * Returns: 0 on success and -ETIMEDOUT upon a timeout. In either
  * case, the last read value at @addr is stored in @val. Must not
  * be called from atomic context if sleep_us or timeout_us are used.
  *

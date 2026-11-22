@@ -173,7 +173,7 @@ static int ccf_probe(struct platform_device *pdev)
 	u32 errinten;
 	int ret, irq;
 
-	ccf = devm_kzalloc(&pdev->dev, sizeof(*ccf), GFP_KERNEL);
+	ccf = devm_kzalloc_obj(&pdev->dev, *ccf);
 	if (!ccf)
 		return -ENOMEM;
 
@@ -249,7 +249,7 @@ static struct platform_driver ccf_driver = {
 		.of_match_table = ccf_matches,
 	},
 	.probe = ccf_probe,
-	.remove_new = ccf_remove,
+	.remove = ccf_remove,
 };
 
 module_platform_driver(ccf_driver);

@@ -22,7 +22,7 @@
  * struct clk_imx_acm_pm_domains - structure for multi power domain
  * @pd_dev: power domain device
  * @pd_dev_link: power domain device link
- * @num_domains: power domain nummber
+ * @num_domains: power domain number
  */
 struct clk_imx_acm_pm_domains {
 	struct device **pd_dev;
@@ -54,10 +54,12 @@ struct clk_imx8_acm_sel {
  * struct imx8_acm_soc_data - soc specific data
  * @sels: pointer to struct clk_imx8_acm_sel
  * @num_sels: numbers of items
+ * @mclk_sels: pointer to imx8qm/qxp/dxl_mclk_sels
  */
 struct imx8_acm_soc_data {
 	struct clk_imx8_acm_sel *sels;
 	unsigned int num_sels;
+	struct clk_parent_data *mclk_sels;
 };
 
 /**
@@ -111,11 +113,14 @@ static const struct clk_parent_data imx8qm_mclk_out_sels[] = {
 	{ .fw_name = "sai6_rx_bclk" },
 };
 
-static const struct clk_parent_data imx8qm_mclk_sels[] = {
+#define ACM_AUD_CLK0_SEL_INDEX  2
+#define ACM_AUD_CLK1_SEL_INDEX  3
+
+static struct clk_parent_data imx8qm_mclk_sels[] = {
 	{ .fw_name = "aud_pll_div_clk0_lpcg_clk" },
 	{ .fw_name = "aud_pll_div_clk1_lpcg_clk" },
-	{ .fw_name = "acm_aud_clk0_sel" },
-	{ .fw_name = "acm_aud_clk1_sel" },
+	{  }, /* clk_hw pointer of "acm_aud_clk0_sel" */
+	{  }, /* clk_hw pointer of "acm_aud_clk1_sel" */
 };
 
 static const struct clk_parent_data imx8qm_asrc_mux_clk_sels[] = {
@@ -176,11 +181,11 @@ static const struct clk_parent_data imx8qxp_mclk_out_sels[] = {
 	{ .fw_name = "sai4_rx_bclk" },
 };
 
-static const struct clk_parent_data imx8qxp_mclk_sels[] = {
+static struct clk_parent_data imx8qxp_mclk_sels[] = {
 	{ .fw_name = "aud_pll_div_clk0_lpcg_clk" },
 	{ .fw_name = "aud_pll_div_clk1_lpcg_clk" },
-	{ .fw_name = "acm_aud_clk0_sel" },
-	{ .fw_name = "acm_aud_clk1_sel" },
+	{  }, /* clk_hw pointer of "acm_aud_clk0_sel" */
+	{  }, /* clk_hw pointer of "acm_aud_clk1_sel" */
 };
 
 static struct clk_imx8_acm_sel imx8qxp_sels[] = {
@@ -228,11 +233,11 @@ static const struct clk_parent_data imx8dxl_mclk_out_sels[] = {
 	{ .index = -1 },
 };
 
-static const struct clk_parent_data imx8dxl_mclk_sels[] = {
+static struct clk_parent_data imx8dxl_mclk_sels[] = {
 	{ .fw_name = "aud_pll_div_clk0_lpcg_clk" },
 	{ .fw_name = "aud_pll_div_clk1_lpcg_clk" },
-	{ .fw_name = "acm_aud_clk0_sel" },
-	{ .fw_name = "acm_aud_clk1_sel" },
+	{  }, /* clk_hw pointer of "acm_aud_clk0_sel" */
+	{  }, /* clk_hw pointer of "acm_aud_clk1_sel" */
 };
 
 static struct clk_imx8_acm_sel imx8dxl_sels[] = {
@@ -264,16 +269,13 @@ static int clk_imx_acm_attach_pm_domains(struct device *dev,
 	if (dev_pm->num_domains <= 1)
 		return 0;
 
-	dev_pm->pd_dev = devm_kmalloc_array(dev, dev_pm->num_domains,
-					    sizeof(*dev_pm->pd_dev),
-					    GFP_KERNEL);
+	dev_pm->pd_dev = devm_kmalloc_objs(dev, *dev_pm->pd_dev,
+					   dev_pm->num_domains);
 	if (!dev_pm->pd_dev)
 		return -ENOMEM;
 
-	dev_pm->pd_dev_link = devm_kmalloc_array(dev,
-						 dev_pm->num_domains,
-						 sizeof(*dev_pm->pd_dev_link),
-						 GFP_KERNEL);
+	dev_pm->pd_dev_link = devm_kmalloc_objs(dev, *dev_pm->pd_dev_link,
+						dev_pm->num_domains);
 	if (!dev_pm->pd_dev_link)
 		return -ENOMEM;
 
@@ -289,9 +291,9 @@ static int clk_imx_acm_attach_pm_domains(struct device *dev,
 							 DL_FLAG_STATELESS |
 							 DL_FLAG_PM_RUNTIME |
 							 DL_FLAG_RPM_ACTIVE);
-		if (IS_ERR(dev_pm->pd_dev_link[i])) {
+		if (!dev_pm->pd_dev_link[i]) {
 			dev_pm_domain_detach(dev_pm->pd_dev[i], false);
-			ret = PTR_ERR(dev_pm->pd_dev_link[i]);
+			ret = -EINVAL;
 			goto detach_pm;
 		}
 	}
@@ -339,7 +341,7 @@ static int imx8_acm_clk_probe(struct platform_device *pdev)
 	if (WARN_ON(IS_ERR(base)))
 		return PTR_ERR(base);
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -347,8 +349,8 @@ static int imx8_acm_clk_probe(struct platform_device *pdev)
 	priv->soc_data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
-	clk_hw_data = devm_kzalloc(&pdev->dev, struct_size(clk_hw_data, hws, IMX_ADMA_ACM_CLK_END),
-				   GFP_KERNEL);
+	clk_hw_data = devm_kzalloc_flex(&pdev->dev, *clk_hw_data, hws,
+					IMX_ADMA_ACM_CLK_END);
 	if (!clk_hw_data)
 		return -ENOMEM;
 
@@ -366,7 +368,8 @@ static int imx8_acm_clk_probe(struct platform_device *pdev)
 	for (i = 0; i < priv->soc_data->num_sels; i++) {
 		hws[sels[i].clkid] = devm_clk_hw_register_mux_parent_data_table(dev,
 										sels[i].name, sels[i].parents,
-										sels[i].num_parents, 0,
+										sels[i].num_parents,
+										CLK_SET_RATE_NO_REPARENT,
 										base + sels[i].reg,
 										sels[i].shift, sels[i].width,
 										0, NULL, NULL);
@@ -375,6 +378,18 @@ static int imx8_acm_clk_probe(struct platform_device *pdev)
 			imx_check_clk_hws(hws, IMX_ADMA_ACM_CLK_END);
 			goto err_clk_register;
 		}
+
+		/*
+		 * The IMX_ADMA_ACM_AUD_CLK0_SEL and IMX_ADMA_ACM_AUD_CLK1_SEL are
+		 * registered first. After registration, update the clk_hw pointer
+		 * to imx8qm/qxp/dxl_mclk_sels structures.
+		 */
+		if (sels[i].clkid == IMX_ADMA_ACM_AUD_CLK0_SEL)
+			priv->soc_data->mclk_sels[ACM_AUD_CLK0_SEL_INDEX].hw =
+								hws[IMX_ADMA_ACM_AUD_CLK0_SEL];
+		if (sels[i].clkid == IMX_ADMA_ACM_AUD_CLK1_SEL)
+			priv->soc_data->mclk_sels[ACM_AUD_CLK1_SEL_INDEX].hw =
+								hws[IMX_ADMA_ACM_AUD_CLK1_SEL];
 	}
 
 	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, clk_hw_data);
@@ -406,16 +421,19 @@ static void imx8_acm_clk_remove(struct platform_device *pdev)
 static const struct imx8_acm_soc_data imx8qm_acm_data = {
 	.sels = imx8qm_sels,
 	.num_sels = ARRAY_SIZE(imx8qm_sels),
+	.mclk_sels = imx8qm_mclk_sels,
 };
 
 static const struct imx8_acm_soc_data imx8qxp_acm_data = {
 	.sels = imx8qxp_sels,
 	.num_sels = ARRAY_SIZE(imx8qxp_sels),
+	.mclk_sels = imx8qxp_mclk_sels,
 };
 
 static const struct imx8_acm_soc_data imx8dxl_acm_data = {
 	.sels = imx8dxl_sels,
 	.num_sels = ARRAY_SIZE(imx8dxl_sels),
+	.mclk_sels = imx8dxl_mclk_sels,
 };
 
 static const struct of_device_id imx8_acm_match[] = {
@@ -468,7 +486,7 @@ static struct platform_driver imx8_acm_clk_driver = {
 		.pm = &imx8_acm_pm_ops,
 	},
 	.probe = imx8_acm_clk_probe,
-	.remove_new = imx8_acm_clk_remove,
+	.remove = imx8_acm_clk_remove,
 };
 module_platform_driver(imx8_acm_clk_driver);
 

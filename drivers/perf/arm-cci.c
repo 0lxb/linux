@@ -127,18 +127,16 @@ enum cci_models {
 
 static void pmu_write_counters(struct cci_pmu *cci_pmu,
 				 unsigned long *mask);
-static ssize_t __maybe_unused cci_pmu_format_show(struct device *dev,
-			struct device_attribute *attr, char *buf);
 static ssize_t __maybe_unused cci_pmu_event_show(struct device *dev,
 			struct device_attribute *attr, char *buf);
 
 #define CCI_EXT_ATTR_ENTRY(_name, _func, _config) 				\
 	&((struct dev_ext_attribute[]) {					\
-		{ __ATTR(_name, S_IRUGO, _func, NULL), (void *)_config }	\
+		{ __DEVICE_ATTR(_name, S_IRUGO, _func, NULL), (void *)_config }	\
 	})[0].attr.attr
 
 #define CCI_FORMAT_EXT_ATTR_ENTRY(_name, _config) \
-	CCI_EXT_ATTR_ENTRY(_name, cci_pmu_format_show, (char *)_config)
+	CCI_EXT_ATTR_ENTRY(_name, device_show_string, _config)
 #define CCI_EVENT_EXT_ATTR_ENTRY(_name, _config) \
 	CCI_EXT_ATTR_ENTRY(_name, cci_pmu_event_show, (unsigned long)_config)
 
@@ -686,14 +684,6 @@ static void __cci_pmu_disable(struct cci_pmu *cci_pmu)
 	/* Disable all the PMU counters. */
 	val = readl_relaxed(cci_pmu->ctrl_base + CCI_PMCR) & ~CCI_PMCR_CEN;
 	writel(val, cci_pmu->ctrl_base + CCI_PMCR);
-}
-
-static ssize_t cci_pmu_format_show(struct device *dev,
-			struct device_attribute *attr, char *buf)
-{
-	struct dev_ext_attribute *eattr = container_of(attr,
-				struct dev_ext_attribute, attr);
-	return sysfs_emit(buf, "%s\n", (char *)eattr->var);
 }
 
 static ssize_t cci_pmu_event_show(struct device *dev,
@@ -1361,7 +1351,7 @@ static ssize_t pmu_cpumask_attr_show(struct device *dev,
 	struct pmu *pmu = dev_get_drvdata(dev);
 	struct cci_pmu *cci_pmu = to_cci_pmu(pmu);
 
-	return cpumap_print_to_pagebuf(true, buf, cpumask_of(cci_pmu->cpu));
+	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(cpumask_of(cci_pmu->cpu)));
 }
 
 static struct device_attribute pmu_cpumask_attr =
@@ -1409,6 +1399,7 @@ static int cci_pmu_init(struct cci_pmu *cci_pmu, struct platform_device *pdev)
 
 	cci_pmu->pmu = (struct pmu) {
 		.module		= THIS_MODULE,
+		.parent		= &pdev->dev,
 		.name		= cci_pmu->model->name,
 		.task_ctx_nr	= perf_invalid_context,
 		.pmu_enable	= cci_pmu_enable,
@@ -1598,7 +1589,7 @@ static struct cci_pmu *cci_pmu_alloc(struct device *dev)
 	 * them explicitly on an error, as it would end up in driver
 	 * detach.
 	 */
-	cci_pmu = devm_kzalloc(dev, sizeof(*cci_pmu), GFP_KERNEL);
+	cci_pmu = devm_kzalloc_obj(dev, *cci_pmu);
 	if (!cci_pmu)
 		return ERR_PTR(-ENOMEM);
 
@@ -1616,14 +1607,13 @@ static struct cci_pmu *cci_pmu_alloc(struct device *dev)
 	}
 
 	cci_pmu->model = model;
-	cci_pmu->irqs = devm_kcalloc(dev, CCI_PMU_MAX_HW_CNTRS(model),
-					sizeof(*cci_pmu->irqs), GFP_KERNEL);
+	cci_pmu->irqs = devm_kzalloc_objs(dev, *cci_pmu->irqs,
+					  CCI_PMU_MAX_HW_CNTRS(model));
 	if (!cci_pmu->irqs)
 		return ERR_PTR(-ENOMEM);
-	cci_pmu->hw_events.events = devm_kcalloc(dev,
-					     CCI_PMU_MAX_HW_CNTRS(model),
-					     sizeof(*cci_pmu->hw_events.events),
-					     GFP_KERNEL);
+	cci_pmu->hw_events.events = devm_kzalloc_objs(dev,
+						      *cci_pmu->hw_events.events,
+						      CCI_PMU_MAX_HW_CNTRS(model));
 	if (!cci_pmu->hw_events.events)
 		return ERR_PTR(-ENOMEM);
 	cci_pmu->hw_events.used_mask = devm_bitmap_zalloc(dev,
@@ -1714,7 +1704,7 @@ static struct platform_driver cci_pmu_driver = {
 		   .suppress_bind_attrs = true,
 		  },
 	.probe = cci_pmu_probe,
-	.remove_new = cci_pmu_remove,
+	.remove = cci_pmu_remove,
 };
 
 module_platform_driver(cci_pmu_driver);

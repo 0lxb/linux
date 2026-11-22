@@ -13,6 +13,7 @@
 #define _HWMON_H_
 
 #include <linux/bitops.h>
+#include <linux/cleanup.h>
 
 struct device;
 struct attribute_group;
@@ -24,6 +25,7 @@ enum hwmon_sensor_types {
 	hwmon_curr,
 	hwmon_power,
 	hwmon_energy,
+	hwmon_energy64,
 	hwmon_humidity,
 	hwmon_fan,
 	hwmon_pwm,
@@ -38,6 +40,7 @@ enum hwmon_chip_attributes {
 	hwmon_chip_power_reset_history,
 	hwmon_chip_register_tz,
 	hwmon_chip_update_interval,
+	hwmon_chip_update_interval_us,
 	hwmon_chip_alarms,
 	hwmon_chip_samples,
 	hwmon_chip_curr_samples,
@@ -45,6 +48,7 @@ enum hwmon_chip_attributes {
 	hwmon_chip_power_samples,
 	hwmon_chip_temp_samples,
 	hwmon_chip_beep_enable,
+	hwmon_chip_pec,
 };
 
 #define HWMON_C_TEMP_RESET_HISTORY	BIT(hwmon_chip_temp_reset_history)
@@ -53,6 +57,7 @@ enum hwmon_chip_attributes {
 #define HWMON_C_POWER_RESET_HISTORY	BIT(hwmon_chip_power_reset_history)
 #define HWMON_C_REGISTER_TZ		BIT(hwmon_chip_register_tz)
 #define HWMON_C_UPDATE_INTERVAL		BIT(hwmon_chip_update_interval)
+#define HWMON_C_UPDATE_INTERVAL_US	BIT(hwmon_chip_update_interval_us)
 #define HWMON_C_ALARMS			BIT(hwmon_chip_alarms)
 #define HWMON_C_SAMPLES			BIT(hwmon_chip_samples)
 #define HWMON_C_CURR_SAMPLES		BIT(hwmon_chip_curr_samples)
@@ -60,6 +65,7 @@ enum hwmon_chip_attributes {
 #define HWMON_C_POWER_SAMPLES		BIT(hwmon_chip_power_samples)
 #define HWMON_C_TEMP_SAMPLES		BIT(hwmon_chip_temp_samples)
 #define HWMON_C_BEEP_ENABLE		BIT(hwmon_chip_beep_enable)
+#define HWMON_C_PEC			BIT(hwmon_chip_pec)
 
 enum hwmon_temp_attributes {
 	hwmon_temp_enable,
@@ -128,6 +134,8 @@ enum hwmon_in_attributes {
 	hwmon_in_max,
 	hwmon_in_lcrit,
 	hwmon_in_crit,
+	hwmon_in_lemergency,
+	hwmon_in_emergency,
 	hwmon_in_average,
 	hwmon_in_lowest,
 	hwmon_in_highest,
@@ -138,6 +146,8 @@ enum hwmon_in_attributes {
 	hwmon_in_max_alarm,
 	hwmon_in_lcrit_alarm,
 	hwmon_in_crit_alarm,
+	hwmon_in_lemergency_alarm,
+	hwmon_in_emergency_alarm,
 	hwmon_in_rated_min,
 	hwmon_in_rated_max,
 	hwmon_in_beep,
@@ -150,6 +160,8 @@ enum hwmon_in_attributes {
 #define HWMON_I_MAX		BIT(hwmon_in_max)
 #define HWMON_I_LCRIT		BIT(hwmon_in_lcrit)
 #define HWMON_I_CRIT		BIT(hwmon_in_crit)
+#define HWMON_I_LEMERGENCY	BIT(hwmon_in_lemergency)
+#define HWMON_I_EMERGENCY	BIT(hwmon_in_emergency)
 #define HWMON_I_AVERAGE		BIT(hwmon_in_average)
 #define HWMON_I_LOWEST		BIT(hwmon_in_lowest)
 #define HWMON_I_HIGHEST		BIT(hwmon_in_highest)
@@ -160,6 +172,8 @@ enum hwmon_in_attributes {
 #define HWMON_I_MAX_ALARM	BIT(hwmon_in_max_alarm)
 #define HWMON_I_LCRIT_ALARM	BIT(hwmon_in_lcrit_alarm)
 #define HWMON_I_CRIT_ALARM	BIT(hwmon_in_crit_alarm)
+#define HWMON_I_LEMERGENCY_ALARM BIT(hwmon_in_lemergency_alarm)
+#define HWMON_I_EMERGENCY_ALARM	BIT(hwmon_in_emergency_alarm)
 #define HWMON_I_RATED_MIN	BIT(hwmon_in_rated_min)
 #define HWMON_I_RATED_MAX	BIT(hwmon_in_rated_max)
 #define HWMON_I_BEEP		BIT(hwmon_in_beep)
@@ -172,6 +186,7 @@ enum hwmon_curr_attributes {
 	hwmon_curr_max,
 	hwmon_curr_lcrit,
 	hwmon_curr_crit,
+	hwmon_curr_emergency,
 	hwmon_curr_average,
 	hwmon_curr_lowest,
 	hwmon_curr_highest,
@@ -182,6 +197,7 @@ enum hwmon_curr_attributes {
 	hwmon_curr_max_alarm,
 	hwmon_curr_lcrit_alarm,
 	hwmon_curr_crit_alarm,
+	hwmon_curr_emergency_alarm,
 	hwmon_curr_rated_min,
 	hwmon_curr_rated_max,
 	hwmon_curr_beep,
@@ -193,6 +209,7 @@ enum hwmon_curr_attributes {
 #define HWMON_C_MAX		BIT(hwmon_curr_max)
 #define HWMON_C_LCRIT		BIT(hwmon_curr_lcrit)
 #define HWMON_C_CRIT		BIT(hwmon_curr_crit)
+#define HWMON_C_EMERGENCY	BIT(hwmon_curr_emergency)
 #define HWMON_C_AVERAGE		BIT(hwmon_curr_average)
 #define HWMON_C_LOWEST		BIT(hwmon_curr_lowest)
 #define HWMON_C_HIGHEST		BIT(hwmon_curr_highest)
@@ -203,6 +220,7 @@ enum hwmon_curr_attributes {
 #define HWMON_C_MAX_ALARM	BIT(hwmon_curr_max_alarm)
 #define HWMON_C_LCRIT_ALARM	BIT(hwmon_curr_lcrit_alarm)
 #define HWMON_C_CRIT_ALARM	BIT(hwmon_curr_crit_alarm)
+#define HWMON_C_EMERGENCY_ALARM	BIT(hwmon_curr_emergency_alarm)
 #define HWMON_C_RATED_MIN	BIT(hwmon_curr_rated_min)
 #define HWMON_C_RATED_MAX	BIT(hwmon_curr_rated_max)
 #define HWMON_C_BEEP		BIT(hwmon_curr_beep)
@@ -366,7 +384,9 @@ enum hwmon_intrusion_attributes {
 
 /**
  * struct hwmon_ops - hwmon device operations
- * @is_visible: Callback to return attribute visibility. Mandatory.
+ * @visible:	Static visibility. If non-zero, 'is_visible' is ignored.
+ * @is_visible: Callback to return attribute visibility. Mandatory unless
+ *		'visible' is non-zero.
  *		Parameters are:
  *		@const void *drvdata:
  *			Pointer to driver-private data structure passed
@@ -410,6 +430,7 @@ enum hwmon_intrusion_attributes {
  *		The function returns 0 on success or a negative error number.
  */
 struct hwmon_ops {
+	umode_t visible;
 	umode_t (*is_visible)(const void *drvdata, enum hwmon_sensor_types type,
 			      u32 attr, int channel);
 	int (*read)(struct device *dev, enum hwmon_sensor_types type,
@@ -479,13 +500,17 @@ devm_hwmon_device_register_with_info(struct device *dev,
 				const struct attribute_group **extra_groups);
 
 void hwmon_device_unregister(struct device *dev);
-void devm_hwmon_device_unregister(struct device *dev);
 
 int hwmon_notify_event(struct device *dev, enum hwmon_sensor_types type,
 		       u32 attr, int channel);
 
 char *hwmon_sanitize_name(const char *name);
 char *devm_hwmon_sanitize_name(struct device *dev, const char *name);
+
+void hwmon_lock(struct device *dev);
+void hwmon_unlock(struct device *dev);
+
+DEFINE_GUARD(hwmon_lock, struct device *, hwmon_lock(_T), hwmon_unlock(_T))
 
 /**
  * hwmon_is_bad_char - Is the char invalid in a hwmon name

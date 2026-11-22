@@ -242,17 +242,17 @@ static const struct regulator_desc tps65023_regulators[] = {
 	TPS65023_REGULATOR_LDO(2, TPS65023_LDO2_VSEL_table, 0x70),
 };
 
-static struct tps_driver_data tps65020_drv_data = {
+static const struct tps_driver_data tps65020_drv_data = {
 	.desc = tps65020_regulators,
 	.core_regulator = TPS65023_DCDC_3,
 };
 
-static struct tps_driver_data tps65021_drv_data = {
+static const struct tps_driver_data tps65021_drv_data = {
 	.desc = tps65021_regulators,
 	.core_regulator = TPS65023_DCDC_3,
 };
 
-static struct tps_driver_data tps65023_drv_data = {
+static const struct tps_driver_data tps65023_drv_data = {
 	.desc = tps65023_regulators,
 	.core_regulator = TPS65023_DCDC_1,
 };
@@ -266,7 +266,7 @@ static int tps_65023_probe(struct i2c_client *client)
 	int i;
 	int error;
 
-	tps = devm_kzalloc(&client->dev, sizeof(*tps), GFP_KERNEL);
+	tps = devm_kzalloc_obj(&client->dev, *tps);
 	if (!tps)
 		return -ENOMEM;
 
@@ -319,13 +319,13 @@ MODULE_DEVICE_TABLE(of, tps65023_of_match);
 static const struct i2c_device_id tps_65023_id[] = {
 	{
 		.name = "tps65023",
-		.driver_data = (kernel_ulong_t)&tps65023_drv_data
+		.driver_data = (kernel_ulong_t)&tps65023_drv_data,
 	}, {
 		.name = "tps65021",
-		.driver_data = (kernel_ulong_t)&tps65021_drv_data
+		.driver_data = (kernel_ulong_t)&tps65021_drv_data,
 	}, {
 		.name = "tps65020",
-		.driver_data = (kernel_ulong_t)&tps65020_drv_data
+		.driver_data = (kernel_ulong_t)&tps65020_drv_data,
 	},
 	{ },
 };

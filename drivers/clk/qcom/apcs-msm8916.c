@@ -58,7 +58,7 @@ static int qcom_apcs_msm8916_clk_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	a53cc = devm_kzalloc(dev, sizeof(*a53cc), GFP_KERNEL);
+	a53cc = devm_kzalloc_obj(dev, *a53cc);
 	if (!a53cc)
 		return -ENOMEM;
 
@@ -128,7 +128,7 @@ static void qcom_apcs_msm8916_clk_remove(struct platform_device *pdev)
 
 static struct platform_driver qcom_apcs_msm8916_clk_driver = {
 	.probe = qcom_apcs_msm8916_clk_probe,
-	.remove_new = qcom_apcs_msm8916_clk_remove,
+	.remove = qcom_apcs_msm8916_clk_remove,
 	.driver = {
 		.name = "qcom-apcs-msm8916-clk",
 	},

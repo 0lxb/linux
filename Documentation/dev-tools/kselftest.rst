@@ -15,11 +15,6 @@ able to run that test on an older kernel. Hence, it is important to keep
 code that can still test an older kernel and make sure it skips the test
 gracefully on newer releases.
 
-You can find additional information on Kselftest framework, how to
-write new tests using the framework on Kselftest wiki:
-
-https://kselftest.wiki.kernel.org/
-
 On some systems, hot-plug tests could hang forever waiting for cpu and
 memory to be ready to be offlined. A special hot-plug target is created
 to run the full range of hot-plug tests. In default mode, hot-plug tests run
@@ -30,6 +25,15 @@ hotplug test is run on 2% of hotplug capable memory instead of 10%.
 kselftest runs as a userspace process.  Tests that can be written/run in
 userspace may wish to use the `Test Harness`_.  Tests that need to be
 run in kernel space may wish to use a `Test Module`_.
+
+Documentation on the tests
+==========================
+
+For documentation on the kselftests themselves, see:
+
+.. toctree::
+
+   testing-devices
 
 Running the selftests (hotplug tests are run in limited mode)
 =============================================================
@@ -117,6 +121,56 @@ dedicated skiplist::
 See the top-level tools/testing/selftests/Makefile for the list of all
 possible targets.
 
+Requiring all targets to build successfully
+===========================================
+
+By default, the build succeeds as long as at least one target builds
+without error. Set ``FORCE_TARGETS=1`` to instead require every target to
+build successfully; make will abort as soon as any target fails::
+
+  $ make -C tools/testing/selftests FORCE_TARGETS=1
+
+This applies to both the ``all`` and ``install`` targets and is useful in
+CI environments where a silent partial build would be misleading.
+
+Recording suite build results
+=============================
+
+Since the build succeeds as long as one target builds, the exit status of
+make does not show which targets failed. Set ``KSFT_BUILD_REPORT`` to the
+absolute path of a file to have the ``all`` and ``install`` targets append
+a tab-separated record for each target they process::
+
+  $ : > /tmp/ksft-build.tsv
+  $ make -C tools/testing/selftests O=/tmp/kernel-build \
+        KSFT_BUILD_REPORT=/tmp/ksft-build.tsv install
+
+Each record holds the phase (``all`` or ``install``), a name and the exit
+status of that step. Recording does not change which targets are built or
+installed, or the exit status of make, also with ``FORCE_TARGETS=1``. The
+caller creates or truncates the report before a build; the rules only
+append to it. Nothing is recorded by ``make -n``, ``-t`` or ``-q``.
+
+The same name can appear several times: ``install`` builds the targets
+again, and generating ``kselftest-list.txt`` is recorded as part of the
+``install`` phase. Targets that are added automatically as installation
+dependencies of other targets, such as ``net/lib``, are recorded too.
+Suites that are built from several subdirectories may also record each
+subdirectory under its path, for example ``arm64/tags``; a failure there
+means that the suite was built or installed only partially. A record
+belongs to the target with the longest name that is equal to the record
+name or followed by ``/`` in it.
+
+A target was built and installed successfully only if all of its records
+have a zero status. Missing records do not show that a target was built.
+A successful target that installs no tests has no entries in
+``kselftest-list.txt``. Install the kernel headers with ``make headers``
+before building: a suite that fails because the headers are missing is
+recorded as failed even if a later step installs them.
+
+``KSFT_BUILD_REPORT_VERSION`` in tools/testing/selftests/Makefile gives the
+version of this format, currently ``1``.
+
 Running the full range hotplug selftests
 ========================================
 
@@ -183,7 +237,7 @@ expected time it takes to run a test. If you have control over the systems
 which will run the tests you can configure a test runner on those systems to
 use a greater or lower timeout on the command line as with the `-o` or
 the `--override-timeout` argument. For example to use 165 seconds instead
-one would use:
+one would use::
 
    $ ./run_kselftest.sh --override-timeout 165
 
@@ -214,6 +268,24 @@ section::
 
 .. _tar's auto-compress: https://www.gnu.org/software/tar/manual/html_node/gzip.html#auto_002dcompress
 
+Build and test on nommu target
+==============================
+
+The nommu selftests detect NOMMU at runtime by checking for the ``MmapCopy``
+entry in ``/proc/meminfo``. Ensure procfs is mounted at ``/proc`` before
+building and running the tests.
+
+::
+
+  $ make ARCH=um O=build kselftest-all TARGETS=nommu  # <= build-only
+  $ make ARCH=um O=build kselftest-install TARGETS=nommu
+  $ ./build/kselftest/kselftest_install/run_kselftest.sh -p -c nommu
+
+The C tests report a skip if ``/proc/meminfo`` is unavailable. On a NOMMU
+system, the runner needs that file to avoid wrapping the tests in ``timeout``
+before they can report a skip. Mounting procfs is therefore a prerequisite
+for running this target through the kselftest runner.
+
 Contributing new tests
 ======================
 
@@ -227,6 +299,13 @@ In general, the rules for selftests are
 
  * Don't cause the top-level "make run_tests" to fail if your feature is
    unconfigured.
+
+ * The output of tests must conform to the TAP standard to ensure high
+   testing quality and to capture failures/errors with specific details.
+   The kselftest.h and kselftest_harness.h headers provide wrappers for
+   outputting test results. These wrappers should be used for pass,
+   fail, exit, and skip messages. CI systems can easily parse TAP output
+   messages to detect test results.
 
 Contributing new tests (details)
 ================================
@@ -331,7 +410,7 @@ kselftest.  We use kselftests for lib/ as an example.
 1. Create the test module
 
 2. Create the test script that will run (load/unload) the module
-   e.g. ``tools/testing/selftests/lib/printf.sh``
+   e.g. ``tools/testing/selftests/lib/bitmap.sh``
 
 3. Add line to config file e.g. ``tools/testing/selftests/lib/config``
 

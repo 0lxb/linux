@@ -249,7 +249,7 @@ static int viacam_configure_sensor(struct via_camera *cam)
 	v4l2_fill_mbus_format(&format.format, &cam->sensor_format, cam->mbus_code);
 	ret = sensor_call(cam, core, init, 0);
 	if (ret == 0)
-		ret = sensor_call(cam, pad, set_fmt, NULL, &format);
+		ret = sensor_call(cam, pad, set_fmt, NULL, NULL, &format);
 	/*
 	 * OV7670 does weird things if flip is set *before* format...
 	 */
@@ -666,8 +666,6 @@ static const struct vb2_ops viacam_vb2_ops = {
 	.buf_prepare		= viacam_vb2_prepare,
 	.start_streaming	= viacam_vb2_start_streaming,
 	.stop_streaming		= viacam_vb2_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* --------------------------------------------------------------------------*/
@@ -844,7 +842,7 @@ static int viacam_do_try_fmt(struct via_camera *cam,
 	upix->pixelformat = f->pixelformat;
 	viacam_fmt_pre(upix, spix);
 	v4l2_fill_mbus_format(&format.format, spix, f->mbus_code);
-	ret = sensor_call(cam, pad, set_fmt, &pad_state, &format);
+	ret = sensor_call(cam, pad, set_fmt, NULL, &pad_state, &format);
 	v4l2_fill_pix_format(spix, &format.format);
 	viacam_fmt_post(upix, spix);
 	return ret;
@@ -1166,7 +1164,7 @@ static int viacam_probe(struct platform_device *pdev)
 	/*
 	 * Basic structure initialization.
 	 */
-	cam = kzalloc (sizeof(struct via_camera), GFP_KERNEL);
+	cam = kzalloc_obj(struct via_camera);
 	if (cam == NULL)
 		return -ENOMEM;
 	via_cam_info = cam;
@@ -1307,7 +1305,7 @@ static struct platform_driver viacam_driver = {
 		.name = "viafb-camera",
 	},
 	.probe = viacam_probe,
-	.remove_new = viacam_remove,
+	.remove = viacam_remove,
 };
 
 module_platform_driver(viacam_driver);

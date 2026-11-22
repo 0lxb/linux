@@ -18,7 +18,7 @@
 #include <linux/bug.h>
 #include <linux/sort.h>
 #include <asm/setup.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 
 /* Count how many different relocations (different symbol, different
    addend) */
@@ -41,6 +41,9 @@ static unsigned int count_relocs(const Elf32_Rela *rela, unsigned int num)
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 	_count_relocs++;	/* add one for ftrace_caller */
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+	_count_relocs++;	/* add one for ftrace_regs_caller */
+#endif
 #endif
 	return _count_relocs;
 }

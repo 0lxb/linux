@@ -8,8 +8,8 @@
 
 #include <linux/errno.h>
 
+#include "abi/uc_fw_abi.h"
 #include "xe_macros.h"
-#include "xe_uc_fw_abi.h"
 #include "xe_uc_fw_types.h"
 
 struct drm_printer;
@@ -25,11 +25,15 @@ static inline u32 xe_uc_fw_rsa_offset(struct xe_uc_fw *uc_fw)
 	return sizeof(struct uc_css_header) + uc_fw->ucode_size + uc_fw->css_offset;
 }
 
+#if IS_ENABLED(CONFIG_DRM_XE_DEBUG_GUC)
+void xe_uc_fw_change_status(struct xe_uc_fw *uc_fw, enum xe_uc_fw_status status);
+#else
 static inline void xe_uc_fw_change_status(struct xe_uc_fw *uc_fw,
 					  enum xe_uc_fw_status status)
 {
 	uc_fw->__status = status;
 }
+#endif
 
 static inline
 const char *xe_uc_fw_status_repr(enum xe_uc_fw_status status)
@@ -59,11 +63,13 @@ const char *xe_uc_fw_status_repr(enum xe_uc_fw_status status)
 		return "TRANSFERRED";
 	case XE_UC_FIRMWARE_RUNNING:
 		return "RUNNING";
+	case XE_UC_FIRMWARE_PRELOADED:
+		return "PRELOADED";
 	}
 	return "<invalid>";
 }
 
-static inline int xe_uc_fw_status_to_error(enum xe_uc_fw_status status)
+static inline int xe_uc_fw_status_to_error(const enum xe_uc_fw_status status)
 {
 	switch (status) {
 	case XE_UC_FIRMWARE_NOT_SUPPORTED:
@@ -85,6 +91,7 @@ static inline int xe_uc_fw_status_to_error(enum xe_uc_fw_status status)
 	case XE_UC_FIRMWARE_LOADABLE:
 	case XE_UC_FIRMWARE_TRANSFERRED:
 	case XE_UC_FIRMWARE_RUNNING:
+	case XE_UC_FIRMWARE_PRELOADED:
 		return 0;
 	}
 	return -EINVAL;
@@ -105,7 +112,7 @@ static inline const char *xe_uc_fw_type_repr(enum xe_uc_fw_type type)
 }
 
 static inline enum xe_uc_fw_status
-__xe_uc_fw_status(struct xe_uc_fw *uc_fw)
+__xe_uc_fw_status(const struct xe_uc_fw *uc_fw)
 {
 	/* shouldn't call this before checking hw/blob availability */
 	XE_WARN_ON(uc_fw->status == XE_UC_FIRMWARE_UNINITIALIZED);
@@ -134,7 +141,8 @@ static inline bool xe_uc_fw_is_available(struct xe_uc_fw *uc_fw)
 
 static inline bool xe_uc_fw_is_loadable(struct xe_uc_fw *uc_fw)
 {
-	return __xe_uc_fw_status(uc_fw) >= XE_UC_FIRMWARE_LOADABLE;
+	return __xe_uc_fw_status(uc_fw) >= XE_UC_FIRMWARE_LOADABLE &&
+		__xe_uc_fw_status(uc_fw) != XE_UC_FIRMWARE_PRELOADED;
 }
 
 static inline bool xe_uc_fw_is_loaded(struct xe_uc_fw *uc_fw)
@@ -144,7 +152,7 @@ static inline bool xe_uc_fw_is_loaded(struct xe_uc_fw *uc_fw)
 
 static inline bool xe_uc_fw_is_running(struct xe_uc_fw *uc_fw)
 {
-	return __xe_uc_fw_status(uc_fw) == XE_UC_FIRMWARE_RUNNING;
+	return __xe_uc_fw_status(uc_fw) >= XE_UC_FIRMWARE_RUNNING;
 }
 
 static inline bool xe_uc_fw_is_overridden(const struct xe_uc_fw *uc_fw)
@@ -152,9 +160,14 @@ static inline bool xe_uc_fw_is_overridden(const struct xe_uc_fw *uc_fw)
 	return uc_fw->user_overridden;
 }
 
+static inline bool xe_uc_fw_is_in_error_state(const struct xe_uc_fw *uc_fw)
+{
+	return xe_uc_fw_status_to_error(__xe_uc_fw_status(uc_fw)) < 0;
+}
+
 static inline void xe_uc_fw_sanitize(struct xe_uc_fw *uc_fw)
 {
-	if (xe_uc_fw_is_loaded(uc_fw))
+	if (xe_uc_fw_is_loadable(uc_fw))
 		xe_uc_fw_change_status(uc_fw, XE_UC_FIRMWARE_LOADABLE);
 }
 

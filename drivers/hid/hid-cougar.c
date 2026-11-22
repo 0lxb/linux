@@ -103,10 +103,10 @@ static void cougar_fix_g6_mapping(void)
 /*
  * Constant-friendly rdesc fixup for mouse interface
  */
-static __u8 *cougar_report_fixup(struct hid_device *hdev, __u8 *rdesc,
-				 unsigned int *rsize)
+static const __u8 *cougar_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+				       unsigned int *rsize)
 {
-	if (rdesc[2] == 0x09 && rdesc[3] == 0x02 &&
+	if (*rsize >= 117 && rdesc[2] == 0x09 && rdesc[3] == 0x02 &&
 	    (rdesc[115] | rdesc[116] << 8) >= HID_MAX_USAGES) {
 		hid_info(hdev,
 			"usage count exceeds max: fixing up report descriptor\n");
@@ -166,7 +166,7 @@ static int cougar_bind_shared_data(struct hid_device *hdev,
 
 	shared = cougar_get_shared_data(hdev);
 	if (!shared) {
-		shared = kzalloc(sizeof(*shared), GFP_KERNEL);
+		shared = kzalloc_obj(*shared);
 		if (!shared) {
 			error = -ENOMEM;
 			goto out;
@@ -198,7 +198,7 @@ static int cougar_probe(struct hid_device *hdev,
 	unsigned int connect_mask;
 	int error;
 
-	cougar = devm_kzalloc(&hdev->dev, sizeof(*cougar), GFP_KERNEL);
+	cougar = devm_kzalloc_obj(&hdev->dev, *cougar);
 	if (!cougar)
 		return -ENOMEM;
 	hid_set_drvdata(hdev, cougar);
@@ -268,6 +268,9 @@ static int cougar_raw_event(struct hid_device *hdev, struct hid_report *report,
 		return 0;
 
 	if (!shared->enabled || !shared->input)
+		return -EPERM;
+
+	if (size <= COUGAR_FIELD_ACTION)
 		return -EPERM;
 
 	code = data[COUGAR_FIELD_CODE];

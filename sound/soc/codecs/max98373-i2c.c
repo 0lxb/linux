@@ -5,7 +5,6 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
@@ -23,7 +22,7 @@ static const u32 max98373_i2c_cache_reg[] = {
 	MAX98373_R20B6_BDE_CUR_STATE_READBACK,
 };
 
-static struct reg_default max98373_reg[] = {
+static const struct reg_default max98373_reg[] = {
 	{MAX98373_R2000_SW_RESET, 0x00},
 	{MAX98373_R2001_INT_RAW1, 0x00},
 	{MAX98373_R2002_INT_RAW2, 0x00},
@@ -399,10 +398,20 @@ static int max98373_dai_tdm_slot(struct snd_soc_dai *dai,
 #define MAX98373_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
 	SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
+static const u64 max98373_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_LEFT_J	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_B	|
+	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
+	SND_SOC_POSSIBLE_DAIFMT_IB_NF;
+
 static const struct snd_soc_dai_ops max98373_dai_ops = {
 	.set_fmt = max98373_dai_set_fmt,
 	.hw_params = max98373_dai_hw_params,
 	.set_tdm_slot = max98373_dai_tdm_slot,
+	.auto_selectable_formats = &max98373_selectable_formats,
+	.num_auto_selectable_formats = 1,
 };
 
 static bool max98373_readable_register(struct device *dev, unsigned int reg)
@@ -472,7 +481,6 @@ static struct snd_soc_dai_driver max98373_dai[] = {
 	}
 };
 
-#ifdef CONFIG_PM_SLEEP
 static int max98373_suspend(struct device *dev)
 {
 	struct max98373_priv *max98373 = dev_get_drvdata(dev);
@@ -490,16 +498,22 @@ static int max98373_suspend(struct device *dev)
 static int max98373_resume(struct device *dev)
 {
 	struct max98373_priv *max98373 = dev_get_drvdata(dev);
+	int ret;
 
 	regcache_cache_only(max98373->regmap, false);
 	max98373_reset(max98373, dev);
-	regcache_sync(max98373->regmap);
+	ret = regcache_sync(max98373->regmap);
+	if (ret) {
+		regcache_cache_only(max98373->regmap, true);
+		regcache_mark_dirty(max98373->regmap);
+		return ret;
+	}
+
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops max98373_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(max98373_suspend, max98373_resume)
+	SYSTEM_SLEEP_PM_OPS(max98373_suspend, max98373_resume)
 };
 
 static const struct regmap_config max98373_regmap = {
@@ -520,7 +534,7 @@ static int max98373_i2c_probe(struct i2c_client *i2c)
 	int i;
 	struct max98373_priv *max98373 = NULL;
 
-	max98373 = devm_kzalloc(&i2c->dev, sizeof(*max98373), GFP_KERNEL);
+	max98373 = devm_kzalloc_obj(&i2c->dev, *max98373);
 
 	if (!max98373) {
 		ret = -ENOMEM;
@@ -544,9 +558,8 @@ static int max98373_i2c_probe(struct i2c_client *i2c)
 	}
 
 	max98373->cache_num = ARRAY_SIZE(max98373_i2c_cache_reg);
-	max98373->cache = devm_kcalloc(&i2c->dev, max98373->cache_num,
-				       sizeof(*max98373->cache),
-				       GFP_KERNEL);
+	max98373->cache = devm_kzalloc_objs(&i2c->dev, *max98373->cache,
+					    max98373->cache_num);
 	if (!max98373->cache) {
 		ret = -ENOMEM;
 		return ret;
@@ -578,8 +591,8 @@ static int max98373_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id max98373_i2c_id[] = {
-	{ "max98373", 0},
-	{ },
+	{ .name = "max98373" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, max98373_i2c_id);
@@ -605,7 +618,7 @@ static struct i2c_driver max98373_i2c_driver = {
 		.name = "max98373",
 		.of_match_table = of_match_ptr(max98373_of_match),
 		.acpi_match_table = ACPI_PTR(max98373_acpi_match),
-		.pm = &max98373_pm,
+		.pm = pm_ptr(&max98373_pm),
 	},
 	.probe = max98373_i2c_probe,
 	.id_table = max98373_i2c_id,

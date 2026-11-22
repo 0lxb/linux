@@ -7,6 +7,8 @@
  *
  */
 
+#include <linux/vmalloc.h>
+
 #include "mpi3mr.h"
 
 /**
@@ -103,10 +105,10 @@ struct rep_manu_reply {
 	u8 reserved0[2];
 	u8 sas_format;
 	u8 reserved2[3];
-	u8 vendor_id[SAS_EXPANDER_VENDOR_ID_LEN];
-	u8 product_id[SAS_EXPANDER_PRODUCT_ID_LEN];
-	u8 product_rev[SAS_EXPANDER_PRODUCT_REV_LEN];
-	u8 component_vendor_id[SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN];
+	u8 vendor_id[SAS_EXPANDER_VENDOR_ID_LEN] __nonstring;
+	u8 product_id[SAS_EXPANDER_PRODUCT_ID_LEN] __nonstring;
+	u8 product_rev[SAS_EXPANDER_PRODUCT_REV_LEN] __nonstring;
+	u8 component_vendor_id[SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN] __nonstring;
 	u16 component_id;
 	u8 component_revision_id;
 	u8 reserved3;
@@ -146,6 +148,11 @@ static int mpi3mr_report_manufacture(struct mpi3mr_ioc *mrioc,
 
 	if (mrioc->reset_in_progress) {
 		ioc_err(mrioc, "%s: host reset in progress!\n", __func__);
+		return -EFAULT;
+	}
+
+	if (mrioc->pci_err_recovery) {
+		ioc_err(mrioc, "%s: pci error recovery in progress!\n", __func__);
 		return -EFAULT;
 	}
 
@@ -209,17 +216,13 @@ static int mpi3mr_report_manufacture(struct mpi3mr_ioc *mrioc,
 		goto out;
 	}
 
-	strscpy(edev->vendor_id, manufacture_reply->vendor_id,
-	     SAS_EXPANDER_VENDOR_ID_LEN);
-	strscpy(edev->product_id, manufacture_reply->product_id,
-	     SAS_EXPANDER_PRODUCT_ID_LEN);
-	strscpy(edev->product_rev, manufacture_reply->product_rev,
-	     SAS_EXPANDER_PRODUCT_REV_LEN);
+	memtostr(edev->vendor_id, manufacture_reply->vendor_id);
+	memtostr(edev->product_id, manufacture_reply->product_id);
+	memtostr(edev->product_rev, manufacture_reply->product_rev);
 	edev->level = manufacture_reply->sas_format & 1;
 	if (edev->level) {
-		strscpy(edev->component_vendor_id,
-		    manufacture_reply->component_vendor_id,
-		     SAS_EXPANDER_COMPONENT_VENDOR_ID_LEN);
+		memtostr(edev->component_vendor_id,
+			 manufacture_reply->component_vendor_id);
 		tmp = (u8 *)&manufacture_reply->component_id;
 		edev->component_id = tmp[0] << 8 | tmp[1];
 		edev->component_revision_id =
@@ -410,9 +413,11 @@ static void mpi3mr_remove_device_by_sas_address(struct mpi3mr_ioc *mrioc,
 			 sas_address, hba_port);
 	if (tgtdev) {
 		if (!list_empty(&tgtdev->list)) {
-			list_del_init(&tgtdev->list);
 			was_on_tgtdev_list = 1;
-			mpi3mr_tgtdev_put(tgtdev);
+			if (tgtdev->state == MPI3MR_DEV_REMOVE_HS_STARTED) {
+				list_del_init(&tgtdev->list);
+				mpi3mr_tgtdev_put(tgtdev);
+			}
 		}
 	}
 	spin_unlock_irqrestore(&mrioc->tgtdev_lock, flags);
@@ -587,12 +592,13 @@ static enum sas_linkrate mpi3mr_convert_phy_link_rate(u8 link_rate)
  * @mrioc: Adapter instance reference
  * @mr_sas_port: Internal Port object
  * @mr_sas_phy: Internal Phy object
+ * @host_node: Flag to indicate this is a host_node
  *
  * Return: None.
  */
 static void mpi3mr_delete_sas_phy(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_sas_port *mr_sas_port,
-	struct mpi3mr_sas_phy *mr_sas_phy)
+	struct mpi3mr_sas_phy *mr_sas_phy, u8 host_node)
 {
 	u64 sas_address = mr_sas_port->remote_identify.sas_address;
 
@@ -602,9 +608,13 @@ static void mpi3mr_delete_sas_phy(struct mpi3mr_ioc *mrioc,
 
 	list_del(&mr_sas_phy->port_siblings);
 	mr_sas_port->num_phys--;
-	mr_sas_port->phy_mask &= ~(1 << mr_sas_phy->phy_id);
-	if (mr_sas_port->lowest_phy == mr_sas_phy->phy_id)
-		mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
+
+	if (host_node) {
+		mr_sas_port->phy_mask &= ~(1 << mr_sas_phy->phy_id);
+
+		if (mr_sas_port->lowest_phy == mr_sas_phy->phy_id)
+			mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
+	}
 	sas_port_delete_phy(mr_sas_port->port, mr_sas_phy->phy);
 	mr_sas_phy->phy_belongs_to_port = 0;
 }
@@ -614,12 +624,13 @@ static void mpi3mr_delete_sas_phy(struct mpi3mr_ioc *mrioc,
  * @mrioc: Adapter instance reference
  * @mr_sas_port: Internal Port object
  * @mr_sas_phy: Internal Phy object
+ * @host_node: Flag to indicate this is a host_node
  *
  * Return: None.
  */
 static void mpi3mr_add_sas_phy(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_sas_port *mr_sas_port,
-	struct mpi3mr_sas_phy *mr_sas_phy)
+	struct mpi3mr_sas_phy *mr_sas_phy, u8 host_node)
 {
 	u64 sas_address = mr_sas_port->remote_identify.sas_address;
 
@@ -629,9 +640,12 @@ static void mpi3mr_add_sas_phy(struct mpi3mr_ioc *mrioc,
 
 	list_add_tail(&mr_sas_phy->port_siblings, &mr_sas_port->phy_list);
 	mr_sas_port->num_phys++;
-	mr_sas_port->phy_mask |= (1 << mr_sas_phy->phy_id);
-	if (mr_sas_phy->phy_id < mr_sas_port->lowest_phy)
-		mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
+	if (host_node) {
+		mr_sas_port->phy_mask |= (1 << mr_sas_phy->phy_id);
+
+		if (mr_sas_phy->phy_id < mr_sas_port->lowest_phy)
+			mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
+	}
 	sas_port_add_phy(mr_sas_port->port, mr_sas_phy->phy);
 	mr_sas_phy->phy_belongs_to_port = 1;
 }
@@ -672,7 +686,7 @@ static void mpi3mr_add_phy_to_an_existing_port(struct mpi3mr_ioc *mrioc,
 			if (srch_phy == mr_sas_phy)
 				return;
 		}
-		mpi3mr_add_sas_phy(mrioc, mr_sas_port, mr_sas_phy);
+		mpi3mr_add_sas_phy(mrioc, mr_sas_port, mr_sas_phy, mr_sas_node->host_node);
 		return;
 	}
 }
@@ -733,7 +747,7 @@ static void mpi3mr_del_phy_from_an_existing_port(struct mpi3mr_ioc *mrioc,
 				mpi3mr_delete_sas_port(mrioc, mr_sas_port);
 			else
 				mpi3mr_delete_sas_phy(mrioc, mr_sas_port,
-				    mr_sas_phy);
+				    mr_sas_phy, mr_sas_node->host_node);
 			return;
 		}
 	}
@@ -789,6 +803,12 @@ static int mpi3mr_set_identify(struct mpi3mr_ioc *mrioc, u16 handle,
 
 	if (mrioc->reset_in_progress) {
 		ioc_err(mrioc, "%s: host reset in progress!\n", __func__);
+		return -EFAULT;
+	}
+
+	if (mrioc->pci_err_recovery) {
+		ioc_err(mrioc, "%s: pci error recovery in progress!\n",
+		    __func__);
 		return -EFAULT;
 	}
 
@@ -1002,13 +1022,15 @@ mpi3mr_alloc_hba_port(struct mpi3mr_ioc *mrioc, u16 port_id)
 {
 	struct mpi3mr_hba_port *hba_port;
 
-	hba_port = kzalloc(sizeof(struct mpi3mr_hba_port),
-	    GFP_KERNEL);
+	hba_port = kzalloc_obj(struct mpi3mr_hba_port);
 	if (!hba_port)
 		return NULL;
 	hba_port->port_id = port_id;
 	ioc_info(mrioc, "hba_port entry: %p, port: %d is added to hba_port list\n",
 	    hba_port, hba_port->port_id);
+	if (mrioc->reset_in_progress ||
+		mrioc->pci_err_recovery)
+		hba_port->flags = MPI3MR_HBA_PORT_FLAG_NEW;
 	list_add_tail(&hba_port->list, &mrioc->hba_port_table_list);
 	return hba_port;
 }
@@ -1016,7 +1038,7 @@ mpi3mr_alloc_hba_port(struct mpi3mr_ioc *mrioc, u16 port_id)
 /**
  * mpi3mr_get_hba_port_by_id - find hba port by id
  * @mrioc: Adapter instance reference
- * @port_id - Port ID to search
+ * @port_id: Port ID to search
  *
  * Return: mpi3mr_hba_port reference for the matched port
  */
@@ -1057,7 +1079,7 @@ void mpi3mr_update_links(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_sas_node *mr_sas_node;
 	struct mpi3mr_sas_phy *mr_sas_phy;
 
-	if (mrioc->reset_in_progress)
+	if (mrioc->reset_in_progress || mrioc->pci_err_recovery)
 		return;
 
 	spin_lock_irqsave(&mrioc->sas_node_lock, flags);
@@ -1065,6 +1087,13 @@ void mpi3mr_update_links(struct mpi3mr_ioc *mrioc,
 	    sas_address_parent, hba_port);
 	if (!mr_sas_node) {
 		spin_unlock_irqrestore(&mrioc->sas_node_lock, flags);
+		return;
+	}
+
+	if (phy_number >= mr_sas_node->num_phys) {
+		spin_unlock_irqrestore(&mrioc->sas_node_lock, flags);
+		ioc_err(mrioc, "%s: phy_number(%d) >= num_phys(%d)\n",
+			__func__, phy_number, mr_sas_node->num_phys);
 		return;
 	}
 
@@ -1194,14 +1223,14 @@ void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc)
 	}
 	num_phys = sas_io_unit_pg0->num_phys;
 	kfree(sas_io_unit_pg0);
+	sas_io_unit_pg0 = NULL;
 
 	mrioc->sas_hba.host_node = 1;
 	INIT_LIST_HEAD(&mrioc->sas_hba.sas_port_list);
 	mrioc->sas_hba.parent_dev = &mrioc->shost->shost_gendev;
-	mrioc->sas_hba.phy = kcalloc(num_phys,
-	    sizeof(struct mpi3mr_sas_phy), GFP_KERNEL);
+	mrioc->sas_hba.phy = kzalloc_objs(struct mpi3mr_sas_phy, num_phys);
 	if (!mrioc->sas_hba.phy)
-		return;
+		goto out;
 
 	mrioc->sas_hba.num_phys = num_phys;
 
@@ -1209,12 +1238,12 @@ void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc)
 	    (num_phys * sizeof(struct mpi3_sas_io_unit0_phy_data));
 	sas_io_unit_pg0 = kzalloc(sz, GFP_KERNEL);
 	if (!sas_io_unit_pg0)
-		return;
+		goto out_free_phy;
 
 	if (mpi3mr_cfg_get_sas_io_unit_pg0(mrioc, sas_io_unit_pg0, sz)) {
 		ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 		    __FILE__, __LINE__, __func__);
-		goto out;
+		goto out_free_phy;
 	}
 
 	mrioc->sas_hba.handle = 0;
@@ -1228,12 +1257,12 @@ void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc)
 		    MPI3_SAS_PHY_PGAD_FORM_PHY_NUMBER, i)) {
 			ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 			    __FILE__, __LINE__, __func__);
-			goto out;
+			goto out_free_phy;
 		}
 		if (ioc_status != MPI3_IOCSTATUS_SUCCESS) {
 			ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 			    __FILE__, __LINE__, __func__);
-			goto out;
+			goto out_free_phy;
 		}
 
 		if (!mrioc->sas_hba.handle)
@@ -1243,26 +1272,27 @@ void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc)
 
 		if (!(mpi3mr_get_hba_port_by_id(mrioc, port_id)))
 			if (!mpi3mr_alloc_hba_port(mrioc, port_id))
-				goto out;
+				goto out_free_phy;
 
 		mrioc->sas_hba.phy[i].handle = mrioc->sas_hba.handle;
 		mrioc->sas_hba.phy[i].phy_id = i;
 		mrioc->sas_hba.phy[i].hba_port =
 		    mpi3mr_get_hba_port_by_id(mrioc, port_id);
-		mpi3mr_add_host_phy(mrioc, &mrioc->sas_hba.phy[i],
-		    phy_pg0, mrioc->sas_hba.parent_dev);
+		if (mpi3mr_add_host_phy(mrioc, &mrioc->sas_hba.phy[i],
+		    phy_pg0, mrioc->sas_hba.parent_dev))
+			goto out_free_phy;
 	}
 	if ((mpi3mr_cfg_get_dev_pg0(mrioc, &ioc_status, &dev_pg0,
 	    sizeof(dev_pg0), MPI3_DEVICE_PGAD_FORM_HANDLE,
 	    mrioc->sas_hba.handle))) {
 		ioc_err(mrioc, "%s: device page0 read failed\n", __func__);
-		goto out;
+		goto out_free_phy;
 	}
 	if (ioc_status != MPI3_IOCSTATUS_SUCCESS) {
 		ioc_err(mrioc, "device page read failed for handle(0x%04x), with ioc_status(0x%04x) failure at %s:%d/%s()!\n",
 		    mrioc->sas_hba.handle, ioc_status, __FILE__, __LINE__,
 		    __func__);
-		goto out;
+		goto out_free_phy;
 	}
 	mrioc->sas_hba.enclosure_handle =
 	    le16_to_cpu(dev_pg0.enclosure_handle);
@@ -1284,6 +1314,17 @@ void mpi3mr_sas_host_add(struct mpi3mr_ioc *mrioc)
 			mrioc->sas_hba.enclosure_logical_id =
 				le64_to_cpu(encl_pg0.enclosure_logical_id);
 	}
+
+	goto out;
+
+out_free_phy:
+	for (i = 0; i < mrioc->sas_hba.num_phys; i++) {
+		if (mrioc->sas_hba.phy[i].phy)
+			sas_phy_delete(mrioc->sas_hba.phy[i].phy);
+	}
+	kfree(mrioc->sas_hba.phy);
+	mrioc->sas_hba.phy = NULL;
+	mrioc->sas_hba.num_phys = 0;
 
 out:
 	kfree(sas_io_unit_pg0);
@@ -1309,6 +1350,7 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	struct mpi3mr_sas_phy *mr_sas_phy, *next;
 	struct mpi3mr_sas_port *mr_sas_port;
 	unsigned long flags;
+	bool discard = false;
 	struct mpi3mr_sas_node *mr_sas_node;
 	struct sas_rphy *rphy;
 	struct mpi3mr_tgt_dev *tgtdev = NULL;
@@ -1321,7 +1363,7 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 		return NULL;
 	}
 
-	mr_sas_port = kzalloc(sizeof(struct mpi3mr_sas_port), GFP_KERNEL);
+	mr_sas_port = kzalloc_obj(struct mpi3mr_sas_port);
 	if (!mr_sas_port)
 		return NULL;
 
@@ -1355,15 +1397,27 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	mpi3mr_sas_port_sanity_check(mrioc, mr_sas_node,
 	    mr_sas_port->remote_identify.sas_address, hba_port);
 
+	if (mr_sas_node->host_node && mr_sas_node->num_phys >=
+			sizeof(mr_sas_port->phy_mask) * 8)
+		ioc_info(mrioc, "max port count %u could be too high\n",
+		    mr_sas_node->num_phys);
+
 	for (i = 0; i < mr_sas_node->num_phys; i++) {
 		if ((mr_sas_node->phy[i].remote_identify.sas_address !=
 		    mr_sas_port->remote_identify.sas_address) ||
 		    (mr_sas_node->phy[i].hba_port != hba_port))
 			continue;
+
+		if (mr_sas_node->host_node && (i >= sizeof(mr_sas_port->phy_mask) * 8)) {
+			ioc_warn(mrioc, "skipping port %u, max allowed value is %zu\n",
+			    i, sizeof(mr_sas_port->phy_mask) * 8);
+			goto out_fail;
+		}
 		list_add_tail(&mr_sas_node->phy[i].port_siblings,
 		    &mr_sas_port->phy_list);
 		mr_sas_port->num_phys++;
-		mr_sas_port->phy_mask |= (1 << i);
+		if (mr_sas_node->host_node)
+			mr_sas_port->phy_mask |= (1 << i);
 	}
 
 	if (!mr_sas_port->num_phys) {
@@ -1372,7 +1426,8 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 		goto out_fail;
 	}
 
-	mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
+	if (mr_sas_node->host_node)
+		mr_sas_port->lowest_phy = ffs(mr_sas_port->phy_mask) - 1;
 
 	if (mr_sas_port->remote_identify.device_type == SAS_END_DEVICE) {
 		tgtdev = mpi3mr_get_tgtdev_by_addr(mrioc,
@@ -1394,9 +1449,15 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	}
 
 	port = sas_port_alloc_num(mr_sas_node->parent_dev);
+	if (!port) {
+		ioc_err(mrioc, "failure at %s:%d/%s() (sas_port_alloc)!\n",
+		    __FILE__, __LINE__, __func__);
+		goto out_fail;
+	}
 	if ((sas_port_add(port))) {
 		ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 		    __FILE__, __LINE__, __func__);
+		sas_port_free(port);
 		goto out_fail;
 	}
 
@@ -1416,19 +1477,51 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	mr_sas_port->port = port;
 	if (mr_sas_port->remote_identify.device_type == SAS_END_DEVICE) {
 		rphy = sas_end_device_alloc(port);
+		if (!rphy) {
+			ioc_err(mrioc, "failure at %s:%d/%s() (sas_end_device_alloc)!\n",
+			    __FILE__, __LINE__, __func__);
+			sas_port_delete(port);
+			goto out_fail;
+		}
 		tgtdev->dev_spec.sas_sata_inf.rphy = rphy;
 	} else {
 		rphy = sas_expander_alloc(port,
 		    mr_sas_port->remote_identify.device_type);
+		if (!rphy) {
+			ioc_err(mrioc, "failure at %s:%d/%s() (sas_expander_alloc)!\n",
+			    __FILE__, __LINE__, __func__);
+			sas_port_delete(port);
+			goto out_fail;
+		}
 	}
 	rphy->identify = mr_sas_port->remote_identify;
 
+	spin_lock_irqsave(&mrioc->fwevt_lock, flags);
+	if (mrioc->stop_drv_processing || mrioc->reset_in_progress) {
+		spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
+		sas_rphy_free(rphy);
+		sas_port_delete(port);
+		goto out_fail;
+	}
 	if (mrioc->current_event)
 		mrioc->current_event->pending_at_sml = 1;
+	spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
 
 	if ((sas_rphy_add(rphy))) {
 		ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 		    __FILE__, __LINE__, __func__);
+		spin_lock_irqsave(&mrioc->fwevt_lock, flags);
+		if (mrioc->current_event) {
+			mrioc->current_event->pending_at_sml = 0;
+			discard = mrioc->current_event->discard;
+		}
+		spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
+		if (discard)
+			mpi3mr_print_device_event_notice(mrioc, true);
+		sas_rphy_unlink(rphy);
+		sas_rphy_free(rphy);
+		sas_port_delete(port);
+		goto out_fail;
 	}
 	if (mr_sas_port->remote_identify.device_type == SAS_END_DEVICE) {
 		tgtdev->dev_spec.sas_sata_inf.pend_sas_rphy_add = 0;
@@ -1446,11 +1539,14 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	list_add_tail(&mr_sas_port->port_list, &mr_sas_node->sas_port_list);
 	spin_unlock_irqrestore(&mrioc->sas_node_lock, flags);
 
+	spin_lock_irqsave(&mrioc->fwevt_lock, flags);
 	if (mrioc->current_event) {
 		mrioc->current_event->pending_at_sml = 0;
-		if (mrioc->current_event->discard)
-			mpi3mr_print_device_event_notice(mrioc, true);
+		discard = mrioc->current_event->discard;
 	}
+	spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
+	if (discard)
+		mpi3mr_print_device_event_notice(mrioc, true);
 
 	/* fill in report manufacture */
 	if (mr_sas_port->remote_identify.device_type ==
@@ -1464,9 +1560,17 @@ static struct mpi3mr_sas_port *mpi3mr_sas_port_add(struct mpi3mr_ioc *mrioc,
 	return mr_sas_port;
 
  out_fail:
+	if (tgtdev) {
+		tgtdev->dev_spec.sas_sata_inf.pend_sas_rphy_add = 0;
+		tgtdev->dev_spec.sas_sata_inf.rphy = NULL;
+		mpi3mr_tgtdev_put(tgtdev);
+	}
+
 	list_for_each_entry_safe(mr_sas_phy, next, &mr_sas_port->phy_list,
-	    port_siblings)
+				 port_siblings) {
+		mr_sas_phy->phy_belongs_to_port = 0;
 		list_del(&mr_sas_phy->port_siblings);
+	}
 	kfree(mr_sas_port);
 	return NULL;
 }
@@ -1488,6 +1592,7 @@ static void mpi3mr_sas_port_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
 {
 	int i;
 	unsigned long flags;
+	bool discard = false;
 	struct mpi3mr_sas_port *mr_sas_port, *next;
 	struct mpi3mr_sas_node *mr_sas_node;
 	u8 found = 0;
@@ -1544,8 +1649,10 @@ static void mpi3mr_sas_port_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
 
 	spin_unlock_irqrestore(&mrioc->sas_node_lock, flags);
 
+	spin_lock_irqsave(&mrioc->fwevt_lock, flags);
 	if (mrioc->current_event)
 		mrioc->current_event->pending_at_sml = 1;
+	spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
 
 	list_for_each_entry_safe(mr_sas_phy, next_phy,
 	    &mr_sas_port->phy_list, port_siblings) {
@@ -1567,11 +1674,14 @@ static void mpi3mr_sas_port_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
 	ioc_info(mrioc, "%s: removed sas_address(0x%016llx)\n",
 	    __func__, (unsigned long long)sas_address);
 
+	spin_lock_irqsave(&mrioc->fwevt_lock, flags);
 	if (mrioc->current_event) {
 		mrioc->current_event->pending_at_sml = 0;
-		if (mrioc->current_event->discard)
-			mpi3mr_print_device_event_notice(mrioc, false);
+		discard = mrioc->current_event->discard;
 	}
+	spin_unlock_irqrestore(&mrioc->fwevt_lock, flags);
+	if (discard)
+		mpi3mr_print_device_event_notice(mrioc, false);
 
 	kfree(mr_sas_port);
 }
@@ -1685,7 +1795,7 @@ mpi3mr_refresh_sas_ports(struct mpi3mr_ioc *mrioc)
 	sas_io_unit_pg0 = kzalloc(sz, GFP_KERNEL);
 	if (!sas_io_unit_pg0)
 		return;
-	h_port = kcalloc(64, sizeof(struct host_port), GFP_KERNEL);
+	h_port = kzalloc_objs(struct host_port, 64);
 	if (!h_port)
 		goto out;
 
@@ -1970,7 +2080,7 @@ int mpi3mr_expander_add(struct mpi3mr_ioc *mrioc, u16 handle)
 	if (!handle)
 		return -1;
 
-	if (mrioc->reset_in_progress)
+	if (mrioc->reset_in_progress || mrioc->pci_err_recovery)
 		return -1;
 
 	if ((mpi3mr_cfg_get_sas_exp_pg0(mrioc, &ioc_status, &expander_pg0,
@@ -2045,6 +2155,8 @@ int mpi3mr_expander_add(struct mpi3mr_ioc *mrioc, u16 handle)
 				link_rate = (expander_pg1.negotiated_link_rate &
 				    MPI3_SAS_NEG_LINK_RATE_LOGICAL_MASK) >>
 				    MPI3_SAS_NEG_LINK_RATE_LOGICAL_SHIFT;
+				if (link_rate < MPI3_SAS_NEG_LINK_RATE_1_5)
+					link_rate = MPI3_SAS_NEG_LINK_RATE_1_5;
 				mpi3mr_update_links(mrioc, sas_address_parent,
 				    handle, i, link_rate, hba_port);
 			}
@@ -2060,8 +2172,7 @@ int mpi3mr_expander_add(struct mpi3mr_ioc *mrioc, u16 handle)
 	if (sas_expander)
 		return 0;
 
-	sas_expander = kzalloc(sizeof(struct mpi3mr_sas_node),
-	    GFP_KERNEL);
+	sas_expander = kzalloc_obj(struct mpi3mr_sas_node);
 	if (!sas_expander)
 		return -ENOMEM;
 
@@ -2080,8 +2191,8 @@ int mpi3mr_expander_add(struct mpi3mr_ioc *mrioc, u16 handle)
 		rc = -1;
 		goto out_fail;
 	}
-	sas_expander->phy = kcalloc(sas_expander->num_phys,
-	    sizeof(struct mpi3mr_sas_phy), GFP_KERNEL);
+	sas_expander->phy = kzalloc_objs(struct mpi3mr_sas_phy,
+					 sas_expander->num_phys);
 	if (!sas_expander->phy) {
 		rc = -1;
 		goto out_fail;
@@ -2176,7 +2287,7 @@ void mpi3mr_expander_node_remove(struct mpi3mr_ioc *mrioc,
 	/* remove sibling ports attached to this expander */
 	list_for_each_entry_safe(mr_sas_port, next,
 	   &sas_expander->sas_port_list, port_list) {
-		if (mrioc->reset_in_progress)
+		if (mrioc->reset_in_progress || mrioc->pci_err_recovery)
 			return;
 		if (mr_sas_port->remote_identify.device_type ==
 		    SAS_END_DEVICE)
@@ -2226,7 +2337,7 @@ void mpi3mr_expander_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
 	struct mpi3mr_sas_node *sas_expander;
 	unsigned long flags;
 
-	if (mrioc->reset_in_progress)
+	if (mrioc->reset_in_progress || mrioc->pci_err_recovery)
 		return;
 
 	if (!hba_port)
@@ -2246,11 +2357,11 @@ void mpi3mr_expander_remove(struct mpi3mr_ioc *mrioc, u64 sas_address,
  * @mrioc: Adapter instance reference
  * @tgtdev: Target device
  *
- * This function identifies whether the target device is
- * attached directly or through expander and issues sas phy
- * page0 or expander phy page1 and gets the link rate, if there
- * is any failure in reading the pages then this returns link
- * rate of 1.5.
+ * This function first tries to use the link rate from DevicePage0
+ * (populated by firmware during device discovery). If the cached
+ * value is not available or invalid, it falls back to reading from
+ * sas phy page0 or expander phy page1.
+ *
  *
  * Return: logical link rate.
  */
@@ -2263,6 +2374,14 @@ static u8 mpi3mr_get_sas_negotiated_logical_linkrate(struct mpi3mr_ioc *mrioc,
 	u32 phynum_handle;
 	u16 ioc_status;
 
+	/* First, try to use link rate from DevicePage0 (populated by firmware) */
+	if (tgtdev->dev_spec.sas_sata_inf.negotiated_link_rate >=
+	    MPI3_SAS_NEG_LINK_RATE_1_5) {
+		link_rate = tgtdev->dev_spec.sas_sata_inf.negotiated_link_rate;
+		goto out;
+	}
+
+	/* Fallback to reading from phy pages if DevicePage0 value not available */
 	phy_number = tgtdev->dev_spec.sas_sata_inf.phy_id;
 	if (!(tgtdev->devpg0_flag & MPI3_DEVICE0_FLAGS_ATT_METHOD_DIR_ATTACHED)) {
 		phynum_handle = ((phy_number<<MPI3_SAS_EXPAND_PGAD_PHYNUM_SHIFT)
@@ -2280,9 +2399,7 @@ static u8 mpi3mr_get_sas_negotiated_logical_linkrate(struct mpi3mr_ioc *mrioc,
 			    __FILE__, __LINE__, __func__);
 			goto out;
 		}
-		link_rate = (expander_pg1.negotiated_link_rate &
-			     MPI3_SAS_NEG_LINK_RATE_LOGICAL_MASK) >>
-			MPI3_SAS_NEG_LINK_RATE_LOGICAL_SHIFT;
+		link_rate = expander_pg1.negotiated_link_rate;
 		goto out;
 	}
 	if (mpi3mr_cfg_get_sas_phy_pg0(mrioc, &ioc_status, &phy_pg0,
@@ -2297,11 +2414,11 @@ static u8 mpi3mr_get_sas_negotiated_logical_linkrate(struct mpi3mr_ioc *mrioc,
 		    __FILE__, __LINE__, __func__);
 		goto out;
 	}
-	link_rate = (phy_pg0.negotiated_link_rate &
-		     MPI3_SAS_NEG_LINK_RATE_LOGICAL_MASK) >>
-		MPI3_SAS_NEG_LINK_RATE_LOGICAL_SHIFT;
+	link_rate = phy_pg0.negotiated_link_rate;
+
 out:
-	return link_rate;
+	return ((link_rate & MPI3_SAS_NEG_LINK_RATE_LOGICAL_MASK) >>
+		MPI3_SAS_NEG_LINK_RATE_LOGICAL_SHIFT);
 }
 
 /**
@@ -2353,6 +2470,9 @@ int mpi3mr_report_tgtdev_to_sas_transport(struct mpi3mr_ioc *mrioc,
 	tgtdev->dev_spec.sas_sata_inf.hba_port = hba_port;
 
 	link_rate = mpi3mr_get_sas_negotiated_logical_linkrate(mrioc, tgtdev);
+
+	if (link_rate < MPI3_SAS_NEG_LINK_RATE_1_5)
+		link_rate = MPI3_SAS_NEG_LINK_RATE_1_5;
 
 	mpi3mr_update_links(mrioc, sas_address_parent, tgtdev->dev_handle,
 	    parent_phy_number, link_rate, hba_port);
@@ -2534,6 +2654,11 @@ static int mpi3mr_get_expander_phy_error_log(struct mpi3mr_ioc *mrioc,
 
 	if (mrioc->reset_in_progress) {
 		ioc_err(mrioc, "%s: host reset in progress!\n", __func__);
+		return -EFAULT;
+	}
+
+	if (mrioc->pci_err_recovery) {
+		ioc_err(mrioc, "%s: pci error recovery in progress!\n", __func__);
 		return -EFAULT;
 	}
 
@@ -2793,6 +2918,12 @@ mpi3mr_expander_phy_control(struct mpi3mr_ioc *mrioc,
 
 	if (mrioc->reset_in_progress) {
 		ioc_err(mrioc, "%s: host reset in progress!\n", __func__);
+		return -EFAULT;
+	}
+
+	if (mrioc->pci_err_recovery) {
+		ioc_err(mrioc, "%s: pci error recovery in progress!\n",
+		    __func__);
 		return -EFAULT;
 	}
 
@@ -3215,6 +3346,12 @@ mpi3mr_transport_smp_handler(struct bsg_job *job, struct Scsi_Host *shost,
 
 	if (mrioc->reset_in_progress) {
 		ioc_err(mrioc, "%s: host reset in progress!\n", __func__);
+		rc = -EFAULT;
+		goto out;
+	}
+
+	if (mrioc->pci_err_recovery) {
+		ioc_err(mrioc, "%s: pci error recovery in progress!\n", __func__);
 		rc = -EFAULT;
 		goto out;
 	}

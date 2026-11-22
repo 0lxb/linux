@@ -575,6 +575,7 @@ static struct v4l2_mbus_framefmt *__s5pcsis_get_format(
 }
 
 static int s5pcsis_set_fmt(struct v4l2_subdev *sd,
+			   const struct v4l2_subdev_client_info *ci,
 			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *fmt)
 {
@@ -770,7 +771,7 @@ static int s5pcsis_probe(struct platform_device *pdev)
 	int ret = -ENOMEM;
 	int i;
 
-	state = devm_kzalloc(dev, sizeof(*state), GFP_KERNEL);
+	state = devm_kzalloc_obj(dev, *state);
 	if (!state)
 		return -ENOMEM;
 
@@ -940,13 +941,19 @@ static int s5pcsis_pm_resume(struct device *dev, bool runtime)
 					       state->supplies);
 			goto unlock;
 		}
-		clk_enable(state->clock[CSIS_CLK_GATE]);
+		ret = clk_enable(state->clock[CSIS_CLK_GATE]);
+		if (ret) {
+			phy_power_off(state->phy);
+			regulator_bulk_disable(CSIS_NUM_SUPPLIES,
+					       state->supplies);
+			goto unlock;
+		}
 	}
 	if (state->flags & ST_STREAMING)
 		s5pcsis_start_stream(state);
 
 	state->flags &= ~ST_SUSPENDED;
- unlock:
+unlock:
 	mutex_unlock(&state->lock);
 	return ret ? -EAGAIN : 0;
 }
@@ -1020,7 +1027,7 @@ MODULE_DEVICE_TABLE(of, s5pcsis_of_match);
 
 static struct platform_driver s5pcsis_driver = {
 	.probe		= s5pcsis_probe,
-	.remove_new	= s5pcsis_remove,
+	.remove		= s5pcsis_remove,
 	.driver		= {
 		.of_match_table = s5pcsis_of_match,
 		.name		= CSIS_DRIVER_NAME,

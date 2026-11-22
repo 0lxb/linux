@@ -33,7 +33,7 @@ struct grvga_regs {
 	u32 line_length;	/* 0x10 */
 	u32 fb_pos;		/* 0x14 */
 	u32 clk_vector[4];	/* 0x18 */
-	u32 clut;	        /* 0x20 */
+	u32 clut;	        /* 0x28 */
 };
 
 struct grvga_par {
@@ -432,7 +432,7 @@ static int grvga_probe(struct platform_device *dev)
 			retval = -ENOMEM;
 			goto dealloc_cmap;
 		}
-	} else {	/* Allocate frambuffer memory */
+	} else {	/* Allocate framebuffer memory */
 
 		unsigned long page;
 
@@ -540,7 +540,7 @@ static struct platform_driver grvga_driver = {
 		.of_match_table = svgactrl_of_match,
 	},
 	.probe		= grvga_probe,
-	.remove_new	= grvga_remove,
+	.remove		= grvga_remove,
 };
 
 module_platform_driver(grvga_driver);

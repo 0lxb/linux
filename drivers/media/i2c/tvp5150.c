@@ -514,7 +514,7 @@ struct i2c_vbi_ram_value {
  * and so on. There are 16 possible locations from 0 to 15.
  */
 
-static struct i2c_vbi_ram_value vbi_ram_default[] = {
+static const struct i2c_vbi_ram_value vbi_ram_default[] = {
 
 	/*
 	 * FIXME: Current api doesn't handle all VBI types, those not
@@ -1104,6 +1104,7 @@ static void tvp5150_set_hw_selection(struct v4l2_subdev *sd,
 }
 
 static int tvp5150_set_selection(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -1156,6 +1157,7 @@ static int tvp5150_set_selection(struct v4l2_subdev *sd,
 }
 
 static int tvp5150_get_selection(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
@@ -1724,7 +1726,6 @@ static const struct v4l2_subdev_vbi_ops tvp5150_vbi_ops = {
 static const struct v4l2_subdev_pad_ops tvp5150_pad_ops = {
 	.enum_mbus_code = tvp5150_enum_mbus_code,
 	.enum_frame_size = tvp5150_enum_frame_size,
-	.set_fmt = tvp5150_fill_fmt,
 	.get_fmt = tvp5150_fill_fmt,
 	.get_selection = tvp5150_get_selection,
 	.set_selection = tvp5150_set_selection,
@@ -1812,7 +1813,7 @@ static const struct regmap_access_table tvp5150_readable_table = {
 	.n_yes_ranges = ARRAY_SIZE(tvp5150_readable_ranges),
 };
 
-static struct regmap_config tvp5150_config = {
+static const struct regmap_config tvp5150_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = 0xff,
@@ -2130,7 +2131,7 @@ static int tvp5150_probe(struct i2c_client *c)
 	if (res)
 		return res;
 
-	core = devm_kzalloc(&c->dev, sizeof(*core), GFP_KERNEL);
+	core = devm_kzalloc_obj(&c->dev, *core);
 	if (!core)
 		return -ENOMEM;
 
@@ -2265,7 +2266,7 @@ static const struct dev_pm_ops tvp5150_pm_ops = {
 };
 
 static const struct i2c_device_id tvp5150_id[] = {
-	{ "tvp5150", 0 },
+	{ .name = "tvp5150" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tvp5150_id);

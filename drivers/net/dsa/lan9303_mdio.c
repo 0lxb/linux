@@ -58,19 +58,19 @@ static int lan9303_mdio_read(void *ctx, uint32_t reg, uint32_t *val)
 	return 0;
 }
 
-static int lan9303_mdio_phy_write(struct lan9303 *chip, int phy, int reg,
+static int lan9303_mdio_phy_write(struct lan9303 *chip, int addr, int reg,
 				  u16 val)
 {
 	struct lan9303_mdio *sw_dev = dev_get_drvdata(chip->dev);
 
-	return mdiobus_write_nested(sw_dev->device->bus, phy, reg, val);
+	return mdiobus_write_nested(sw_dev->device->bus, addr, reg, val);
 }
 
-static int lan9303_mdio_phy_read(struct lan9303 *chip, int phy,  int reg)
+static int lan9303_mdio_phy_read(struct lan9303 *chip, int addr, int reg)
 {
 	struct lan9303_mdio *sw_dev = dev_get_drvdata(chip->dev);
 
-	return mdiobus_read_nested(sw_dev->device->bus, phy, reg);
+	return mdiobus_read_nested(sw_dev->device->bus, addr, reg);
 }
 
 static const struct lan9303_phy_ops lan9303_mdio_phy_ops = {
@@ -101,8 +101,7 @@ static int lan9303_mdio_probe(struct mdio_device *mdiodev)
 	struct lan9303_mdio *sw_dev;
 	int ret;
 
-	sw_dev = devm_kzalloc(&mdiodev->dev, sizeof(struct lan9303_mdio),
-			      GFP_KERNEL);
+	sw_dev = devm_kzalloc_obj(&mdiodev->dev, struct lan9303_mdio);
 	if (!sw_dev)
 		return -ENOMEM;
 
@@ -157,7 +156,7 @@ static void lan9303_mdio_shutdown(struct mdio_device *mdiodev)
 static const struct of_device_id lan9303_mdio_of_match[] = {
 	{ .compatible = "smsc,lan9303-mdio" },
 	{ .compatible = "microchip,lan9354-mdio" },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, lan9303_mdio_of_match);
 

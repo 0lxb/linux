@@ -221,8 +221,7 @@ static int wm831x_status_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	drvdata = devm_kzalloc(&pdev->dev, sizeof(struct wm831x_status),
-			       GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(&pdev->dev, struct wm831x_status);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -292,7 +291,7 @@ static struct platform_driver wm831x_status_driver = {
 		   .name = "wm831x-status",
 		   },
 	.probe = wm831x_status_probe,
-	.remove_new = wm831x_status_remove,
+	.remove = wm831x_status_remove,
 };
 
 module_platform_driver(wm831x_status_driver);

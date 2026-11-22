@@ -687,7 +687,7 @@ static int clk_mt8186_reg_mfg_mux_notifier(struct device *dev, struct clk *clk)
 	struct mtk_mux_nb *mfg_mux_nb;
 	int i;
 
-	mfg_mux_nb = devm_kzalloc(dev, sizeof(*mfg_mux_nb), GFP_KERNEL);
+	mfg_mux_nb = devm_kzalloc_obj(dev, *mfg_mux_nb);
 	if (!mfg_mux_nb)
 		return -ENOMEM;
 
@@ -725,11 +725,13 @@ MODULE_DEVICE_TABLE(of, of_match_clk_mt8186_topck);
 
 static struct platform_driver clk_mt8186_topck_drv = {
 	.probe = mtk_clk_simple_probe,
-	.remove_new = mtk_clk_simple_remove,
+	.remove = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt8186-topck",
 		.of_match_table = of_match_clk_mt8186_topck,
 	},
 };
 module_platform_driver(clk_mt8186_topck_drv);
+
+MODULE_DESCRIPTION("MediaTek MT8186 top clock generators driver");
 MODULE_LICENSE("GPL");

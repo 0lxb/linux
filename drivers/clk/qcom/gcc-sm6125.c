@@ -4161,7 +4161,7 @@ static int gcc_sm6125_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return qcom_cc_really_probe(pdev, &gcc_sm6125_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gcc_sm6125_desc, regmap);
 }
 
 static struct platform_driver gcc_sm6125_driver = {
@@ -4172,17 +4172,7 @@ static struct platform_driver gcc_sm6125_driver = {
 	},
 };
 
-static int __init gcc_sm6125_init(void)
-{
-	return platform_driver_register(&gcc_sm6125_driver);
-}
-subsys_initcall(gcc_sm6125_init);
-
-static void __exit gcc_sm6125_exit(void)
-{
-	platform_driver_unregister(&gcc_sm6125_driver);
-}
-module_exit(gcc_sm6125_exit);
+subsys_platform_driver(gcc_sm6125_driver);
 
 MODULE_DESCRIPTION("QTI GCC SM6125 Driver");
 MODULE_LICENSE("GPL v2");

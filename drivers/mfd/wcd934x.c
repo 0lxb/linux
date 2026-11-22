@@ -2,6 +2,7 @@
 // Copyright (c) 2019, Linaro Limited
 
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -109,7 +110,7 @@ static const struct regmap_range_cfg wcd934x_ranges[] = {
 	},
 };
 
-static struct regmap_config wcd934x_regmap_config = {
+static const struct regmap_config wcd934x_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
 	.cache_type = REGCACHE_MAPLE,
@@ -217,13 +218,18 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 	struct gpio_desc *reset_gpio;
 	int ret;
 
-	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
+	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "Failed to set DMA mask\n");
+
+	ddata = devm_kzalloc_obj(dev, *ddata);
 	if (!ddata)
 		return	-ENOMEM;
 
 	ddata->irq = of_irq_get(np, 0);
 	if (ddata->irq < 0)
-		return dev_err_probe(ddata->dev, ddata->irq,
+		return dev_err_probe(dev, ddata->irq,
 				     "Failed to get IRQ\n");
 
 	ddata->extclk = devm_clk_get(dev, "extclk");
@@ -284,6 +290,7 @@ static const struct slim_device_id wcd934x_slim_id[] = {
 	  SLIM_DEV_IDX_WCD9340, SLIM_DEV_INSTANCE_ID_WCD9340 },
 	{}
 };
+MODULE_DEVICE_TABLE(slim, wcd934x_slim_id);
 
 static struct slim_driver wcd934x_slim_driver = {
 	.driver = {
@@ -298,5 +305,4 @@ static struct slim_driver wcd934x_slim_driver = {
 module_slim_driver(wcd934x_slim_driver);
 MODULE_DESCRIPTION("WCD934X slim driver");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("slim:217:250:*");
 MODULE_AUTHOR("Srinivas Kandagatla <srinivas.kandagatla@linaro.org>");

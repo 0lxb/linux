@@ -3,7 +3,7 @@
  * Copyright (c) 2008, Christoph Hellwig
  * All Rights Reserved.
  */
-#include "xfs.h"
+#include "xfs_platform.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
@@ -201,16 +201,17 @@ __xfs_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 		if (!args.value)
 			return -ENOMEM;
 		xfs_acl_to_disk(args.value, acl);
+		error = xfs_attr_change(&args, XFS_ATTRUPDATE_UPSERT);
+		kvfree(args.value);
+	} else {
+		error = xfs_attr_change(&args, XFS_ATTRUPDATE_REMOVE);
+		/*
+		 * If the attribute didn't exist to start with that's fine.
+		 */
+		if (error == -ENOATTR)
+			error = 0;
 	}
 
-	error = xfs_attr_change(&args);
-	kvfree(args.value);
-
-	/*
-	 * If the attribute didn't exist to start with that's fine.
-	 */
-	if (!acl && error == -ENOATTR)
-		error = 0;
 	if (!error)
 		set_cached_acl(inode, type, acl);
 	return error;
@@ -242,7 +243,7 @@ xfs_acl_set_mode(
 }
 
 int
-xfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
+xfs_set_acl(const struct mnt_idmap *idmap, struct dentry *dentry,
 	    struct posix_acl *acl, int type)
 {
 	umode_t mode;

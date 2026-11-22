@@ -10,7 +10,7 @@
 #include "dml/dcn35/dcn35_fpu.h"
 #include "dml/dml_inline_defs.h"
 
-#include "link.h"
+#include "link_service.h"
 
 #define DC_LOGGER_INIT(logger)
 
@@ -98,56 +98,115 @@ struct _vcs_dpi_soc_bounding_box_st dcn3_51_soc = {
 	.clock_limits = {
 		{
 			.state = 0,
-			.dispclk_mhz = 1200.0,
-			.dppclk_mhz = 1200.0,
+			.dcfclk_mhz = 400.0,
+			.fabricclk_mhz = 400.0,
+			.socclk_mhz = 600.0,
+			.dram_speed_mts = 3200.0,
+			.dispclk_mhz = 600.0,
+			.dppclk_mhz = 600.0,
 			.phyclk_mhz = 600.0,
 			.phyclk_d18_mhz = 667.0,
-			.dscclk_mhz = 186.0,
+			.dscclk_mhz = 200.0,
 			.dtbclk_mhz = 600.0,
 		},
 		{
 			.state = 1,
-			.dispclk_mhz = 1200.0,
-			.dppclk_mhz = 1200.0,
+			.dcfclk_mhz = 600.0,
+			.fabricclk_mhz = 1000.0,
+			.socclk_mhz = 733.0,
+			.dram_speed_mts = 6400.0,
+			.dispclk_mhz = 800.0,
+			.dppclk_mhz = 800.0,
 			.phyclk_mhz = 810.0,
 			.phyclk_d18_mhz = 667.0,
-			.dscclk_mhz = 209.0,
+			.dscclk_mhz = 266.7,
 			.dtbclk_mhz = 600.0,
 		},
 		{
 			.state = 2,
-			.dispclk_mhz = 1200.0,
-			.dppclk_mhz = 1200.0,
+			.dcfclk_mhz = 738.0,
+			.fabricclk_mhz = 1200.0,
+			.socclk_mhz = 880.0,
+			.dram_speed_mts = 7500.0,
+			.dispclk_mhz = 800.0,
+			.dppclk_mhz = 800.0,
 			.phyclk_mhz = 810.0,
 			.phyclk_d18_mhz = 667.0,
-			.dscclk_mhz = 209.0,
+			.dscclk_mhz = 266.7,
 			.dtbclk_mhz = 600.0,
 		},
 		{
 			.state = 3,
-			.dispclk_mhz = 1200.0,
-			.dppclk_mhz = 1200.0,
+			.dcfclk_mhz = 800.0,
+			.fabricclk_mhz = 1400.0,
+			.socclk_mhz = 978.0,
+			.dram_speed_mts = 7500.0,
+			.dispclk_mhz = 960.0,
+			.dppclk_mhz = 960.0,
 			.phyclk_mhz = 810.0,
 			.phyclk_d18_mhz = 667.0,
-			.dscclk_mhz = 371.0,
+			.dscclk_mhz = 320.0,
 			.dtbclk_mhz = 600.0,
 		},
 		{
 			.state = 4,
+			.dcfclk_mhz = 873.0,
+			.fabricclk_mhz = 1600.0,
+			.socclk_mhz = 1100.0,
+			.dram_speed_mts = 8533.0,
+			.dispclk_mhz = 1066.7,
+			.dppclk_mhz = 1066.7,
+			.phyclk_mhz = 810.0,
+			.phyclk_d18_mhz = 667.0,
+			.dscclk_mhz = 355.6,
+			.dtbclk_mhz = 600.0,
+		},
+		{
+			.state = 5,
+			.dcfclk_mhz = 960.0,
+			.fabricclk_mhz = 1700.0,
+			.socclk_mhz = 1257.0,
+			.dram_speed_mts = 8533.0,
 			.dispclk_mhz = 1200.0,
 			.dppclk_mhz = 1200.0,
 			.phyclk_mhz = 810.0,
 			.phyclk_d18_mhz = 667.0,
-			.dscclk_mhz = 417.0,
+			.dscclk_mhz = 400.0,
+			.dtbclk_mhz = 600.0,
+		},
+		{
+			.state = 6,
+			.dcfclk_mhz = 1067.0,
+			.fabricclk_mhz = 1850.0,
+			.socclk_mhz = 1257.0,
+			.dram_speed_mts = 8533.0,
+			.dispclk_mhz = 1371.4,
+			.dppclk_mhz = 1371.4,
+			.phyclk_mhz = 810.0,
+			.phyclk_d18_mhz = 667.0,
+			.dscclk_mhz = 457.1,
+			.dtbclk_mhz = 600.0,
+		},
+		{
+			.state = 7,
+			.dcfclk_mhz = 1200.0,
+			.fabricclk_mhz = 2000.0,
+			.socclk_mhz = 1467.0,
+			.dram_speed_mts = 8533.0,
+			.dispclk_mhz = 1600.0,
+			.dppclk_mhz = 1600.0,
+			.phyclk_mhz = 810.0,
+			.phyclk_d18_mhz = 667.0,
+			.dscclk_mhz = 533.3,
 			.dtbclk_mhz = 600.0,
 		},
 	},
-	.num_states = 5,
+	.num_states = 8,
 	.sr_exit_time_us = 28.0,
 	.sr_enter_plus_exit_time_us = 30.0,
-	.sr_exit_z8_time_us = 210.0,
-	.sr_enter_plus_exit_z8_time_us = 320.0,
-	.fclk_change_latency_us = 24.0,
+	.sr_exit_z8_time_us = 263.0,
+	.sr_enter_plus_exit_z8_time_us = 363.0,
+	.fclk_change_latency_us = 39.0,
 	.usr_retraining_latency_us = 2,
 	.writeback_latency_us = 12.0,
 
@@ -156,7 +215,7 @@ struct _vcs_dpi_soc_bounding_box_st dcn3_51_soc = {
 	.urgent_latency_pixel_data_only_us = 4.0,
 	.urgent_latency_pixel_mixed_with_vm_data_us = 4.0,
 	.urgent_latency_vm_data_only_us = 4.0,
-	.dram_clock_change_latency_us = 11.72,
+	.dram_clock_change_latency_us = 39,
 	.urgent_out_of_order_return_per_channel_pixel_only_bytes = 4096,
 	.urgent_out_of_order_return_per_channel_pixel_and_vm_bytes = 4096,
 	.urgent_out_of_order_return_per_channel_vm_only_bytes = 4096,
@@ -177,6 +236,8 @@ struct _vcs_dpi_soc_bounding_box_st dcn3_51_soc = {
 	.do_urgent_latency_adjustment = 0,
 	.urgent_latency_adjustment_fabric_clock_component_us = 0,
 	.urgent_latency_adjustment_fabric_clock_reference_mhz = 0,
+	.num_chans = 4,
+	.dispclk_dppclk_vco_speed_mhz = 2400.0,
 };
 
 /*
@@ -205,7 +266,7 @@ void dcn351_update_bw_bounding_box_fpu(struct dc *dc,
 	struct clk_limit_table *clk_table = &bw_params->clk_table;
 	struct _vcs_dpi_voltage_scaling_st *clock_limits =
 		dc->scratch.update_bw_bounding_box.clock_limits;
-	int max_dispclk_mhz = 0, max_dppclk_mhz = 0;
+	unsigned int max_dispclk_mhz = 0, max_dppclk_mhz = 0;
 
 	dc_assert_fp_enabled();
 
@@ -329,17 +390,20 @@ void dcn351_update_bw_bounding_box_fpu(struct dc *dc,
 			dc->dml2_options.bbox_overrides.clks_table.num_states =
 				clk_table->num_entries;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].dcfclk_mhz =
-				clock_limits[i].dcfclk_mhz;
+				(unsigned int)clock_limits[i].dcfclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].fclk_mhz =
-				clock_limits[i].fabricclk_mhz;
+				(unsigned int)clock_limits[i].fabricclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].dispclk_mhz =
-				clock_limits[i].dispclk_mhz;
+				(unsigned int)clock_limits[i].dispclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].dppclk_mhz =
-				clock_limits[i].dppclk_mhz;
+				(unsigned int)clock_limits[i].dppclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].socclk_mhz =
-				clock_limits[i].socclk_mhz;
+				(unsigned int)clock_limits[i].socclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].memclk_mhz =
 				clk_table->entries[i].memclk_mhz * clk_table->entries[i].wck_ratio;
+			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].dram_speed_mts = (unsigned int)clock_limits[i].dram_speed_mts;
+			dc->dml2_options.bbox_overrides.clks_table.clk_entries[i].dtbclk_mhz =
+				(unsigned int)clock_limits[i].dtbclk_mhz;
 			dc->dml2_options.bbox_overrides.clks_table.num_entries_per_clk.num_dcfclk_levels =
 				clk_table->num_entries;
 			dc->dml2_options.bbox_overrides.clks_table.num_entries_per_clk.num_fclk_levels =
@@ -351,6 +415,8 @@ void dcn351_update_bw_bounding_box_fpu(struct dc *dc,
 			dc->dml2_options.bbox_overrides.clks_table.num_entries_per_clk.num_socclk_levels =
 				clk_table->num_entries;
 			dc->dml2_options.bbox_overrides.clks_table.num_entries_per_clk.num_memclk_levels =
+				clk_table->num_entries;
+			dc->dml2_options.bbox_overrides.clks_table.num_entries_per_clk.num_dtbclk_levels =
 				clk_table->num_entries;
 		}
 	}
@@ -381,11 +447,11 @@ static bool is_dual_plane(enum surface_pixel_format format)
 static unsigned int micro_sec_to_vert_lines(unsigned int num_us, struct dc_crtc_timing *timing)
 {
 	unsigned int num_lines = 0;
-	unsigned int lines_time_in_ns = 1000.0 *
-			(((float)timing->h_total * 1000.0) /
-			 ((float)timing->pix_clk_100hz / 10.0));
+	double lines_time_in_ns = 1000.0 *
+			(((double)timing->h_total * 1000.0) /
+			 ((double)timing->pix_clk_100hz / 10.0));
 
-	num_lines = dml_ceil(1000.0 * num_us / lines_time_in_ns, 1.0);
+	num_lines = (unsigned int)dml_ceil(1000.0 * num_us / lines_time_in_ns, 1.0);
 
 	return num_lines;
 }
@@ -404,16 +470,19 @@ static unsigned int get_vertical_back_porch(struct dc_crtc_timing *timing)
 int dcn351_populate_dml_pipes_from_context_fpu(struct dc *dc,
 					      struct dc_state *context,
 					      display_e2e_pipe_params_st *pipes,
-					      bool fast_validate)
+					      enum dc_validate_mode validate_mode)
 {
-	int i, pipe_cnt;
+	int pipe_cnt;
+	unsigned int i;
 	struct resource_context *res_ctx = &context->res_ctx;
-	struct pipe_ctx *pipe;
+	struct pipe_ctx *pipe = 0;
 	bool upscaled = false;
 	const unsigned int max_allowed_vblank_nom = 1023;
 
+	dc_assert_fp_enabled();
+
 	dcn31_populate_dml_pipes_from_context(dc, context, pipes,
-					      fast_validate);
+					      validate_mode);
 
 	for (i = 0, pipe_cnt = 0; i < dc->res_pool->pipe_count; i++) {
 		struct dc_crtc_timing *timing;
@@ -465,9 +534,7 @@ int dcn351_populate_dml_pipes_from_context_fpu(struct dc *dc,
 
 		pipes[pipe_cnt].pipe.src.unbounded_req_mode = false;
 
-		DC_FP_START();
 		dcn31_zero_pipe_dcc_fraction(pipes, pipe_cnt);
-		DC_FP_END();
 
 		pipes[pipe_cnt].pipe.dest.vfront_porch = timing->v_front_porch;
 		pipes[pipe_cnt].pipe.src.dcc_rate = 3;
@@ -495,14 +562,9 @@ int dcn351_populate_dml_pipes_from_context_fpu(struct dc *dc,
 	}
 
 	context->bw_ctx.dml.ip.det_buffer_size_kbytes = 384;/*per guide*/
-	dc->config.enable_4to1MPC = false;
 
 	if (pipe_cnt == 1 && pipe->plane_state && !dc->debug.disable_z9_mpc) {
-		if (is_dual_plane(pipe->plane_state->format)
-				&& pipe->plane_state->src_rect.width <= 1920 &&
-				pipe->plane_state->src_rect.height <= 1080) {
-			dc->config.enable_4to1MPC = true;
-		} else if (!is_dual_plane(pipe->plane_state->format) &&
+		if (!is_dual_plane(pipe->plane_state->format) &&
 			   pipe->plane_state->src_rect.width <= 5120) {
 			/*
 			 * Limit to 5k max to avoid forced pipe split when there
@@ -521,16 +583,16 @@ int dcn351_populate_dml_pipes_from_context_fpu(struct dc *dc,
 	}
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
-		struct pipe_ctx *pipe = &context->res_ctx.pipe_ctx[i];
+		struct pipe_ctx *cur_pipe = &context->res_ctx.pipe_ctx[i];
 
-		if (!pipe->stream)
+		if (!cur_pipe->stream)
 			continue;
 
-		if (pipe->stream->signal == SIGNAL_TYPE_EDP &&
+		if (cur_pipe->stream->signal == SIGNAL_TYPE_EDP &&
 		    dc->debug.seamless_boot_odm_combine &&
-		    pipe->stream->apply_seamless_boot_optimization) {
+		    cur_pipe->stream->apply_seamless_boot_optimization) {
 
-			if (pipe->stream->apply_boot_odm_mode ==
+			if (cur_pipe->stream->apply_boot_odm_mode ==
 			    dm_odm_combine_policy_2to1) {
 				context->bw_ctx.dml.vba.ODMCombinePolicy =
 					dm_odm_combine_policy_2to1;
@@ -551,6 +613,7 @@ void dcn351_decide_zstate_support(struct dc *dc, struct dc_state *context)
 		if (context->res_ctx.pipe_ctx[i].plane_state)
 			plane_count++;
 	}
+
 	/*dcn351 does not support z9/z10*/
 	if (context->stream_count == 0 || plane_count == 0) {
 		support = DCN_ZSTATE_SUPPORT_ALLOW_Z8_ONLY;
@@ -564,11 +627,9 @@ void dcn351_decide_zstate_support(struct dc *dc, struct dc_state *context)
 			dc->debug.minimum_z8_residency_time > 0 ? dc->debug.minimum_z8_residency_time : 1000;
 		bool allow_z8 = context->bw_ctx.dml.vba.StutterPeriod > (double)minmum_z8_residency;
 
-
 		/*for psr1/psr-su, we allow z8 and z10 based on latency, for replay with IPS enabled, it will enter ips2*/
-		 if (is_pwrseq0 && (is_psr || is_replay))
+		if (is_pwrseq0 && (is_psr || is_replay))
 			support = allow_z8 ? allow_z8 : DCN_ZSTATE_SUPPORT_DISALLOW;
-
 	}
 	context->bw_ctx.bw.dcn.clk.zstate_support = support;
 }

@@ -116,7 +116,7 @@ enum {
 #define PM800_CHIP_GEN_ID_NUM	0x3
 
 static const struct i2c_device_id pm80x_id_table[] = {
-	{"88PM800", 0},
+	{ "88PM800" },
 	{} /* NULL terminated */
 };
 MODULE_DEVICE_TABLE(i2c, pm80x_id_table);
@@ -275,10 +275,10 @@ static int device_gpadc_init(struct pm80x_chip *chip,
 		goto out;
 
 	/*
-	 * the defult of PM800 is GPADC operates at 100Ks/s rate
+	 * the default of PM800 is GPADC operates at 100Ks/s rate
 	 * and Number of GPADC slots with active current bias prior
 	 * to GPADC sampling = 1 slot for all GPADCs set for
-	 * Temprature mesurmants
+	 * Temperature measurements
 	 */
 	mask = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN1 |
 		PM800_GPADC_GP_BIAS_EN2 | PM800_GPADC_GP_BIAS_EN3);
@@ -391,7 +391,7 @@ static void device_irq_exit_800(struct pm80x_chip *chip)
 	regmap_del_irq_chip(chip->irq, chip->irq_data);
 }
 
-static struct regmap_irq_chip pm800_irq_chip = {
+static const struct regmap_irq_chip pm800_irq_chip = {
 	.name = "88pm800",
 	.irqs = pm800_irqs,
 	.num_irqs = ARRAY_SIZE(pm800_irqs),
@@ -544,8 +544,7 @@ static int pm800_probe(struct i2c_client *client)
 
 	/* init subchip for PM800 */
 	subchip =
-	    devm_kzalloc(&client->dev, sizeof(struct pm80x_subchip),
-			 GFP_KERNEL);
+	    devm_kzalloc_obj(&client->dev, struct pm80x_subchip);
 	if (!subchip) {
 		ret = -ENOMEM;
 		goto err_subchip_alloc;

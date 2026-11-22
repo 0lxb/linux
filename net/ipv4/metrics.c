@@ -7,7 +7,7 @@
 #include <net/net_namespace.h>
 #include <net/tcp.h>
 
-static int ip_metrics_convert(struct net *net, struct nlattr *fc_mx,
+static int ip_metrics_convert(struct nlattr *fc_mx,
 			      int fc_mx_len, u32 *metrics,
 			      struct netlink_ext_ack *extack)
 {
@@ -31,7 +31,7 @@ static int ip_metrics_convert(struct net *net, struct nlattr *fc_mx,
 			char tmp[TCP_CA_NAME_MAX];
 
 			nla_strscpy(tmp, nla, sizeof(tmp));
-			val = tcp_ca_get_key_by_name(net, tmp, &ecn_ca);
+			val = tcp_ca_get_key_by_name(tmp, &ecn_ca);
 			if (val == TCP_CA_UNSPEC) {
 				NL_SET_ERR_MSG(extack, "Unknown tcp congestion algorithm");
 				return -EINVAL;
@@ -60,10 +60,15 @@ static int ip_metrics_convert(struct net *net, struct nlattr *fc_mx,
 	if (ecn_ca)
 		metrics[RTAX_FEATURES - 1] |= DST_FEATURE_ECN_CA;
 
+	if ((metrics[RTAX_LOCK - 1] & (1 << RTAX_CWND)) && !metrics[RTAX_CWND - 1]) {
+		NL_SET_ERR_MSG(extack, "Locked cwnd metric must be non zero");
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
-struct dst_metrics *ip_fib_metrics_init(struct net *net, struct nlattr *fc_mx,
+struct dst_metrics *ip_fib_metrics_init(struct nlattr *fc_mx,
 					int fc_mx_len,
 					struct netlink_ext_ack *extack)
 {
@@ -73,11 +78,11 @@ struct dst_metrics *ip_fib_metrics_init(struct net *net, struct nlattr *fc_mx,
 	if (!fc_mx)
 		return (struct dst_metrics *)&dst_default_metrics;
 
-	fib_metrics = kzalloc(sizeof(*fib_metrics), GFP_KERNEL);
+	fib_metrics = kzalloc_obj(*fib_metrics);
 	if (unlikely(!fib_metrics))
 		return ERR_PTR(-ENOMEM);
 
-	err = ip_metrics_convert(net, fc_mx, fc_mx_len, fib_metrics->metrics,
+	err = ip_metrics_convert(fc_mx, fc_mx_len, fib_metrics->metrics,
 				 extack);
 	if (!err) {
 		refcount_set(&fib_metrics->refcnt, 1);
@@ -88,4 +93,3 @@ struct dst_metrics *ip_fib_metrics_init(struct net *net, struct nlattr *fc_mx,
 
 	return fib_metrics;
 }
-EXPORT_SYMBOL_GPL(ip_fib_metrics_init);

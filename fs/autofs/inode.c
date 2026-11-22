@@ -13,12 +13,13 @@ struct autofs_info *autofs_new_ino(struct autofs_sb_info *sbi)
 {
 	struct autofs_info *ino;
 
-	ino = kzalloc(sizeof(*ino), GFP_KERNEL);
+	ino = kzalloc_obj(*ino);
 	if (ino) {
 		INIT_LIST_HEAD(&ino->active);
 		INIT_LIST_HEAD(&ino->expiring);
 		ino->last_used = jiffies;
 		ino->sbi = sbi;
+		ino->exp_timeout = -1;
 		ino->count = 1;
 	}
 	return ino;
@@ -28,6 +29,7 @@ void autofs_clean_ino(struct autofs_info *ino)
 {
 	ino->uid = GLOBAL_ROOT_UID;
 	ino->gid = GLOBAL_ROOT_GID;
+	ino->exp_timeout = -1;
 	ino->last_used = jiffies;
 }
 
@@ -49,11 +51,15 @@ void autofs_kill_sb(struct super_block *sb)
 	if (sbi) {
 		/* Free wait queues, close pipe */
 		autofs_catatonic_mode(sbi);
+		if (sbi->pipe) {
+			fput(sbi->pipe);
+			sbi->pipe = NULL;
+		}
 		put_pid(sbi->oz_pgrp);
 	}
 
 	pr_debug("shutting down\n");
-	kill_litter_super(sb);
+	kill_anon_super(sb);
 	if (sbi)
 		kfree_rcu(sbi, rcu);
 }
@@ -90,7 +96,7 @@ static int autofs_show_options(struct seq_file *m, struct dentry *root)
 		seq_puts(m, ",ignore");
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	if (sbi->pipe)
-		seq_printf(m, ",pipe_ino=%ld", file_inode(sbi->pipe)->i_ino);
+		seq_printf(m, ",pipe_ino=%llu", file_inode(sbi->pipe)->i_ino);
 	else
 		seq_puts(m, ",pipe_ino=-1");
 #endif
@@ -126,7 +132,7 @@ enum {
 const struct fs_parameter_spec autofs_param_specs[] = {
 	fsparam_flag	("direct",		Opt_direct),
 	fsparam_fd	("fd",			Opt_fd),
-	fsparam_u32	("gid",			Opt_gid),
+	fsparam_gid	("gid",			Opt_gid),
 	fsparam_flag	("ignore",		Opt_ignore),
 	fsparam_flag	("indirect",		Opt_indirect),
 	fsparam_u32	("maxproto",		Opt_maxproto),
@@ -134,7 +140,7 @@ const struct fs_parameter_spec autofs_param_specs[] = {
 	fsparam_flag	("offset",		Opt_offset),
 	fsparam_u32	("pgrp",		Opt_pgrp),
 	fsparam_flag	("strictexpire",	Opt_strictexpire),
-	fsparam_u32	("uid",			Opt_uid),
+	fsparam_uid	("uid",			Opt_uid),
 	{}
 };
 
@@ -172,8 +178,7 @@ static int autofs_parse_fd(struct fs_context *fc, struct autofs_sb_info *sbi,
 	ret = autofs_check_pipe(pipe);
 	if (ret < 0) {
 		errorf(fc, "Invalid/unusable pipe");
-		if (param->type != fs_value_is_file)
-			fput(pipe);
+		fput(pipe);
 		return -EBADF;
 	}
 
@@ -193,8 +198,6 @@ static int autofs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	struct autofs_fs_context *ctx = fc->fs_private;
 	struct autofs_sb_info *sbi = fc->s_fs_info;
 	struct fs_parse_result result;
-	kuid_t uid;
-	kgid_t gid;
 	int opt;
 
 	opt = fs_parse(fc, autofs_param_specs, param, &result);
@@ -205,16 +208,10 @@ static int autofs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_fd:
 		return autofs_parse_fd(fc, sbi, param, &result);
 	case Opt_uid:
-		uid = make_kuid(current_user_ns(), result.uint_32);
-		if (!uid_valid(uid))
-			return invalfc(fc, "Invalid uid");
-		ctx->uid = uid;
+		ctx->uid = result.uid;
 		break;
 	case Opt_gid:
-		gid = make_kgid(current_user_ns(), result.uint_32);
-		if (!gid_valid(gid))
-			return invalfc(fc, "Invalid gid");
-		ctx->gid = gid;
+		ctx->gid = result.gid;
 		break;
 	case Opt_pgrp:
 		ctx->pgrp = result.uint_32;
@@ -249,7 +246,7 @@ static struct autofs_sb_info *autofs_alloc_sbi(void)
 {
 	struct autofs_sb_info *sbi;
 
-	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
+	sbi = kzalloc_obj(*sbi);
 	if (!sbi)
 		return NULL;
 
@@ -258,6 +255,7 @@ static struct autofs_sb_info *autofs_alloc_sbi(void)
 	sbi->min_proto = AUTOFS_MIN_PROTO_VERSION;
 	sbi->max_proto = AUTOFS_MAX_PROTO_VERSION;
 	sbi->pipefd = -1;
+	sbi->mnt_ns_id = to_ns_common(current->nsproxy->mnt_ns)->ns_id;
 
 	set_autofs_type_indirect(&sbi->type);
 	mutex_init(&sbi->wq_mutex);
@@ -318,7 +316,7 @@ static int autofs_fill_super(struct super_block *s, struct fs_context *fc)
 	s->s_blocksize_bits = 10;
 	s->s_magic = AUTOFS_SUPER_MAGIC;
 	s->s_op = &autofs_sops;
-	s->s_d_op = &autofs_dentry_operations;
+	set_default_d_op(s, &autofs_dentry_operations);
 	s->s_time_gran = 1;
 
 	/*
@@ -329,8 +327,10 @@ static int autofs_fill_super(struct super_block *s, struct fs_context *fc)
 		return -ENOMEM;
 
 	root_inode = autofs_get_inode(s, S_IFDIR | 0755);
-	if (!root_inode)
+	if (!root_inode) {
+		autofs_free_ino(ino);
 		return -ENOMEM;
+	}
 
 	root_inode->i_uid = ctx->uid;
 	root_inode->i_gid = ctx->gid;
@@ -411,7 +411,7 @@ int autofs_init_fs_context(struct fs_context *fc)
 	struct autofs_fs_context *ctx;
 	struct autofs_sb_info *sbi;
 
-	ctx = kzalloc(sizeof(struct autofs_fs_context), GFP_KERNEL);
+	ctx = kzalloc_obj(struct autofs_fs_context);
 	if (!ctx)
 		goto nomem;
 

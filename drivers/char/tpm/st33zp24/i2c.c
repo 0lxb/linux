@@ -110,8 +110,7 @@ static int st33zp24_i2c_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	phy = devm_kzalloc(&client->dev, sizeof(struct st33zp24_i2c_phy),
-			   GFP_KERNEL);
+	phy = devm_kzalloc_obj(&client->dev, struct st33zp24_i2c_phy);
 	if (!phy)
 		return -ENOMEM;
 
@@ -133,7 +132,7 @@ static void st33zp24_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id st33zp24_i2c_id[] = {
-	{TPM_ST33_I2C, 0},
+	{ TPM_ST33_I2C },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, st33zp24_i2c_id);

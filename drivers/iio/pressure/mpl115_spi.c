@@ -25,7 +25,7 @@ static int mpl115_spi_init(struct device *dev)
 	struct spi_device *spi = to_spi_device(dev);
 	struct mpl115_spi_buf *buf;
 
-	buf = devm_kzalloc(dev, sizeof(*buf), GFP_KERNEL);
+	buf = devm_kzalloc_obj(dev, *buf);
 	if (!buf)
 		return -ENOMEM;
 
@@ -84,8 +84,8 @@ static int mpl115_spi_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id mpl115_spi_ids[] = {
-	{ "mpl115", 0 },
-	{}
+	{ .name = "mpl115" },
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, mpl115_spi_ids);
 
@@ -102,4 +102,4 @@ module_spi_driver(mpl115_spi_driver);
 MODULE_AUTHOR("Akinobu Mita <akinobu.mita@gmail.com>");
 MODULE_DESCRIPTION("Freescale MPL115A1 pressure/temperature driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_MPL115);
+MODULE_IMPORT_NS("IIO_MPL115");

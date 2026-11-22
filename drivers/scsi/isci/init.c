@@ -65,11 +65,7 @@
 #include "task.h"
 #include "probe_roms.h"
 
-#define MAJ 1
-#define MIN 2
-#define BUILD 0
-#define DRV_VERSION __stringify(MAJ) "." __stringify(MIN) "." \
-	__stringify(BUILD)
+#define DRV_VERSION "1.2.0"
 
 MODULE_VERSION(DRV_VERSION);
 
@@ -95,31 +91,31 @@ MODULE_DEVICE_TABLE(pci, isci_id_table);
 
 /* linux isci specific settings */
 
-unsigned char no_outbound_task_to = 2;
+static unsigned char no_outbound_task_to = 2;
 module_param(no_outbound_task_to, byte, 0);
 MODULE_PARM_DESC(no_outbound_task_to, "No Outbound Task Timeout (1us incr)");
 
-u16 ssp_max_occ_to = 20;
+static u16 ssp_max_occ_to = 20;
 module_param(ssp_max_occ_to, ushort, 0);
 MODULE_PARM_DESC(ssp_max_occ_to, "SSP Max occupancy timeout (100us incr)");
 
-u16 stp_max_occ_to = 5;
+static u16 stp_max_occ_to = 5;
 module_param(stp_max_occ_to, ushort, 0);
 MODULE_PARM_DESC(stp_max_occ_to, "STP Max occupancy timeout (100us incr)");
 
-u16 ssp_inactive_to = 5;
+static u16 ssp_inactive_to = 5;
 module_param(ssp_inactive_to, ushort, 0);
 MODULE_PARM_DESC(ssp_inactive_to, "SSP inactivity timeout (100us incr)");
 
-u16 stp_inactive_to = 5;
+static u16 stp_inactive_to = 5;
 module_param(stp_inactive_to, ushort, 0);
 MODULE_PARM_DESC(stp_inactive_to, "STP inactivity timeout (100us incr)");
 
-unsigned char phy_gen = SCIC_SDS_PARM_GEN2_SPEED;
+static unsigned char phy_gen = SCIC_SDS_PARM_GEN2_SPEED;
 module_param(phy_gen, byte, 0);
 MODULE_PARM_DESC(phy_gen, "PHY generation (1: 1.5Gbps 2: 3.0Gbps 3: 6.0Gbps)");
 
-unsigned char max_concurr_spinup;
+static unsigned char max_concurr_spinup;
 module_param(max_concurr_spinup, byte, 0);
 MODULE_PARM_DESC(max_concurr_spinup, "Max concurrent device spinup");
 
@@ -149,33 +145,20 @@ static struct attribute *isci_host_attrs[] = {
 
 ATTRIBUTE_GROUPS(isci_host);
 
-static const struct scsi_host_template isci_sht = {
+static const struct attribute_group *isci_sdev_groups[] = {
+	&sas_ata_sdev_attr_group,
+	NULL
+};
 
-	.module				= THIS_MODULE,
-	.name				= DRV_NAME,
-	.proc_name			= DRV_NAME,
-	.queuecommand			= sas_queuecommand,
-	.dma_need_drain			= ata_scsi_dma_need_drain,
-	.target_alloc			= sas_target_alloc,
-	.slave_configure		= sas_slave_configure,
+static const struct scsi_host_template isci_sht = {
+	LIBSAS_SHT_BASE
 	.scan_finished			= isci_host_scan_finished,
 	.scan_start			= isci_host_start,
-	.change_queue_depth		= sas_change_queue_depth,
-	.bios_param			= sas_bios_param,
 	.can_queue			= ISCI_CAN_QUEUE_VAL,
-	.this_id			= -1,
 	.sg_tablesize			= SG_ALL,
-	.max_sectors			= SCSI_DEFAULT_MAX_SECTORS,
-	.eh_abort_handler		= sas_eh_abort_handler,
-	.eh_device_reset_handler        = sas_eh_device_reset_handler,
-	.eh_target_reset_handler        = sas_eh_target_reset_handler,
-	.slave_alloc			= sas_slave_alloc,
-	.target_destroy			= sas_target_destroy,
-	.ioctl				= sas_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl			= sas_ioctl,
-#endif
+	.eh_abort_handler               = sas_eh_abort_handler,
 	.shost_groups			= isci_host_groups,
+	.sdev_groups			= isci_sdev_groups,
 	.track_queue_depth		= 1,
 };
 
@@ -500,7 +483,7 @@ static struct isci_host *isci_host_alloc(struct pci_dev *pdev, int id)
 	struct Scsi_Host *shost;
 	int err, i;
 
-	ihost = devm_kzalloc(&pdev->dev, sizeof(*ihost), GFP_KERNEL);
+	ihost = devm_kzalloc_obj(&pdev->dev, *ihost);
 	if (!ihost)
 		return NULL;
 
@@ -616,7 +599,7 @@ static int isci_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_info(&pdev->dev, "driver configured for rev: %d silicon\n",
 		 pdev->revision);
 
-	pci_info = devm_kzalloc(&pdev->dev, sizeof(*pci_info), GFP_KERNEL);
+	pci_info = devm_kzalloc_obj(&pdev->dev, *pci_info);
 	if (!pci_info)
 		return -ENOMEM;
 	pci_set_drvdata(pdev, pci_info);
@@ -771,6 +754,7 @@ static __exit void isci_exit(void)
 	sas_release_transport(isci_transport_template);
 }
 
+MODULE_DESCRIPTION("Intel(R) C600 Series Chipset SAS Controller driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_FIRMWARE(ISCI_FW_NAME);
 module_init(isci_init);

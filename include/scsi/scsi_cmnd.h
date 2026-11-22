@@ -234,7 +234,7 @@ static inline sector_t scsi_get_lba(struct scsi_cmnd *scmd)
 
 static inline unsigned int scsi_logical_block_count(struct scsi_cmnd *scmd)
 {
-	unsigned int shift = ilog2(scmd->device->sector_size) - SECTOR_SHIFT;
+	unsigned int shift = ilog2(scmd->device->sector_size);
 
 	return blk_rq_bytes(scsi_cmd_to_rq(scmd)) >> shift;
 }
@@ -353,6 +353,8 @@ static inline u8 get_host_byte(struct scsi_cmnd *cmd)
 
 /**
  * scsi_msg_to_host_byte() - translate message byte
+ * @cmd: the SCSI command
+ * @msg: the SCSI parallel message byte to translate
  *
  * Translate the SCSI parallel message byte to a matching
  * host byte setting. A message of COMMAND_COMPLETE indicates
@@ -389,8 +391,7 @@ static inline unsigned scsi_transfer_length(struct scsi_cmnd *scmd)
 	return xfer_len;
 }
 
-extern void scsi_build_sense(struct scsi_cmnd *scmd, int desc,
-			     u8 key, u8 asc, u8 ascq);
+void scsi_set_sense(struct scsi_cmnd *scmd, int desc, u8 key, u16 code);
 
 struct request *scsi_alloc_request(struct request_queue *q, blk_opf_t opf,
 				   blk_mq_req_flags_t flags);

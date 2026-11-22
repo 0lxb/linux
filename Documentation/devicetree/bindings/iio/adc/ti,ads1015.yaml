@@ -18,6 +18,7 @@ properties:
     enum:
       - ti,ads1015
       - ti,ads1115
+      - ti,tla2021
       - ti,tla2024
 
   reg:
@@ -64,6 +65,11 @@ patternProperties:
         items:
           - minimum: 0
             maximum: 7
+
+      label:
+        $ref: /schemas/types.yaml#/definitions/string
+        description:
+          A descriptive name for this channel, like "vcc_ram" or "CH3".
 
       ti,gain:
         $ref: /schemas/types.yaml#/definitions/uint32
@@ -124,6 +130,7 @@ examples:
                 reg = <4>;
                 ti,gain = <3>;
                 ti,datarate = <5>;
+                label = "CH3";
             };
         };
     };

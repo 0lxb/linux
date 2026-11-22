@@ -18,7 +18,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 
@@ -1702,7 +1701,7 @@ static int xgene_dma_probe(struct platform_device *pdev)
 	struct xgene_dma *pdma;
 	int ret, i;
 
-	pdma = devm_kzalloc(&pdev->dev, sizeof(*pdma), GFP_KERNEL);
+	pdma = devm_kzalloc_obj(&pdev->dev, *pdma);
 	if (!pdma)
 		return -ENOMEM;
 
@@ -1742,7 +1741,7 @@ static int xgene_dma_probe(struct platform_device *pdev)
 	/* Initialize DMA channels software state */
 	xgene_dma_init_channels(pdma);
 
-	/* Configue DMA rings */
+	/* Configure DMA rings */
 	ret = xgene_dma_init_rings(pdma);
 	if (ret)
 		goto err_clk_enable;
@@ -1801,8 +1800,8 @@ static void xgene_dma_remove(struct platform_device *pdev)
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id xgene_dma_acpi_match_ptr[] = {
-	{"APMC0D43", 0},
-	{},
+	{ .id = "APMC0D43" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, xgene_dma_acpi_match_ptr);
 #endif
@@ -1815,7 +1814,7 @@ MODULE_DEVICE_TABLE(of, xgene_dma_of_match_ptr);
 
 static struct platform_driver xgene_dma_driver = {
 	.probe = xgene_dma_probe,
-	.remove_new = xgene_dma_remove,
+	.remove = xgene_dma_remove,
 	.driver = {
 		.name = "X-Gene-DMA",
 		.of_match_table = xgene_dma_of_match_ptr,

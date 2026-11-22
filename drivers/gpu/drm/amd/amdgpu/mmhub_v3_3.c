@@ -33,8 +33,70 @@
 #define regMMVM_L2_CNTL3_DEFAULT				0x80100007
 #define regMMVM_L2_CNTL4_DEFAULT				0x000000c1
 #define regMMVM_L2_CNTL5_DEFAULT				0x00003fe0
+#define regDAGB0_L1TLB_REG_RW_3_3                   0x00a4
+#define regDAGB0_L1TLB_REG_RW_3_3_BASE_IDX          1
+#define regDAGB1_L1TLB_REG_RW_3_3                   0x0163
+#define regDAGB1_L1TLB_REG_RW_3_3_BASE_IDX          1
 
 static const char *mmhub_client_ids_v3_3[][2] = {
+	[0][0] = "VMC",
+	[1][0] = "ISPXT",
+	[2][0] = "ISPIXT",
+	[4][0] = "DCEDMC",
+	[6][0] = "MP0",
+	[7][0] = "MP1",
+	[8][0] = "MPM",
+	[9][0] = "ISPPDPRD",
+	[10][0] = "ISPCSTATRD",
+	[11][0] = "ISPBYRPRD",
+	[12][0] = "ISPRGBPRD",
+	[13][0] = "ISPMCFPRD",
+	[14][0] = "ISPMCFPRD1",
+	[15][0] = "ISPYUVPRD",
+	[16][0] = "ISPMCSCRD",
+	[17][0] = "ISPGDCRD",
+	[18][0] = "ISPLMERD",
+	[22][0] = "ISPXT1",
+	[23][0] = "ISPIXT1",
+	[24][0] = "HDP",
+	[25][0] = "LSDMA",
+	[26][0] = "JPEG",
+	[27][0] = "VPE",
+	[28][0] = "VSCH",
+	[29][0] = "VCNU",
+	[30][0] = "VCN",
+	[1][1] = "ISPXT",
+	[2][1] = "ISPIXT",
+	[3][1] = "DCEDWB",
+	[4][1] = "DCEDMC",
+	[5][1] = "ISPCSISWR",
+	[6][1] = "MP0",
+	[7][1] = "MP1",
+	[8][1] = "MPM",
+	[9][1] = "ISPPDPWR",
+	[10][1] = "ISPCSTATWR",
+	[11][1] = "ISPBYRPWR",
+	[12][1] = "ISPRGBPWR",
+	[13][1] = "ISPMCFPWR",
+	[14][1] = "ISPMWR0",
+	[15][1] = "ISPYUVPWR",
+	[16][1] = "ISPMCSCWR",
+	[17][1] = "ISPGDCWR",
+	[18][1] = "ISPLMEWR",
+	[20][1] = "ISPMWR2",
+	[21][1] = "OSSSYS",
+	[22][1] = "ISPXT1",
+	[23][1] = "ISPIXT1",
+	[24][1] = "HDP",
+	[25][1] = "LSDMA",
+	[26][1] = "JPEG",
+	[27][1] = "VPE",
+	[28][1] = "VSCH",
+	[29][1] = "VCNU",
+	[30][1] = "VCN",
+};
+
+static const char *mmhub_client_ids_v3_3_1[][2] = {
 	[0][0] = "VMC",
 	[4][0] = "DCEDMC",
 	[6][0] = "MP0",
@@ -42,10 +104,29 @@ static const char *mmhub_client_ids_v3_3[][2] = {
 	[8][0] = "MPM",
 	[24][0] = "HDP",
 	[25][0] = "LSDMA",
-	[26][0] = "JPEG",
-	[27][0] = "VPE",
-	[29][0] = "VCNU",
-	[30][0] = "VCN",
+	[26][0] = "JPEG0",
+	[27][0] = "VPE0",
+	[28][0] = "VSCH",
+	[29][0] = "VCNU0",
+	[30][0] = "VCN0",
+	[32+1][0] = "ISPXT",
+	[32+2][0] = "ISPIXT",
+	[32+9][0] = "ISPPDPRD",
+	[32+10][0] = "ISPCSTATRD",
+	[32+11][0] = "ISPBYRPRD",
+	[32+12][0] = "ISPRGBPRD",
+	[32+13][0] = "ISPMCFPRD",
+	[32+14][0] = "ISPMCFPRD1",
+	[32+15][0] = "ISPYUVPRD",
+	[32+16][0] = "ISPMCSCRD",
+	[32+17][0] = "ISPGDCRD",
+	[32+18][0] = "ISPLMERD",
+	[32+22][0] = "ISPXT1",
+	[32+23][0] = "ISPIXT1",
+	[32+26][0] = "JPEG1",
+	[32+27][0] = "VPE1",
+	[32+29][0] = "VCNU1",
+	[32+30][0] = "VCN1",
 	[3][1] = "DCEDWB",
 	[4][1] = "DCEDMC",
 	[6][1] = "MP0",
@@ -54,10 +135,61 @@ static const char *mmhub_client_ids_v3_3[][2] = {
 	[21][1] = "OSSSYS",
 	[24][1] = "HDP",
 	[25][1] = "LSDMA",
-	[26][1] = "JPEG",
-	[27][1] = "VPE",
-	[29][1] = "VCNU",
-	[30][1] = "VCN",
+	[26][1] = "JPEG0",
+	[27][1] = "VPE0",
+	[28][1] = "VSCH",
+	[29][1] = "VCNU0",
+	[30][1] = "VCN0",
+	[32+1][1] = "ISPXT",
+	[32+2][1] = "ISPIXT",
+	[32+5][1] = "ISPCSISWR",
+	[32+9][1] = "ISPPDPWR",
+	[32+10][1] = "ISPCSTATWR",
+	[32+11][1] = "ISPBYRPWR",
+	[32+12][1] = "ISPRGBPWR",
+	[32+13][1] = "ISPMCFPWR",
+	[32+14][1] = "ISPMWR0",
+	[32+15][1] = "ISPYUVPWR",
+	[32+16][1] = "ISPMCSCWR",
+	[32+17][1] = "ISPGDCWR",
+	[32+18][1] = "ISPLMEWR",
+	[32+19][1] = "ISPMWR1",
+	[32+20][1] = "ISPMWR2",
+	[32+22][1] = "ISPXT1",
+	[32+23][1] = "ISPIXT1",
+	[32+26][1] = "JPEG1",
+	[32+27][1] = "VPE1",
+	[32+29][1] = "VCNU1",
+	[32+30][1] = "VCN1",
+};
+
+static const char *mmhub_client_ids_v3_4[][2] = {
+	[0][0] = "VMC",
+	[4][0] = "DCEDMC",
+	[5][0] = "MPXSP",
+	[6][0] = "MPASP",
+	[7][0] = "MP1",
+	[8][0] = "MPM",
+	[23][0] = "HDP",
+	[24][0] = "LSDMA",
+	[25][0] = "JPEG",
+	[26][0] = "VPE",
+	[27][0] = "VSCH",
+	[28][0] = "VCNU",
+	[30][0] = "VCNRD",
+	[3][1] = "DCEDWB",
+	[4][1] = "DCEDMC",
+	[5][1] = "MPXSP",
+	[6][1] = "MPASAP",
+	[7][1] = "MP1",
+	[8][1] = "MPM",
+	[21][1] = "OSSSYS",
+	[23][1] = "HDP",
+	[24][1] = "LSDMA",
+	[25][1] = "JPEG",
+	[26][1] = "VPE",
+	[27][1] = "VSCH",
+	[29][1] = "VCNWR",
 };
 
 static uint32_t mmhub_v3_3_get_invalidate_req(unsigned int vmid,
@@ -85,7 +217,7 @@ mmhub_v3_3_print_l2_protection_fault_status(struct amdgpu_device *adev,
 					      uint32_t status)
 {
 	uint32_t cid, rw;
-	const char *mmhub_cid = NULL;
+	const char *mmhub_cid;
 
 	cid = REG_GET_FIELD(status,
 			    MMVM_L2_PROTECTION_FAULT_STATUS, CID);
@@ -95,20 +227,10 @@ mmhub_v3_3_print_l2_protection_fault_status(struct amdgpu_device *adev,
 	dev_err(adev->dev,
 		"MMVM_L2_PROTECTION_FAULT_STATUS:0x%08X\n",
 		status);
-
-	switch (amdgpu_ip_version(adev, MMHUB_HWIP, 0)) {
-	case IP_VERSION(3, 3, 0):
-	case IP_VERSION(3, 3, 1):
-		mmhub_cid = mmhub_client_ids_v3_3[cid][rw];
-		break;
-	default:
-		mmhub_cid = NULL;
-		break;
-	}
-
-	if (!mmhub_cid && cid == 0x140)
+	if (cid == 0x140)
 		mmhub_cid = "UMSCH";
-
+	else
+		mmhub_cid = amdgpu_mmhub_client_name(&adev->mmhub, cid, rw);
 	dev_err(adev->dev, "\t Faulty UTCL2 client ID: %s (0x%x)\n",
 		mmhub_cid ? mmhub_cid : "unknown", cid);
 	dev_err(adev->dev, "\t MORE_FAULTS: 0x%lx\n",
@@ -329,7 +451,7 @@ static void mmhub_v3_3_setup_vmid_config(struct amdgpu_device *adev)
 		/* Send no-retry XNACK on fault to suppress VM fault storm. */
 		tmp = REG_SET_FIELD(tmp, MMVM_CONTEXT1_CNTL,
 				    RETRY_PERMISSION_OR_INVALID_PAGE_FAULT,
-				    !amdgpu_noretry);
+				    !adev->gmc.noretry);
 		WREG32_SOC15_OFFSET(MMHUB, 0, regMMVM_CONTEXT1_CNTL,
 				    i * hub->ctx_distance, tmp);
 		WREG32_SOC15_OFFSET(MMHUB, 0, regMMVM_CONTEXT1_PAGE_TABLE_START_ADDR_LO32,
@@ -360,6 +482,49 @@ static void mmhub_v3_3_program_invalidation(struct amdgpu_device *adev)
 	}
 }
 
+static void mmhub_v3_3_init_saw_regs(struct amdgpu_device *adev)
+{
+	uint64_t pt_base = amdgpu_gmc_pd_addr(adev->gart.bo);
+	uint32_t tmp;
+
+	/* Program page table base, gart start, gart end */
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32,
+			lower_32_bits(pt_base >> 12));
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32,
+			upper_32_bits(pt_base >> 12));
+
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_LO32,
+		     (u32)(adev->gmc.gart_start >> 12));
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_START_ADDR_HI32,
+		     (u32)(adev->gmc.gart_start >> 44));
+
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_LO32,
+		     (u32)(adev->gmc.gart_end >> 12));
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_PAGE_TABLE_END_ADDR_HI32,
+		     (u32)(adev->gmc.gart_end >> 44));
+
+	tmp = RREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_CNTL);
+	tmp = REG_SET_FIELD(tmp, MMVM_L2_SAW_CONTEXT0_CNTL, ENABLE_CONTEXT, 1);
+	tmp = REG_SET_FIELD(tmp, MMVM_L2_SAW_CONTEXT0_CNTL, PAGE_TABLE_DEPTH, 0);
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXT0_CNTL, tmp);
+
+	/* Disable all contexts except context 0 */
+	tmp = 0xfffe;
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CONTEXTS_DISABLE, tmp);
+
+	/* Program saw cntl4 */
+	tmp = RREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CNTL4);
+	tmp = REG_SET_FIELD(tmp, MMVM_L2_SAW_CNTL4, VMC_TAP_CONTEXT0_PDE_REQUEST_SNOOP, 1);
+	tmp = REG_SET_FIELD(tmp, MMVM_L2_SAW_CNTL4, VMC_TAP_CONTEXT0_PTE_REQUEST_SNOOP, 1);
+	WREG32_SOC15(MMHUB, 0, regMMVM_L2_SAW_CNTL4, tmp);
+}
+
+static void mmhub_v3_3_enable_tls(struct amdgpu_device *adev)
+{
+	WREG32_SOC15(MMHUB, 0, regDAGB0_L1TLB_REG_RW_3_3, 0);
+	WREG32_SOC15(MMHUB, 0, regDAGB1_L1TLB_REG_RW_3_3, 3);
+}
+
 static int mmhub_v3_3_gart_enable(struct amdgpu_device *adev)
 {
 	/* GART Enable. */
@@ -372,6 +537,12 @@ static int mmhub_v3_3_gart_enable(struct amdgpu_device *adev)
 	mmhub_v3_3_disable_identity_aperture(adev);
 	mmhub_v3_3_setup_vmid_config(adev);
 	mmhub_v3_3_program_invalidation(adev);
+
+	/* standalone alone walker init */
+	mmhub_v3_3_init_saw_regs(adev);
+
+	/* enable mmhub tls */
+	mmhub_v3_3_enable_tls(adev);
 
 	return 0;
 }
@@ -450,6 +621,31 @@ static const struct amdgpu_vmhub_funcs mmhub_v3_3_vmhub_funcs = {
 	.get_invalidate_req = mmhub_v3_3_get_invalidate_req,
 };
 
+static void mmhub_v3_3_init_client_info(struct amdgpu_device *adev)
+{
+	switch (amdgpu_ip_version(adev, MMHUB_HWIP, 0)) {
+	case IP_VERSION(3, 3, 0):
+	case IP_VERSION(3, 3, 2):
+		amdgpu_mmhub_init_client_info(&adev->mmhub,
+					     mmhub_client_ids_v3_3,
+					     ARRAY_SIZE(mmhub_client_ids_v3_3));
+		break;
+	case IP_VERSION(3, 3, 1):
+		amdgpu_mmhub_init_client_info(&adev->mmhub,
+					     mmhub_client_ids_v3_3_1,
+					     ARRAY_SIZE(mmhub_client_ids_v3_3_1));
+		break;
+	case IP_VERSION(3, 4, 0):
+	case IP_VERSION(3, 4, 2):
+		amdgpu_mmhub_init_client_info(&adev->mmhub,
+					     mmhub_client_ids_v3_4,
+					     ARRAY_SIZE(mmhub_client_ids_v3_4));
+		break;
+	default:
+		break;
+	}
+}
+
 static void mmhub_v3_3_init(struct amdgpu_device *adev)
 {
 	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
@@ -490,6 +686,8 @@ static void mmhub_v3_3_init(struct amdgpu_device *adev)
 		MMVM_CONTEXT1_CNTL__EXECUTE_PROTECTION_FAULT_ENABLE_INTERRUPT_MASK;
 
 	hub->vmhub_funcs = &mmhub_v3_3_vmhub_funcs;
+
+	mmhub_v3_3_init_client_info(adev);
 }
 
 static u64 mmhub_v3_3_get_fb_location(struct amdgpu_device *adev)
@@ -561,7 +759,7 @@ static int mmhub_v3_3_set_clockgating(struct amdgpu_device *adev,
 
 static void mmhub_v3_3_get_clockgating(struct amdgpu_device *adev, u64 *flags)
 {
-	int data;
+	u32 data;
 
 	if (amdgpu_sriov_vf(adev))
 		*flags = 0;

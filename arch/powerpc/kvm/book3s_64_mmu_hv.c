@@ -47,6 +47,9 @@
 static long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
 				long pte_index, unsigned long pteh,
 				unsigned long ptel, unsigned long *pte_idx_ret);
+static void kvmppc_virtmode_do_h_remove(struct kvm *kvm, unsigned long flags,
+				unsigned long pte_index, unsigned long avpn,
+				unsigned long *hpret);
 
 struct kvm_resize_hpt {
 	/* These fields read-only after init */
@@ -306,6 +309,22 @@ static long kvmppc_virtmode_do_h_enter(struct kvm *kvm, unsigned long flags,
 	}
 	return ret;
 
+}
+
+/*
+ * Virtual-mode H_REMOVE. kvmppc_do_h_remove() is also called from real mode,
+ * where preempt_disable() is not usable, so the guard stays here. The function
+ * spins on HPTE_V_HVLOCK and then lock_rmap() (via remove_revmap_chain());
+ * preemption must be disabled across both bit-locks so that spinning callers
+ * holding preempt_disable() can make forward progress.
+ */
+static void kvmppc_virtmode_do_h_remove(struct kvm *kvm, unsigned long flags,
+				unsigned long pte_index, unsigned long avpn,
+				unsigned long *hpret)
+{
+	preempt_disable();
+	kvmppc_do_h_remove(kvm, flags, pte_index, avpn, hpret);
+	preempt_enable();
 }
 
 static struct kvmppc_slb *kvmppc_mmu_book3s_hv_find_slbe(struct kvm_vcpu *vcpu,
@@ -603,27 +622,10 @@ int kvmppc_book3s_hv_page_fault(struct kvm_vcpu *vcpu,
 	write_ok = writing;
 	hva = gfn_to_hva_memslot(memslot, gfn);
 
-	/*
-	 * Do a fast check first, since __gfn_to_pfn_memslot doesn't
-	 * do it with !atomic && !async, which is how we call it.
-	 * We always ask for write permission since the common case
-	 * is that the page is writable.
-	 */
-	if (get_user_page_fast_only(hva, FOLL_WRITE, &page)) {
-		write_ok = true;
-	} else {
-		/* Call KVM generic code to do the slow-path check */
-		pfn = __gfn_to_pfn_memslot(memslot, gfn, false, false, NULL,
-					   writing, &write_ok, NULL);
-		if (is_error_noslot_pfn(pfn))
-			return -EFAULT;
-		page = NULL;
-		if (pfn_valid(pfn)) {
-			page = pfn_to_page(pfn);
-			if (PageReserved(page))
-				page = NULL;
-		}
-	}
+	pfn = __kvm_faultin_pfn(memslot, gfn, writing ? FOLL_WRITE : 0,
+				&write_ok, &page);
+	if (is_error_noslot_pfn(pfn))
+		return -EFAULT;
 
 	/*
 	 * Read the PTE from the process' radix tree and use that
@@ -827,9 +829,11 @@ static void kvm_unmap_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 
 	rmapp = &memslot->arch.rmap[gfn - memslot->base_gfn];
 	for (;;) {
+		preempt_disable();
 		lock_rmap(rmapp);
 		if (!(*rmapp & KVMPPC_RMAP_PRESENT)) {
 			unlock_rmap(rmapp);
+			preempt_enable();
 			break;
 		}
 
@@ -843,6 +847,7 @@ static void kvm_unmap_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 		if (!try_lock_hpte(hptep, HPTE_V_HVLOCK)) {
 			/* unlock rmap before spinning on the HPTE lock */
 			unlock_rmap(rmapp);
+			preempt_enable();
 			while (be64_to_cpu(hptep[0]) & HPTE_V_HVLOCK)
 				cpu_relax();
 			continue;
@@ -851,6 +856,7 @@ static void kvm_unmap_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 		kvmppc_unmap_hpte(kvm, i, memslot, rmapp, gfn);
 		unlock_rmap(rmapp);
 		__unlock_hpte(hptep, be64_to_cpu(hptep[0]));
+		preempt_enable();
 	}
 }
 
@@ -907,6 +913,7 @@ static bool kvm_age_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 
 	rmapp = &memslot->arch.rmap[gfn - memslot->base_gfn];
  retry:
+	preempt_disable();
 	lock_rmap(rmapp);
 	if (*rmapp & KVMPPC_RMAP_REFERENCED) {
 		*rmapp &= ~KVMPPC_RMAP_REFERENCED;
@@ -914,6 +921,7 @@ static bool kvm_age_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 	}
 	if (!(*rmapp & KVMPPC_RMAP_PRESENT)) {
 		unlock_rmap(rmapp);
+		preempt_enable();
 		return ret;
 	}
 
@@ -929,6 +937,7 @@ static bool kvm_age_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 		if (!try_lock_hpte(hptep, HPTE_V_HVLOCK)) {
 			/* unlock rmap before spinning on the HPTE lock */
 			unlock_rmap(rmapp);
+			preempt_enable();
 			while (be64_to_cpu(hptep[0]) & HPTE_V_HVLOCK)
 				cpu_relax();
 			goto retry;
@@ -948,6 +957,7 @@ static bool kvm_age_rmapp(struct kvm *kvm, struct kvm_memory_slot *memslot,
 	} while ((i = j) != head);
 
 	unlock_rmap(rmapp);
+	preempt_enable();
 	return ret;
 }
 
@@ -1008,18 +1018,6 @@ bool kvm_test_age_gfn_hv(struct kvm *kvm, struct kvm_gfn_range *range)
 		return kvm_test_age_radix(kvm, range->slot, range->start);
 	else
 		return kvm_test_age_rmapp(kvm, range->slot, range->start);
-}
-
-bool kvm_set_spte_gfn_hv(struct kvm *kvm, struct kvm_gfn_range *range)
-{
-	WARN_ON(range->start + 1 != range->end);
-
-	if (kvm_is_radix(kvm))
-		kvm_unmap_radix(kvm, range->slot, range->start);
-	else
-		kvm_unmap_rmapp(kvm, range->slot, range->start);
-
-	return false;
 }
 
 static int vcpus_running(struct kvm *kvm)
@@ -1248,6 +1246,7 @@ static unsigned long resize_hpt_rehash_hpte(struct kvm_resize_hpt *resize,
 	if (!(vpte & HPTE_V_VALID) && !(vpte & HPTE_V_ABSENT))
 		return 0; /* nothing to do */
 
+	preempt_disable();
 	while (!try_lock_hpte(hptep, HPTE_V_HVLOCK))
 		cpu_relax();
 
@@ -1375,6 +1374,7 @@ static unsigned long resize_hpt_rehash_hpte(struct kvm_resize_hpt *resize,
 
 out:
 	unlock_hpte(hptep, vpte);
+	preempt_enable();
 	return ret;
 }
 
@@ -1523,7 +1523,7 @@ int kvm_vm_ioctl_resize_hpt_prepare(struct kvm *kvm,
 
 	/* start new resize */
 
-	resize = kzalloc(sizeof(*resize), GFP_KERNEL);
+	resize = kzalloc_obj(*resize);
 	if (!resize) {
 		ret = -ENOMEM;
 		goto out;
@@ -1778,8 +1778,8 @@ static ssize_t kvm_htab_read(struct file *file, char __user *buf,
 		       record_hpte(flags, hptp, hpte, revp, 1, first_pass)) {
 			/* valid entry, write it out */
 			++hdr.n_valid;
-			if (__put_user(hpte[0], lbuf) ||
-			    __put_user(hpte[1], lbuf + 1))
+			if (put_user(hpte[0], lbuf) ||
+			    put_user(hpte[1], lbuf + 1))
 				return -EFAULT;
 			nb += HPTE_SIZE;
 			lbuf += 2;
@@ -1882,8 +1882,8 @@ static ssize_t kvm_htab_write(struct file *file, const char __user *buf,
 			__be64 hpte_r;
 
 			err = -EFAULT;
-			if (__get_user(hpte_v, lbuf) ||
-			    __get_user(hpte_r, lbuf + 1))
+			if (get_user(hpte_v, lbuf) ||
+			    get_user(hpte_r, lbuf + 1))
 				goto out;
 			v = be64_to_cpu(hpte_v);
 			r = be64_to_cpu(hpte_r);
@@ -1897,7 +1897,7 @@ static ssize_t kvm_htab_write(struct file *file, const char __user *buf,
 			nb += HPTE_SIZE;
 
 			if (be64_to_cpu(hptp[0]) & (HPTE_V_VALID | HPTE_V_ABSENT))
-				kvmppc_do_h_remove(kvm, 0, i, 0, tmp);
+				kvmppc_virtmode_do_h_remove(kvm, 0, i, 0, tmp);
 			err = -EIO;
 			ret = kvmppc_virtmode_do_h_enter(kvm, H_EXACT, i, v, r,
 							 tmp);
@@ -1926,7 +1926,7 @@ static ssize_t kvm_htab_write(struct file *file, const char __user *buf,
 
 		for (j = 0; j < hdr.n_invalid; ++j) {
 			if (be64_to_cpu(hptp[0]) & (HPTE_V_VALID | HPTE_V_ABSENT))
-				kvmppc_do_h_remove(kvm, 0, i, 0, tmp);
+				kvmppc_virtmode_do_h_remove(kvm, 0, i, 0, tmp);
 			++i;
 			hptp += 2;
 		}
@@ -1972,7 +1972,7 @@ int kvm_vm_ioctl_get_htab_fd(struct kvm *kvm, struct kvm_get_htab_fd *ghf)
 	/* reject flags we don't recognize */
 	if (ghf->flags & ~(KVM_GET_HTAB_BOLTED_ONLY | KVM_GET_HTAB_WRITE))
 		return -EINVAL;
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc_obj(*ctx);
 	if (!ctx)
 		return -ENOMEM;
 	kvm_get_kvm(kvm);
@@ -2014,7 +2014,7 @@ static int debugfs_htab_open(struct inode *inode, struct file *file)
 	struct kvm *kvm = inode->i_private;
 	struct debugfs_htab_state *p;
 
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = kzalloc_obj(*p);
 	if (!p)
 		return -ENOMEM;
 

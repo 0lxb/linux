@@ -81,8 +81,7 @@ static int btmrvl_sdio_probe_of(struct device *dev,
 
 	card->plt_of_node = dev->of_node;
 
-	card->plt_wake_cfg = devm_kzalloc(dev, sizeof(*card->plt_wake_cfg),
-					  GFP_KERNEL);
+	card->plt_wake_cfg = devm_kzalloc_obj(dev, *card->plt_wake_cfg);
 	cfg = card->plt_wake_cfg;
 	if (cfg && card->plt_of_node) {
 		cfg->irq_bt = irq_of_parse_and_map(card->plt_of_node, 0);
@@ -92,7 +91,7 @@ static int btmrvl_sdio_probe_of(struct device *dev,
 		} else {
 			ret = devm_request_irq(dev, cfg->irq_bt,
 					       btmrvl_wake_irq_bt,
-					       0, "bt_wake", card);
+					       IRQF_NO_AUTOEN, "bt_wake", card);
 			if (ret) {
 				dev_err(dev,
 					"Failed to request irq_bt %d (%d)\n",
@@ -100,8 +99,9 @@ static int btmrvl_sdio_probe_of(struct device *dev,
 			}
 
 			/* Configure wakeup (enabled by default) */
-			device_init_wakeup(dev, true);
-			disable_irq(cfg->irq_bt);
+			ret = devm_device_init_wakeup(dev);
+			if (ret)
+				return dev_err_probe(dev, ret, "Failed to init wakeup\n");
 		}
 	}
 
@@ -798,7 +798,7 @@ static int btmrvl_sdio_card_to_host(struct btmrvl_private *priv)
 		skb_pull(skb, SDIO_HEADER_LEN);
 
 		if (btmrvl_process_event(priv, skb))
-			hci_recv_frame(hdev, skb);
+			kfree_skb(skb);
 
 		hdev->stat.byte_rx += buf_len;
 		break;
@@ -1516,7 +1516,7 @@ static int btmrvl_sdio_probe(struct sdio_func *func,
 	BT_INFO("vendor=0x%x, device=0x%x, class=%d, fn=%d",
 			id->vendor, id->device, id->class, func->num);
 
-	card = devm_kzalloc(&func->dev, sizeof(*card), GFP_KERNEL);
+	card = devm_kzalloc_obj(&func->dev, *card);
 	if (!card)
 		return -ENOMEM;
 
@@ -1736,7 +1736,6 @@ static struct sdio_driver bt_mrvl_sdio = {
 	.probe		= btmrvl_sdio_probe,
 	.remove		= btmrvl_sdio_remove,
 	.drv = {
-		.owner = THIS_MODULE,
 		.coredump = btmrvl_sdio_coredump,
 		.pm = &btmrvl_sdio_pm_ops,
 	}

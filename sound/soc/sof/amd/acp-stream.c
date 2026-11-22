@@ -15,15 +15,6 @@
 #include "acp-dsp-offset.h"
 #include "acp.h"
 
-#define PTE_GRP1_OFFSET		0x00000000
-#define PTE_GRP2_OFFSET		0x00800000
-#define PTE_GRP3_OFFSET		0x01000000
-#define PTE_GRP4_OFFSET		0x01800000
-#define PTE_GRP5_OFFSET		0x02000000
-#define PTE_GRP6_OFFSET		0x02800000
-#define PTE_GRP7_OFFSET		0x03000000
-#define PTE_GRP8_OFFSET		0x03800000
-
 int acp_dsp_stream_config(struct snd_sof_dev *sdev, struct acp_dsp_stream *stream)
 {
 	const struct sof_amd_acp_desc *desc = get_chip_info(sdev->pdata);
@@ -150,7 +141,7 @@ struct acp_dsp_stream *acp_dsp_stream_get(struct snd_sof_dev *sdev, int tag)
 	dev_err(sdev->dev, "stream %d active or no inactive stream\n", tag);
 	return NULL;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_get, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_get, "SND_SOC_SOF_AMD_COMMON");
 
 int acp_dsp_stream_put(struct snd_sof_dev *sdev,
 		       struct acp_dsp_stream *acp_stream)
@@ -170,7 +161,7 @@ int acp_dsp_stream_put(struct snd_sof_dev *sdev,
 	dev_err(sdev->dev, "Cannot find active stream tag %d\n", acp_stream->stream_tag);
 	return -EINVAL;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_put, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_put, "SND_SOC_SOF_AMD_COMMON");
 
 int acp_dsp_stream_init(struct snd_sof_dev *sdev)
 {
@@ -184,4 +175,4 @@ int acp_dsp_stream_init(struct snd_sof_dev *sdev)
 	}
 	return 0;
 }
-EXPORT_SYMBOL_NS(acp_dsp_stream_init, SND_SOC_SOF_AMD_COMMON);
+EXPORT_SYMBOL_NS(acp_dsp_stream_init, "SND_SOC_SOF_AMD_COMMON");

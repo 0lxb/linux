@@ -107,7 +107,7 @@ static void dc_scan_kbd(struct dc_kbd *kbd)
 		}
 		ptr = memchr(kbd->old + 2, kbd->new[i], 6);
 		code = kbd->new[i];
-		if (code > 3 && ptr) {
+		if (code > 3 && !ptr) {
 			keycode = kbd->keycode[code];
 			if (keycode) {
 				input_event(dev, EV_MSC, MSC_SCAN, code);
@@ -132,29 +132,42 @@ static void dc_kbd_callback(struct mapleq *mq)
 	 * We should always get the lock because the only
 	 * time it may be locked is if the driver is in the cleanup phase.
 	 */
-	if (likely(mutex_trylock(&maple_keyb_mutex))) {
-
+	scoped_guard(mutex_try, &maple_keyb_mutex) {
 		if (buf[1] == mapledev->function) {
 			memcpy(kbd->new, buf + 2, 8);
 			dc_scan_kbd(kbd);
 		}
-
-		mutex_unlock(&maple_keyb_mutex);
 	}
+}
+
+static int dc_kbd_open(struct input_dev *dev)
+{
+	struct maple_device *mdev = input_get_drvdata(dev);
+
+	/* Maple polling is locked to VBLANK - which may be just 50/s */
+	maple_getcond_callback(mdev, dc_kbd_callback, HZ / 50,
+			       MAPLE_FUNC_KEYBOARD);
+
+	return 0;
+}
+
+static void dc_kbd_close(struct input_dev *dev)
+{
+	struct maple_device *mdev = input_get_drvdata(dev);
+
+	maple_getcond_callback(mdev, NULL, 0, MAPLE_FUNC_KEYBOARD);
 }
 
 static int probe_maple_kbd(struct device *dev)
 {
 	struct maple_device *mdev;
-	struct maple_driver *mdrv;
 	int i, error;
 	struct dc_kbd *kbd;
 	struct input_dev *idev;
 
 	mdev = to_maple_dev(dev);
-	mdrv = to_maple_driver(dev->driver);
 
-	kbd = kzalloc(sizeof(struct dc_kbd), GFP_KERNEL);
+	kbd = kzalloc_obj(*kbd);
 	if (!kbd) {
 		error = -ENOMEM;
 		goto fail;
@@ -169,6 +182,9 @@ static int probe_maple_kbd(struct device *dev)
 	kbd->dev = idev;
 	memcpy(kbd->keycode, dc_kbd_keycode, sizeof(kbd->keycode));
 
+	maple_set_drvdata(mdev, kbd);
+	input_set_drvdata(idev, mdev);
+
 	idev->name = mdev->product_name;
 	idev->evbit[0] = BIT(EV_KEY) | BIT(EV_REP);
 	idev->keycode = kbd->keycode;
@@ -176,6 +192,8 @@ static int probe_maple_kbd(struct device *dev)
 	idev->keycodemax = ARRAY_SIZE(kbd->keycode);
 	idev->id.bustype = BUS_HOST;
 	idev->dev.parent = &mdev->dev;
+	idev->open = dc_kbd_open;
+	idev->close = dc_kbd_close;
 
 	for (i = 0; i < NR_SCANCODES; i++)
 		__set_bit(dc_kbd_keycode[i], idev->keybit);
@@ -186,19 +204,9 @@ static int probe_maple_kbd(struct device *dev)
 	error = input_register_device(idev);
 	if (error)
 		goto fail_register;
-
-	/* Maple polling is locked to VBLANK - which may be just 50/s */
-	maple_getcond_callback(mdev, dc_kbd_callback, HZ/50,
-		MAPLE_FUNC_KEYBOARD);
-
-	mdev->driver = mdrv;
-
-	maple_set_drvdata(mdev, kbd);
-
 	return error;
 
 fail_register:
-	maple_set_drvdata(mdev, NULL);
 	input_free_device(idev);
 fail_idev_alloc:
 	kfree(kbd);
@@ -211,14 +219,11 @@ static int remove_maple_kbd(struct device *dev)
 	struct maple_device *mdev = to_maple_dev(dev);
 	struct dc_kbd *kbd = maple_get_drvdata(mdev);
 
-	mutex_lock(&maple_keyb_mutex);
+	guard(mutex)(&maple_keyb_mutex);
 
 	input_unregister_device(kbd->dev);
 	kfree(kbd);
 
-	maple_set_drvdata(mdev, NULL);
-
-	mutex_unlock(&maple_keyb_mutex);
 	return 0;
 }
 

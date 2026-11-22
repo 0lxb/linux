@@ -5,6 +5,7 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/mailbox_client.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of_irq.h>
@@ -71,6 +72,7 @@ struct smsm_host;
  * @lock:	spinlock for read-modify-write of the outgoing state
  * @entries:	context for each of the entries
  * @hosts:	context for each of the hosts
+ * @mbox_client: mailbox client handle
  */
 struct qcom_smsm {
 	struct device *dev;
@@ -80,14 +82,16 @@ struct qcom_smsm {
 	u32 num_hosts;
 	u32 num_entries;
 
-	u32 *local_state;
-	u32 *subscription;
+	u32 __iomem *local_state;
+	u32 __iomem *subscription;
 	struct qcom_smem_state *state;
 
 	spinlock_t lock;
 
 	struct smsm_entry *entries;
 	struct smsm_host *hosts;
+
+	struct mbox_client mbox_client;
 };
 
 /**
@@ -111,8 +115,8 @@ struct smsm_entry {
 	DECLARE_BITMAP(irq_falling, 32);
 	unsigned long last_value;
 
-	u32 *remote_state;
-	u32 *subscription;
+	u32 __iomem *remote_state;
+	u32 __iomem *subscription;
 };
 
 /**
@@ -120,11 +124,14 @@ struct smsm_entry {
  * @ipc_regmap:	regmap for outgoing interrupt
  * @ipc_offset:	offset in @ipc_regmap for outgoing interrupt
  * @ipc_bit:	bit in @ipc_regmap + @ipc_offset for outgoing interrupt
+ * @mbox_chan:	apcs ipc mailbox channel handle
  */
 struct smsm_host {
 	struct regmap *ipc_regmap;
 	int ipc_offset;
 	int ipc_bit;
+
+	struct mbox_chan *mbox_chan;
 };
 
 /**
@@ -172,7 +179,13 @@ static int smsm_update_bits(void *data, u32 mask, u32 value)
 		hostp = &smsm->hosts[host];
 
 		val = readl(smsm->subscription + host);
-		if (val & changes && hostp->ipc_regmap) {
+		if (!(val & changes))
+			continue;
+
+		if (hostp->mbox_chan) {
+			mbox_send_message(hostp->mbox_chan, NULL);
+			mbox_client_txdone(hostp->mbox_chan, 0);
+		} else if (hostp->ipc_regmap) {
 			regmap_write(hostp->ipc_regmap,
 				     hostp->ipc_offset,
 				     BIT(hostp->ipc_bit));
@@ -264,10 +277,8 @@ static void smsm_unmask_irq(struct irq_data *irqd)
 	u32 val;
 
 	/* Make sure our last cached state is up-to-date */
-	if (readl(entry->remote_state) & BIT(irq))
-		set_bit(irq, &entry->last_value);
-	else
-		clear_bit(irq, &entry->last_value);
+	assign_bit(irq, &entry->last_value,
+		   readl(entry->remote_state) & BIT(irq));
 
 	set_bit(irq, entry->irq_enabled);
 
@@ -291,15 +302,9 @@ static int smsm_set_irq_type(struct irq_data *irqd, unsigned int type)
 	if (!(type & IRQ_TYPE_EDGE_BOTH))
 		return -EINVAL;
 
-	if (type & IRQ_TYPE_EDGE_RISING)
-		set_bit(irq, entry->irq_rising);
-	else
-		clear_bit(irq, entry->irq_rising);
+	assign_bit(irq, entry->irq_rising, type & IRQ_TYPE_EDGE_RISING);
 
-	if (type & IRQ_TYPE_EDGE_FALLING)
-		set_bit(irq, entry->irq_falling);
-	else
-		clear_bit(irq, entry->irq_falling);
+	assign_bit(irq, entry->irq_falling, type & IRQ_TYPE_EDGE_FALLING);
 
 	return 0;
 }
@@ -351,6 +356,28 @@ static const struct irq_domain_ops smsm_irq_ops = {
 	.map = smsm_irq_map,
 	.xlate = irq_domain_xlate_twocell,
 };
+
+/**
+ * smsm_parse_mbox() - requests an mbox channel
+ * @smsm:	smsm driver context
+ * @host_id:	index of the remote host to be resolved
+ *
+ * Requests the desired channel using the mbox interface which is needed for
+ * sending the outgoing interrupts to a remove hosts - identified by @host_id.
+ */
+static int smsm_parse_mbox(struct qcom_smsm *smsm, unsigned int host_id)
+{
+	struct smsm_host *host = &smsm->hosts[host_id];
+	int ret = 0;
+
+	host->mbox_chan = mbox_request_channel(&smsm->mbox_client, host_id);
+	if (IS_ERR(host->mbox_chan)) {
+		ret = PTR_ERR(host->mbox_chan);
+		host->mbox_chan = NULL;
+	}
+
+	return ret;
+}
 
 /**
  * smsm_parse_ipc() - parses a qcom,ipc-%d device tree property
@@ -416,12 +443,10 @@ static int smsm_inbound_entry(struct qcom_smsm *smsm,
 					NULL, smsm_intr,
 					IRQF_ONESHOT,
 					"smsm", (void *)entry);
-	if (ret) {
-		dev_err(smsm->dev, "failed to request interrupt\n");
+	if (ret)
 		return ret;
-	}
 
-	entry->domain = irq_domain_add_linear(node, 32, &smsm_irq_ops, entry);
+	entry->domain = irq_domain_create_linear(of_fwnode_handle(node), 32, &smsm_irq_ops, entry);
 	if (!entry->domain) {
 		dev_err(smsm->dev, "failed to add irq_domain\n");
 		return -ENOMEM;
@@ -478,13 +503,13 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 	struct device_node *node;
 	struct smsm_entry *entry;
 	struct qcom_smsm *smsm;
-	u32 *intr_mask;
+	u32 __iomem *intr_mask;
 	size_t size;
-	u32 *states;
+	u32 __iomem *states;
 	u32 id;
 	int ret;
 
-	smsm = devm_kzalloc(&pdev->dev, sizeof(*smsm), GFP_KERNEL);
+	smsm = devm_kzalloc_obj(&pdev->dev, *smsm);
 	if (!smsm)
 		return -ENOMEM;
 	smsm->dev = &pdev->dev;
@@ -494,17 +519,13 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	smsm->entries = devm_kcalloc(&pdev->dev,
-				     smsm->num_entries,
-				     sizeof(struct smsm_entry),
-				     GFP_KERNEL);
+	smsm->entries = devm_kzalloc_objs(&pdev->dev, struct smsm_entry,
+					  smsm->num_entries);
 	if (!smsm->entries)
 		return -ENOMEM;
 
-	smsm->hosts = devm_kcalloc(&pdev->dev,
-				   smsm->num_hosts,
-				   sizeof(struct smsm_host),
-				   GFP_KERNEL);
+	smsm->hosts = devm_kzalloc_objs(&pdev->dev, struct smsm_host,
+					smsm->num_hosts);
 	if (!smsm->hosts)
 		return -ENOMEM;
 
@@ -521,8 +542,16 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 			     "qcom,local-host",
 			     &smsm->local_host);
 
+	smsm->mbox_client.dev = &pdev->dev;
+	smsm->mbox_client.knows_txdone = true;
+
 	/* Parse the host properties */
 	for (id = 0; id < smsm->num_hosts; id++) {
+		/* Try using mbox interface first, otherwise fall back to syscon */
+		ret = smsm_parse_mbox(smsm, id);
+		if (!ret)
+			continue;
+
 		ret = smsm_parse_ipc(smsm, id);
 		if (ret < 0)
 			goto out_put;
@@ -536,7 +565,7 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 		goto out_put;
 	}
 
-	states = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SMSM_SHARED_STATE, NULL);
+	states = (u32 __iomem *)qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SMSM_SHARED_STATE, NULL);
 	if (IS_ERR(states)) {
 		dev_err(&pdev->dev, "Unable to acquire shared state entry\n");
 		ret = PTR_ERR(states);
@@ -551,7 +580,7 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 		goto out_put;
 	}
 
-	intr_mask = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SMSM_CPU_INTR_MASK, NULL);
+	intr_mask = (u32 __iomem *)qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SMSM_CPU_INTR_MASK, NULL);
 	if (IS_ERR(intr_mask)) {
 		dev_err(&pdev->dev, "unable to acquire shared memory interrupt mask\n");
 		ret = PTR_ERR(intr_mask);
@@ -609,6 +638,9 @@ unwind_interfaces:
 
 	qcom_smem_state_unregister(smsm->state);
 out_put:
+	for (id = 0; id < smsm->num_hosts; id++)
+		mbox_free_channel(smsm->hosts[id].mbox_chan);
+
 	of_node_put(local_node);
 	return ret;
 }
@@ -622,6 +654,9 @@ static void qcom_smsm_remove(struct platform_device *pdev)
 		if (smsm->entries[id].domain)
 			irq_domain_remove(smsm->entries[id].domain);
 
+	for (id = 0; id < smsm->num_hosts; id++)
+		mbox_free_channel(smsm->hosts[id].mbox_chan);
+
 	qcom_smem_state_unregister(smsm->state);
 }
 
@@ -633,9 +668,9 @@ MODULE_DEVICE_TABLE(of, qcom_smsm_of_match);
 
 static struct platform_driver qcom_smsm_driver = {
 	.probe = qcom_smsm_probe,
-	.remove_new = qcom_smsm_remove,
-	.driver  = {
-		.name  = "qcom-smsm",
+	.remove = qcom_smsm_remove,
+	.driver = {
+		.name = "qcom-smsm",
 		.of_match_table = qcom_smsm_of_match,
 	},
 };

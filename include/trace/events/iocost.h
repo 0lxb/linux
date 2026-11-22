@@ -34,8 +34,11 @@ DECLARE_EVENT_CLASS(iocost_iocg_state,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		u32 hwa, hwi;
+
+		iocg_hweight_cache(iocg, &hwa, &hwi);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
 		__entry->vrate = iocg->ioc->vtime_base_rate;
@@ -44,8 +47,8 @@ DECLARE_EVENT_CLASS(iocost_iocg_state,
 		__entry->vtime = vtime;
 		__entry->weight = iocg->weight;
 		__entry->inuse = iocg->inuse;
-		__entry->hweight_active = iocg->hweight_active;
-		__entry->hweight_inuse = iocg->hweight_inuse;
+		__entry->hweight_active = hwa;
+		__entry->hweight_inuse = hwi;
 	),
 
 	TP_printk("[%s:%s] now=%llu:%llu vrate=%llu "
@@ -93,8 +96,8 @@ DECLARE_EVENT_CLASS(iocg_inuse_update,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->old_inuse = old_inuse;
 		__entry->new_inuse = new_inuse;
@@ -159,7 +162,7 @@ TRACE_EVENT(iocost_ioc_vrate_adj,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(ioc));
+		__assign_str(devname);
 		__entry->old_vrate = ioc->vtime_base_rate;
 		__entry->new_vrate = new_vrate;
 		__entry->busy_level = ioc->busy_level;
@@ -200,8 +203,8 @@ TRACE_EVENT(iocost_iocg_forgive_debt,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
 		__entry->usage_pct = usage_pct;

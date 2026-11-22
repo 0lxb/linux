@@ -59,19 +59,19 @@
 			      &pmx_led_wmode_r &pmx_led_wmode_g >;
 		pinctrl-names = "default";
 
-		health-r {
+		led-health-r {
 			label = "guruplug:red:health";
 			gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
 		};
-		health-g {
+		led-health-g {
 			label = "guruplug:green:health";
 			gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;
 		};
-		wmode-r {
+		led-wmode-r {
 			label = "guruplug:red:wmode";
 			gpios = <&gpio1 16 GPIO_ACTIVE_LOW>;
 		};
-		wmode-g {
+		led-wmode-g {
 			label = "guruplug:green:wmode";
 			gpios = <&gpio1 17 GPIO_ACTIVE_LOW>;
 		};
@@ -104,14 +104,14 @@
 	ethphy0: ethernet-phy@0 {
 		/* Marvell 88E1121R */
 		compatible = "ethernet-phy-id0141.0cb0",
-		             "ethernet-phy-ieee802.3-c22";
+			     "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
 	};
 
 	ethphy1: ethernet-phy@1 {
 		/* Marvell 88E1121R */
 		compatible = "ethernet-phy-id0141.0cb0",
-		             "ethernet-phy-ieee802.3-c22";
+			     "ethernet-phy-ieee802.3-c22";
 		reg = <1>;
 	};
 };

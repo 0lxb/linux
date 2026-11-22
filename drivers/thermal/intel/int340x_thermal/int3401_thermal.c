@@ -23,7 +23,7 @@ static int int3401_add(struct platform_device *pdev)
 	struct proc_thermal_device *proc_priv;
 	int ret;
 
-	proc_priv = devm_kzalloc(&pdev->dev, sizeof(*proc_priv), GFP_KERNEL);
+	proc_priv = devm_kzalloc_obj(&pdev->dev, *proc_priv);
 	if (!proc_priv)
 		return -ENOMEM;
 
@@ -60,7 +60,7 @@ static SIMPLE_DEV_PM_OPS(int3401_proc_thermal_pm, int3401_thermal_suspend,
 
 static struct platform_driver int3401_driver = {
 	.probe = int3401_add,
-	.remove_new = int3401_remove,
+	.remove = int3401_remove,
 	.driver = {
 		.name = "int3401 thermal",
 		.acpi_match_table = int3401_device_ids,

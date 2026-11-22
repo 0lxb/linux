@@ -476,8 +476,6 @@ static int truly_nt35597_panel_add(struct truly_nt35597 *ctx)
 	/* dual port */
 	gpiod_set_value(ctx->mode_gpio, 0);
 
-	drm_panel_init(&ctx->panel, dev, &truly_nt35597_drm_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 	drm_panel_add(&ctx->panel);
 
 	return 0;
@@ -523,10 +521,12 @@ static int truly_nt35597_probe(struct mipi_dsi_device *dsi)
 		.node = NULL,
 	};
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	ctx = devm_drm_panel_alloc(dev, __typeof(*ctx), panel,
+				  &truly_nt35597_drm_funcs,
+				  DRM_MODE_CONNECTOR_DSI);
 
-	if (!ctx)
-		return -ENOMEM;
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	/*
 	 * This device represents itself as one with two input ports which are
@@ -550,10 +550,8 @@ static int truly_nt35597_probe(struct mipi_dsi_device *dsi)
 
 	dsi1_host = of_find_mipi_dsi_host_by_node(dsi1);
 	of_node_put(dsi1);
-	if (!dsi1_host) {
-		dev_err(dev, "failed to find dsi host\n");
-		return -EPROBE_DEFER;
-	}
+	if (!dsi1_host)
+		return dev_err_probe(dev, -EPROBE_DEFER, "failed to find dsi host\n");
 
 	/* register the second DSI device */
 	dsi1_device = mipi_dsi_device_register_full(dsi1_host, &info);

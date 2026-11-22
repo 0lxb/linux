@@ -240,7 +240,7 @@ csky_mpintc_init(struct device_node *node, struct device_node *parent)
 	if (ret < 0)
 		nr_irq = INTC_IRQS;
 
-	__trigger  = kcalloc(nr_irq, sizeof(unsigned long), GFP_KERNEL);
+	__trigger  = kzalloc_objs(unsigned long, nr_irq);
 	if (__trigger == NULL)
 		return -ENXIO;
 
@@ -255,7 +255,7 @@ csky_mpintc_init(struct device_node *node, struct device_node *parent)
 		writel_relaxed(BIT(0), INTCG_base + INTCG_ICTLR);
 	}
 
-	root_domain = irq_domain_add_linear(node, nr_irq, &csky_irqdomain_ops,
+	root_domain = irq_domain_create_linear(of_fwnode_handle(node), nr_irq, &csky_irqdomain_ops,
 					    NULL);
 	if (!root_domain)
 		return -ENXIO;

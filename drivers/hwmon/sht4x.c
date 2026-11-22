@@ -11,6 +11,7 @@
 #include <linux/crc8.h>
 #include <linux/delay.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/i2c.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -31,11 +32,18 @@
  */
 #define SHT4X_CMD_MEASURE_HPM	0b11111101
 #define SHT4X_CMD_RESET		0b10010100
+#define SHT4X_CMD_HEATER_20_1	0b00011110
+#define SHT4X_CMD_HEATER_20_01	0b00010101
+#define SHT4X_CMD_HEATER_110_1	0b00101111
+#define SHT4X_CMD_HEATER_110_01	0b00100100
+#define SHT4X_CMD_HEATER_200_1	0b00111001
+#define SHT4X_CMD_HEATER_200_01 0b00110010
 
 #define SHT4X_CMD_LEN		1
 #define SHT4X_CRC8_LEN		1
 #define SHT4X_WORD_LEN		2
 #define SHT4X_RESPONSE_LENGTH	6
+#define STS4X_RESPONSE_LENGTH	3
 #define SHT4X_CRC8_POLYNOMIAL	0x31
 #define SHT4X_CRC8_INIT		0xff
 #define SHT4X_MIN_TEMPERATURE	-45000
@@ -45,10 +53,19 @@
 
 DECLARE_CRC8_TABLE(sht4x_crc8_table);
 
+enum sht4x_chips {
+	sht4x,
+	sts4x,
+};
+
 /**
  * struct sht4x_data - All the data required to operate an SHT4X chip
  * @client: the i2c client associated with the SHT4X
- * @lock: a mutex that is used to prevent parallel access to the i2c client
+ * @chip_id: the chip type (sht4x or sts4x)
+ * @heating_complete: the time that the last heating finished
+ * @data_pending: true if and only if there are measurements to retrieve after heating
+ * @heater_power: the power at which the heater will be started
+ * @heater_time: the time for which the heater will remain turned on
  * @valid: validity of fields below
  * @update_interval: the minimum poll interval
  * @last_updated: the previous time that the SHT4X was polled
@@ -57,7 +74,11 @@ DECLARE_CRC8_TABLE(sht4x_crc8_table);
  */
 struct sht4x_data {
 	struct i2c_client	*client;
-	struct mutex		lock;	/* atomic read data updates */
+	enum sht4x_chips	chip_id;
+	u64			heating_complete;	/* in jiffies */
+	bool			data_pending;
+	u32			heater_power;	/* in milli-watts */
+	u32			heater_time;	/* in milli-seconds */
 	bool			valid;	/* validity of fields below */
 	long			update_interval;	/* in milli-seconds */
 	long			last_updated;	/* in jiffies */
@@ -72,60 +93,73 @@ struct sht4x_data {
  */
 static int sht4x_read_values(struct sht4x_data *data)
 {
-	int ret = 0;
+	int ret;
 	u16 t_ticks, rh_ticks;
 	unsigned long next_update;
 	struct i2c_client *client = data->client;
 	u8 crc;
 	u8 cmd[SHT4X_CMD_LEN] = {SHT4X_CMD_MEASURE_HPM};
 	u8 raw_data[SHT4X_RESPONSE_LENGTH];
+	size_t response_length = data->chip_id == sts4x ?
+				 STS4X_RESPONSE_LENGTH : SHT4X_RESPONSE_LENGTH;
 
-	mutex_lock(&data->lock);
-	next_update = data->last_updated +
-		      msecs_to_jiffies(data->update_interval);
+	if (data->chip_id != sts4x) {
+		u64 curr_jiffies = get_jiffies_64();
 
-	if (data->valid && time_before_eq(jiffies, next_update))
-		goto unlock;
+		if (time_before64(curr_jiffies, data->heating_complete))
+			msleep(jiffies_to_msecs(data->heating_complete - curr_jiffies));
+	}
 
-	ret = i2c_master_send(client, cmd, SHT4X_CMD_LEN);
-	if (ret < 0)
-		goto unlock;
+	if (data->data_pending &&
+	    time_before64(get_jiffies_64(),
+			  data->heating_complete +
+			  msecs_to_jiffies(data->update_interval))) {
+		data->data_pending = false;
+	} else {
+		next_update = data->last_updated +
+			msecs_to_jiffies(data->update_interval);
 
-	usleep_range(SHT4X_MEAS_DELAY_HPM, SHT4X_MEAS_DELAY_HPM + SHT4X_DELAY_EXTRA);
+		if (data->valid && time_before_eq(jiffies, next_update))
+			return 0;
 
-	ret = i2c_master_recv(client, raw_data, SHT4X_RESPONSE_LENGTH);
-	if (ret != SHT4X_RESPONSE_LENGTH) {
+		ret = i2c_master_send(client, cmd, SHT4X_CMD_LEN);
+		if (ret < 0)
+			return ret;
+
+		usleep_range(SHT4X_MEAS_DELAY_HPM, SHT4X_MEAS_DELAY_HPM + SHT4X_DELAY_EXTRA);
+	}
+
+	ret = i2c_master_recv(client, raw_data, response_length);
+	if (ret != response_length) {
 		if (ret >= 0)
 			ret = -ENODATA;
-		goto unlock;
+		return ret;
 	}
 
 	t_ticks = raw_data[0] << 8 | raw_data[1];
-	rh_ticks = raw_data[3] << 8 | raw_data[4];
 
 	crc = crc8(sht4x_crc8_table, &raw_data[0], SHT4X_WORD_LEN, CRC8_INIT_VALUE);
 	if (crc != raw_data[2]) {
 		dev_err(&client->dev, "data integrity check failed\n");
-		ret = -EIO;
-		goto unlock;
-	}
-
-	crc = crc8(sht4x_crc8_table, &raw_data[3], SHT4X_WORD_LEN, CRC8_INIT_VALUE);
-	if (crc != raw_data[5]) {
-		dev_err(&client->dev, "data integrity check failed\n");
-		ret = -EIO;
-		goto unlock;
+		return -EIO;
 	}
 
 	data->temperature = ((21875 * (int32_t)t_ticks) >> 13) - 45000;
-	data->humidity = ((15625 * (int32_t)rh_ticks) >> 13) - 6000;
+
+	if (data->chip_id != sts4x) {
+		rh_ticks = raw_data[3] << 8 | raw_data[4];
+		crc = crc8(sht4x_crc8_table, &raw_data[3], SHT4X_WORD_LEN, CRC8_INIT_VALUE);
+		if (crc != raw_data[5]) {
+			dev_err(&client->dev, "data integrity check failed\n");
+			return -EIO;
+		}
+
+		data->humidity = ((15625 * (int32_t)rh_ticks) >> 13) - 6000;
+	}
+
 	data->last_updated = jiffies;
 	data->valid = true;
-	ret = 0;
-
-unlock:
-	mutex_unlock(&data->lock);
-	return ret;
+	return 0;
 }
 
 static ssize_t sht4x_interval_write(struct sht4x_data *data, long val)
@@ -174,9 +208,14 @@ static umode_t sht4x_hwmon_visible(const void *data,
 				   enum hwmon_sensor_types type,
 				   u32 attr, int channel)
 {
+	const struct sht4x_data *chip_data = data;
+
 	switch (type) {
 	case hwmon_temp:
+		return 0444;
 	case hwmon_humidity:
+		if (chip_data->chip_id == sts4x)
+			return 0;
 		return 0444;
 	case hwmon_chip:
 		return 0644;
@@ -215,6 +254,147 @@ static int sht4x_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
+static ssize_t heater_enable_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+
+	guard(hwmon_lock)(dev);
+
+	return sysfs_emit(buf, "%u\n", time_before64(get_jiffies_64(), data->heating_complete));
+}
+
+static ssize_t heater_enable_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf,
+				   size_t count)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+	bool status;
+	ssize_t ret;
+	u8 cmd;
+	u32 heating_time_bound;
+
+	ret = kstrtobool(buf, &status);
+	if (ret)
+		return ret;
+	if (!status)
+		return -EINVAL;
+
+	if (data->heater_time == 100) {
+		if (data->heater_power == 20)
+			cmd = SHT4X_CMD_HEATER_20_01;
+		else if (data->heater_power == 110)
+			cmd = SHT4X_CMD_HEATER_110_01;
+		else /* data->heater_power == 200 */
+			cmd = SHT4X_CMD_HEATER_200_01;
+
+		heating_time_bound = 110;
+	} else { /* data->heater_time == 1000 */
+		if (data->heater_power == 20)
+			cmd = SHT4X_CMD_HEATER_20_1;
+		else if (data->heater_power == 110)
+			cmd = SHT4X_CMD_HEATER_110_1;
+		else /* data->heater_power == 200 */
+			cmd = SHT4X_CMD_HEATER_200_1;
+
+		heating_time_bound = 1100;
+	}
+
+	guard(hwmon_lock)(dev);
+
+	if (time_before64(get_jiffies_64(), data->heating_complete))
+		return -EBUSY;
+
+	ret = i2c_master_send(data->client, &cmd, SHT4X_CMD_LEN);
+	if (ret < 0)
+		return ret;
+	if (ret != SHT4X_CMD_LEN)
+		return -EIO;
+
+	data->heating_complete = get_jiffies_64() + msecs_to_jiffies(heating_time_bound);
+	data->data_pending = true;
+	return count;
+}
+
+static ssize_t heater_power_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", data->heater_power);
+}
+
+static ssize_t heater_power_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf,
+				  size_t count)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+	u32 power;
+	ssize_t ret;
+
+	ret = kstrtou32(buf, 10, &power);
+	if (ret)
+		return ret;
+
+	if (power != 20 && power != 110 && power != 200)
+		return -EINVAL;
+
+	guard(hwmon_lock)(dev);
+
+	data->heater_power = power;
+
+	return count;
+}
+
+static ssize_t heater_time_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", data->heater_time);
+}
+
+static ssize_t heater_time_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf,
+				 size_t count)
+{
+	struct sht4x_data *data = dev_get_drvdata(dev);
+	u32 time;
+	ssize_t ret;
+
+	ret = kstrtou32(buf, 10, &time);
+	if (ret)
+		return ret;
+
+	if (time != 100 && time != 1000)
+		return -EINVAL;
+
+	guard(hwmon_lock)(dev);
+
+	data->heater_time = time;
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(heater_enable);
+static DEVICE_ATTR_RW(heater_power);
+static DEVICE_ATTR_RW(heater_time);
+
+static struct attribute *sht4x_attrs[] = {
+	&dev_attr_heater_enable.attr,
+	&dev_attr_heater_power.attr,
+	&dev_attr_heater_time.attr,
+	NULL
+};
+
+ATTRIBUTE_GROUPS(sht4x);
+
 static const struct hwmon_channel_info * const sht4x_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_UPDATE_INTERVAL),
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
@@ -235,6 +415,7 @@ static const struct hwmon_chip_info sht4x_chip_info = {
 
 static int sht4x_probe(struct i2c_client *client)
 {
+	const struct attribute_group **groups = NULL;
 	struct device *device = &client->dev;
 	struct device *hwmon_dev;
 	struct sht4x_data *data;
@@ -249,14 +430,19 @@ static int sht4x_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -EOPNOTSUPP;
 
-	data = devm_kzalloc(device, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(device, *data);
 	if (!data)
 		return -ENOMEM;
 
+	data->chip_id = (uintptr_t)i2c_get_match_data(client);
 	data->update_interval = SHT4X_MIN_POLL_INTERVAL;
 	data->client = client;
-
-	mutex_init(&data->lock);
+	if (data->chip_id != sts4x) {
+		data->heater_power = 200;
+		data->heater_time = 1000;
+		data->heating_complete = get_jiffies_64();
+		groups = sht4x_groups;
+	}
 
 	crc8_populate_msb(sht4x_crc8_table, SHT4X_CRC8_POLYNOMIAL);
 
@@ -270,19 +456,21 @@ static int sht4x_probe(struct i2c_client *client)
 							 client->name,
 							 data,
 							 &sht4x_chip_info,
-							 NULL);
+							 groups);
 
 	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static const struct i2c_device_id sht4x_id[] = {
-	{ "sht4x", 0 },
-	{ },
+	{ .name = "sht4x", .driver_data = sht4x },
+	{ .name = "sts4x", .driver_data = sts4x },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, sht4x_id);
 
 static const struct of_device_id sht4x_of_match[] = {
-	{ .compatible = "sensirion,sht4x" },
+	{ .compatible = "sensirion,sht4x", .data = (void *)sht4x },
+	{ .compatible = "sensirion,sts40", .data = (void *)sts4x },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sht4x_of_match);

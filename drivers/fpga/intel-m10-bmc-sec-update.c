@@ -9,7 +9,6 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/mfd/intel-m10-bmc.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -183,7 +182,7 @@ show_canceled_csk(struct device *dev, u32 addr, char *buf)
 
 	bitmap_from_arr32(csk_map, csk32, CSK_BIT_LEN);
 	bitmap_complement(csk_map, csk_map, CSK_BIT_LEN);
-	return bitmap_print_to_pagebuf(1, buf, csk_map, CSK_BIT_LEN);
+	return sysfs_emit(buf, "%*pbl\n", CSK_BIT_LEN, csk_map);
 }
 
 #define DEVICE_ATTR_SEC_CSK_RO(_name)						\
@@ -529,11 +528,12 @@ static enum fw_upload_err m10bmc_sec_prepare(struct fw_upload *fwl,
 					     const u8 *data, u32 size)
 {
 	struct m10bmc_sec *sec = fwl->dd_handle;
+	const struct m10bmc_csr_map *csr_map = sec->m10bmc->info->csr_map;
 	u32 ret;
 
 	sec->cancel_request = false;
 
-	if (!size || size > M10BMC_STAGING_SIZE)
+	if (!size || size > csr_map->staging_size)
 		return FW_UPLOAD_ERR_INVALID_SIZE;
 
 	if (sec->m10bmc->flash_bulk_ops)
@@ -690,7 +690,7 @@ static int m10bmc_sec_probe(struct platform_device *pdev)
 	unsigned int len;
 	int  ret;
 
-	sec = devm_kzalloc(&pdev->dev, sizeof(*sec), GFP_KERNEL);
+	sec = devm_kzalloc_obj(&pdev->dev, *sec);
 	if (!sec)
 		return -ENOMEM;
 
@@ -758,7 +758,7 @@ MODULE_DEVICE_TABLE(platform, intel_m10bmc_sec_ids);
 
 static struct platform_driver intel_m10bmc_sec_driver = {
 	.probe = m10bmc_sec_probe,
-	.remove_new = m10bmc_sec_remove,
+	.remove = m10bmc_sec_remove,
 	.driver = {
 		.name = "intel-m10bmc-sec-update",
 		.dev_groups = m10bmc_sec_attr_groups,
@@ -770,4 +770,4 @@ module_platform_driver(intel_m10bmc_sec_driver);
 MODULE_AUTHOR("Intel Corporation");
 MODULE_DESCRIPTION("Intel MAX10 BMC Secure Update");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(INTEL_M10_BMC_CORE);
+MODULE_IMPORT_NS("INTEL_M10_BMC_CORE");

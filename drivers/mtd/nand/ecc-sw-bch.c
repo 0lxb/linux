@@ -122,8 +122,7 @@ static int nand_ecc_sw_bch_init(struct nand_device *nand)
 		return -EINVAL;
 
 	engine_conf->eccmask = kzalloc(eccbytes, GFP_KERNEL);
-	engine_conf->errloc = kmalloc_array(t, sizeof(*engine_conf->errloc),
-					    GFP_KERNEL);
+	engine_conf->errloc = kmalloc_objs(*engine_conf->errloc, t);
 	if (!engine_conf->eccmask || !engine_conf->errloc) {
 		ret = -ENOMEM;
 		goto cleanup;
@@ -227,7 +226,7 @@ int nand_ecc_sw_bch_init_ctx(struct nand_device *nand)
 		return -EINVAL;
 	}
 
-	engine_conf = kzalloc(sizeof(*engine_conf), GFP_KERNEL);
+	engine_conf = kzalloc_obj(*engine_conf);
 	if (!engine_conf)
 		return -ENOMEM;
 
@@ -384,7 +383,7 @@ static int nand_ecc_sw_bch_finish_io_req(struct nand_device *nand,
 	return max_bitflips;
 }
 
-static struct nand_ecc_engine_ops nand_ecc_sw_bch_engine_ops = {
+static const struct nand_ecc_engine_ops nand_ecc_sw_bch_engine_ops = {
 	.init_ctx = nand_ecc_sw_bch_init_ctx,
 	.cleanup_ctx = nand_ecc_sw_bch_cleanup_ctx,
 	.prepare_io_req = nand_ecc_sw_bch_prepare_io_req,

@@ -186,7 +186,7 @@ static const struct regmap_irq tps65218_irqs[] = {
 	},
 };
 
-static struct regmap_irq_chip tps65218_irq_chip = {
+static const struct regmap_irq_chip tps65218_irq_chip = {
 	.name = "tps65218",
 	.irqs = tps65218_irqs,
 	.num_irqs = ARRAY_SIZE(tps65218_irqs),
@@ -285,7 +285,7 @@ static int tps65218_probe(struct i2c_client *client)
 	int ret;
 	unsigned int chipid;
 
-	tps = devm_kzalloc(&client->dev, sizeof(*tps), GFP_KERNEL);
+	tps = devm_kzalloc_obj(&client->dev, *tps);
 	if (!tps)
 		return -ENOMEM;
 

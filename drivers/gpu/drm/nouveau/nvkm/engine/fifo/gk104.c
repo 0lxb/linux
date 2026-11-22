@@ -113,7 +113,7 @@ gk104_chan_ramfc = {
 
 const struct nvkm_chan_func_userd
 gk104_chan_userd = {
-	.bar = 1,
+	.bar = NVKM_BAR1_FB,
 	.size = 0x200,
 	.clear = gf100_chan_userd_clear,
 };
@@ -179,6 +179,19 @@ gk104_ectx_ctor(struct nvkm_engn *engn, struct nvkm_vctx *vctx)
 {
 	struct gf100_vmm_map_v0 args = { .priv = 1 };
 	int ret;
+
+	/* The video falcons access their context with non-privileged
+	 * requests, and fault with PRIV_VIOLATION on a privileged mapping.
+	 */
+	switch (engn->engine->subdev.type) {
+	case NVKM_ENGINE_MSVLD:
+	case NVKM_ENGINE_MSPDEC:
+	case NVKM_ENGINE_MSPPP:
+		args.priv = 0;
+		break;
+	default:
+		break;
+	}
 
 	ret = nvkm_vmm_get(vctx->vmm, 12, vctx->inst->size, &vctx->vma);
 	if (ret)
@@ -745,7 +758,7 @@ gk104_fifo_init(struct nvkm_fifo *fifo)
 {
 	struct nvkm_device *device = fifo->engine.subdev.device;
 
-	if (fifo->func->chan.func->userd->bar == 1)
+	if (fifo->func->chan.func->userd->bar == NVKM_BAR1_FB)
 		nvkm_wr32(device, 0x002254, 0x10000000 | fifo->userd.bar1->addr >> 12);
 
 	nvkm_wr32(device, 0x002100, 0xffffffff);

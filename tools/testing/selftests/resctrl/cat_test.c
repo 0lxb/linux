@@ -14,42 +14,20 @@
 #define RESULT_FILE_NAME	"result_cat"
 #define NUM_OF_RUNS		5
 
-/*
- * Minimum difference in LLC misses between a test with n+1 bits CBM to the
- * test with n bits is MIN_DIFF_PERCENT_PER_BIT * (n - 1). With e.g. 5 vs 4
- * bits in the CBM mask, the minimum difference must be at least
- * MIN_DIFF_PERCENT_PER_BIT * (4 - 1) = 3 percent.
- *
- * The relationship between number of used CBM bits and difference in LLC
- * misses is not expected to be linear. With a small number of bits, the
- * margin is smaller than with larger number of bits. For selftest purposes,
- * however, linear approach is enough because ultimately only pass/fail
- * decision has to be made and distinction between strong and stronger
- * signal is irrelevant.
- */
-#define MIN_DIFF_PERCENT_PER_BIT	1UL
-
 static int show_results_info(__u64 sum_llc_val, int no_of_bits,
 			     unsigned long cache_span,
-			     unsigned long min_diff_percent,
 			     unsigned long num_of_runs, bool platform,
 			     __s64 *prev_avg_llc_val)
 {
 	__u64 avg_llc_val = 0;
-	float avg_diff;
 	int ret = 0;
 
 	avg_llc_val = sum_llc_val / num_of_runs;
 	if (*prev_avg_llc_val) {
-		float delta = (__s64)(avg_llc_val - *prev_avg_llc_val);
+		ret = platform && (avg_llc_val < *prev_avg_llc_val);
 
-		avg_diff = delta / *prev_avg_llc_val;
-		ret = platform && (avg_diff * 100) < (float)min_diff_percent;
-
-		ksft_print_msg("%s Check cache miss rate changed more than %.1f%%\n",
-			       ret ? "Fail:" : "Pass:", (float)min_diff_percent);
-
-		ksft_print_msg("Percent diff=%.1f\n", avg_diff * 100);
+		ksft_print_msg("%s Check cache miss rate increased\n",
+			       ret ? "Fail:" : "Pass:");
 	}
 	*prev_avg_llc_val = avg_llc_val;
 
@@ -58,10 +36,10 @@ static int show_results_info(__u64 sum_llc_val, int no_of_bits,
 	return ret;
 }
 
-/* Remove the highest bit from CBM */
+/* Remove the highest bits from CBM */
 static unsigned long next_mask(unsigned long current_mask)
 {
-	return current_mask & (current_mask >> 1);
+	return current_mask & (current_mask >> 2);
 }
 
 static int check_results(struct resctrl_val_param *param, const char *cache_type,
@@ -112,7 +90,6 @@ static int check_results(struct resctrl_val_param *param, const char *cache_type
 
 		ret = show_results_info(sum_llc_perf_miss, bits,
 					alloc_size / 64,
-					MIN_DIFF_PERCENT_PER_BIT * (bits - 1),
 					runs, get_vendor() == ARCH_INTEL,
 					&prev_avg_llc_val);
 		if (ret)
@@ -128,7 +105,7 @@ static int check_results(struct resctrl_val_param *param, const char *cache_type
 	return fail;
 }
 
-void cat_test_cleanup(void)
+static void cat_test_cleanup(void)
 {
 	remove(RESULT_FILE_NAME);
 }
@@ -158,8 +135,6 @@ static int cat_test(const struct resctrl_test *test,
 		    struct resctrl_val_param *param,
 		    size_t span, unsigned long current_mask)
 {
-	char *resctrl_val = param->resctrl_val;
-	struct perf_event_read pe_read;
 	struct perf_event_attr pea;
 	cpu_set_t old_affinity;
 	unsigned char *buf;
@@ -178,13 +153,15 @@ static int cat_test(const struct resctrl_test *test,
 		return ret;
 
 	/* Write benchmark to specified con_mon grp, mon_grp in resctrl FS*/
-	ret = write_bm_pid_to_resctrl(bm_pid, param->ctrlgrp, param->mongrp,
-				      resctrl_val);
+	ret = write_bm_pid_to_resctrl(bm_pid, param->ctrlgrp, param->mongrp);
+	if (ret)
+		goto reset_affinity;
+
+	ret = minimize_l2_occupancy(test, uparams, param);
 	if (ret)
 		goto reset_affinity;
 
 	perf_event_attr_initialize(&pea, PERF_COUNT_HW_CACHE_MISSES);
-	perf_event_initialize_read_format(&pe_read);
 	pe_fd = perf_open(&pea, bm_pid, uparams->cpu);
 	if (pe_fd < 0) {
 		ret = -1;
@@ -217,7 +194,7 @@ static int cat_test(const struct resctrl_test *test,
 
 			fill_cache_read(buf, span, true);
 
-			ret = perf_event_measure(pe_fd, &pe_read, param->filename, bm_pid);
+			ret = perf_event_measure(pe_fd, param->filename, bm_pid);
 			if (ret)
 				goto free_buf;
 		}
@@ -272,7 +249,6 @@ static int cat_run_test(const struct resctrl_test *test, const struct user_param
 	start_mask = create_bit_mask(start, n);
 
 	struct resctrl_val_param param = {
-		.resctrl_val	= CAT_STR,
 		.ctrlgrp	= "c1",
 		.filename	= RESULT_FILE_NAME,
 		.num_of_runs	= 0,
@@ -284,21 +260,42 @@ static int cat_run_test(const struct resctrl_test *test, const struct user_param
 
 	ret = cat_test(test, uparams, &param, span, start_mask);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = check_results(&param, test->resource,
 			    cache_total_size, full_cache_mask, start_mask);
-out:
-	cat_test_cleanup();
-
 	return ret;
+}
+
+static bool arch_supports_noncont_cat(const struct resctrl_test *test)
+{
+	unsigned int vendor_id = get_vendor();
+
+	/* AMD and Hygon always support non-contiguous CBM. */
+	if (vendor_id == ARCH_AMD || vendor_id == ARCH_HYGON)
+		return true;
+
+#if defined(__i386__) || defined(__x86_64__) /* arch */
+	unsigned int eax, ebx, ecx, edx;
+	/* Intel support for non-contiguous CBM needs to be discovered. */
+	if (!strcmp(test->resource, "L3"))
+		__cpuid_count(0x10, 1, eax, ebx, ecx, edx);
+	else if (!strcmp(test->resource, "L2"))
+		__cpuid_count(0x10, 2, eax, ebx, ecx, edx);
+	else
+		return false;
+
+	return ((ecx >> 3) & 1);
+#endif /* end arch */
+
+	return false;
 }
 
 static int noncont_cat_run_test(const struct resctrl_test *test,
 				const struct user_params *uparams)
 {
 	unsigned long full_cache_mask, cont_mask, noncont_mask;
-	unsigned int eax, ebx, ecx, edx, sparse_masks;
+	unsigned int sparse_masks;
 	int bit_center, ret;
 	char schemata[64];
 
@@ -307,15 +304,8 @@ static int noncont_cat_run_test(const struct resctrl_test *test,
 	if (ret)
 		return ret;
 
-	if (!strcmp(test->resource, "L3"))
-		__cpuid_count(0x10, 1, eax, ebx, ecx, edx);
-	else if (!strcmp(test->resource, "L2"))
-		__cpuid_count(0x10, 2, eax, ebx, ecx, edx);
-	else
-		return -EINVAL;
-
-	if (sparse_masks != ((ecx >> 3) & 1)) {
-		ksft_print_msg("CPUID output doesn't match 'sparse_masks' file content!\n");
+	if (arch_supports_noncont_cat(test) != sparse_masks) {
+		ksft_print_msg("Hardware and kernel differ on non-contiguous CBM support!\n");
 		return 1;
 	}
 
@@ -367,12 +357,34 @@ static bool noncont_cat_feature_check(const struct resctrl_test *test)
 	return resource_info_file_exists(test->resource, "sparse_masks");
 }
 
+static bool cat_feature_check(const struct resctrl_test *test)
+{
+	unsigned long mask;
+
+	if (!test_resource_feature_check(test))
+		return false;
+
+	/*
+	 * Test requires an exclusive cache portion. Some platforms may
+	 * legitimately report all bits as shareable, skip the test if that
+	 * is the case.
+	 */
+	if (get_mask_no_shareable(test->resource, &mask)) {
+		ksft_print_msg("All %s bits are shareable, test requires an exclusive cache portion\n",
+			       test->resource);
+		return false;
+	}
+
+	return true;
+}
+
 struct resctrl_test l3_cat_test = {
 	.name = "L3_CAT",
 	.group = "CAT",
 	.resource = "L3",
-	.feature_check = test_resource_feature_check,
+	.feature_check = cat_feature_check,
 	.run_test = cat_run_test,
+	.cleanup = cat_test_cleanup,
 };
 
 struct resctrl_test l3_noncont_cat_test = {

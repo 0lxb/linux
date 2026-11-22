@@ -159,7 +159,7 @@ static void sni_82596_driver_remove(struct platform_device *pdev)
 	struct i596_private *lp = netdev_priv(dev);
 
 	unregister_netdev(dev);
-	dma_free_coherent(&pdev->dev, sizeof(struct i596_private), lp->dma,
+	dma_free_coherent(&pdev->dev, sizeof(struct i596_dma), lp->dma,
 			  lp->dma_addr);
 	iounmap(lp->ca);
 	iounmap(lp->mpu_port);
@@ -168,7 +168,7 @@ static void sni_82596_driver_remove(struct platform_device *pdev)
 
 static struct platform_driver sni_82596_driver = {
 	.probe	= sni_82596_probe,
-	.remove_new = sni_82596_driver_remove,
+	.remove = sni_82596_driver_remove,
 	.driver	= {
 		.name	= sni_82596_string,
 	},

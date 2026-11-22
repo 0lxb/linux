@@ -7,7 +7,6 @@
 
 #include <linux/clk.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
@@ -95,11 +94,18 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
 		return ret;
 	}
 
+	clk_disable_unprepare(mipi_dsi->px_clk);
 	ret = clk_set_rate(mipi_dsi->px_clk, mipi_dsi->mode->clock * 1000);
 
 	if (ret) {
 		dev_err(mipi_dsi->dev, "Failed to set DSI Pixel clock rate %u (%d)\n",
 			mipi_dsi->mode->clock * 1000, ret);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(mipi_dsi->px_clk);
+	if (ret) {
+		dev_err(mipi_dsi->dev, "Failed to enable DSI Pixel clock (ret %d)\n", ret);
 		return ret;
 	}
 
@@ -112,8 +118,7 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
 		dpi_data_format = DPI_COLOR_18BIT_CFG_2;
 		venc_data_width = VENC_IN_COLOR_18B;
 		break;
-	case MIPI_DSI_FMT_RGB666_PACKED:
-	case MIPI_DSI_FMT_RGB565:
+	default:
 		return -EINVAL;
 	}
 
@@ -225,8 +230,7 @@ static int meson_dw_mipi_dsi_host_attach(void *priv_data,
 		break;
 	case MIPI_DSI_FMT_RGB666:
 		break;
-	case MIPI_DSI_FMT_RGB666_PACKED:
-	case MIPI_DSI_FMT_RGB565:
+	default:
 		dev_err(mipi_dsi->dev, "invalid pixel format %d\n", device->format);
 		return -EINVAL;
 	}
@@ -263,7 +267,7 @@ static int meson_dw_mipi_dsi_probe(struct platform_device *pdev)
 	struct meson_dw_mipi_dsi *mipi_dsi;
 	struct device *dev = &pdev->dev;
 
-	mipi_dsi = devm_kzalloc(dev, sizeof(*mipi_dsi), GFP_KERNEL);
+	mipi_dsi = devm_kzalloc_obj(dev, *mipi_dsi);
 	if (!mipi_dsi)
 		return -ENOMEM;
 
@@ -338,7 +342,7 @@ MODULE_DEVICE_TABLE(of, meson_dw_mipi_dsi_of_table);
 
 static struct platform_driver meson_dw_mipi_dsi_platform_driver = {
 	.probe		= meson_dw_mipi_dsi_probe,
-	.remove_new	= meson_dw_mipi_dsi_remove,
+	.remove		= meson_dw_mipi_dsi_remove,
 	.driver		= {
 		.name		= DRIVER_NAME,
 		.of_match_table	= meson_dw_mipi_dsi_of_table,

@@ -397,8 +397,7 @@ static int knav_acc_init_queue(struct knav_range_info *range,
 {
 	unsigned id = kq->id - range->queue_base;
 
-	kq->descs = devm_kcalloc(range->kdev->dev,
-				 ACC_DESCS_MAX, sizeof(u32), GFP_KERNEL);
+	kq->descs = devm_kzalloc_objs(range->kdev->dev, u32, ACC_DESCS_MAX);
 	if (!kq->descs)
 		return -ENOMEM;
 
@@ -450,7 +449,7 @@ static int knav_acc_free_range(struct knav_range_info *range)
 	return 0;
 }
 
-static struct knav_range_ops knav_acc_range_ops = {
+static const struct knav_range_ops knav_acc_range_ops = {
 	.set_notify	= knav_acc_set_notify,
 	.init_queue	= knav_acc_init_queue,
 	.open_queue	= knav_acc_open_queue,
@@ -466,7 +465,7 @@ static struct knav_range_ops knav_acc_range_ops = {
  * @node:		device node
  * @range:		qmms range information
  *
- * Return 0 on success or error
+ * Return: 0 on success, errno otherwise.
  */
 int knav_init_acc_range(struct knav_device *kdev,
 			struct device_node *node,
@@ -544,8 +543,7 @@ int knav_init_acc_range(struct knav_device *kdev,
 	info->list_size = list_size;
 	mem_size   = PAGE_ALIGN(list_size * 2);
 	info->mem_size  = mem_size;
-	range->acc = devm_kcalloc(kdev->dev, channels, sizeof(*range->acc),
-				  GFP_KERNEL);
+	range->acc = devm_kzalloc_objs(kdev->dev, *range->acc, channels);
 	if (!range->acc)
 		return -ENOMEM;
 
